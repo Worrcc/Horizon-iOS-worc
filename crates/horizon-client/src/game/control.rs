@@ -828,7 +828,7 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl save` and `save-all`.
-    fn control_save(&mut self, all: bool) -> Result<()> {
+    pub(super) fn control_save(&mut self, all: bool) -> Result<()> {
         if all {
             let keys: Vec<_> = self.world.chunks.keys().copied().collect();
             self.world.modified.extend(keys);
@@ -843,7 +843,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
+    pub(super) fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
         self.physical_keys.insert(key);
         if self.screen == Screen::Chat {
             self.chat_key_code(key, None);

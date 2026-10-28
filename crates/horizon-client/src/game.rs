@@ -75,6 +75,8 @@ mod growth;
 mod hand;
 mod initial_spawn;
 mod integrated;
+#[cfg(target_os = "ios")]
+mod ios;
 mod item_draw;
 mod item_particles;
 mod jukebox;
@@ -192,6 +194,7 @@ mod text_displays;
 mod titles;
 mod tnt;
 mod totem;
+mod touch;
 mod trading;
 mod trial_spawner;
 mod trial_visuals;
@@ -348,6 +351,10 @@ impl Options {
         let mut o = Self {
             resources: if sibling.join("horizon-resources.json").exists() {
                 sibling
+            } else if cfg!(target_os = "ios") {
+                // Copied in with the Files app or Finder: no launcher prepares them on iOS
+                // (ios/README.md).
+                std::path::PathBuf::from("resources")
             } else {
                 std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
             },
@@ -1480,6 +1487,8 @@ struct Game<'a> {
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
     focused: bool,
+    /// Fingers on a touchscreen (iOS): the on-screen controls.
+    touch: touch::TouchInput,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
     /// The window's fullscreen request and reported state.
@@ -5697,7 +5706,9 @@ impl Game<'_> {
             self.captured = window
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
-                .is_ok();
+                .is_ok()
+                // No pointer to grab on a touchscreen: the touch controls look instead.
+                || touch::ENABLED;
             #[cfg(not(target_os = "macos"))]
             if self.captured && self.focused {
                 warp(window);
@@ -5899,6 +5910,7 @@ impl Game<'_> {
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_pad_cursor(&mut batch);
+        self.draw_touch_controls(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -12544,6 +12556,9 @@ impl Game<'_> {
 impl ApplicationHandler for Game<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
+            // Back from the background (iOS and Android resume an app many times).
+            #[cfg(target_os = "ios")]
+            self.leave_background(event_loop);
             return;
         }
         // The Window constructor: created fullscreen when options.txt says so.
@@ -12566,7 +12581,7 @@ impl ApplicationHandler for Game<'_> {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 self.error = Some(e.into());
-                event_loop.exit();
+                quit(event_loop);
                 return;
             }
         };
@@ -12578,7 +12593,7 @@ impl ApplicationHandler for Game<'_> {
             }
             Err(e) => {
                 self.error = Some(e);
-                event_loop.exit();
+                quit(event_loop);
                 return;
             }
         }
@@ -12588,6 +12603,12 @@ impl ApplicationHandler for Game<'_> {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        if touch::ENABLED
+            && let WindowEvent::Touch(t) = event
+        {
+            self.touch_event(event_loop, t);
             return;
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -12702,7 +12723,7 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
                         self.error = Some(error);
-                        event_loop.exit();
+                        quit(event_loop);
                     }
                 }
                 _ => {}
@@ -12924,7 +12945,7 @@ impl ApplicationHandler for Game<'_> {
                         self.audio.play_button_click();
                     }
                     match action {
-                        Action::Quit => event_loop.exit(),
+                        Action::Quit => quit(event_loop),
                         Action::Options => self.open_options(true),
                         Action::Accessibility => self
                             .open_options_at(true, horizon_client::options_ui::Page::Accessibility),
@@ -13489,7 +13510,7 @@ impl ApplicationHandler for Game<'_> {
                                 .world_frames
                                 .is_some_and(|f| self.world_frames >= f)
                         {
-                            event_loop.exit();
+                            quit(event_loop);
                         }
                     }
                 }
@@ -13500,7 +13521,7 @@ impl ApplicationHandler for Game<'_> {
         })();
         if let Err(e) = result {
             self.error = Some(e);
-            event_loop.exit();
+            quit(event_loop);
         }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
@@ -13522,13 +13543,13 @@ impl ApplicationHandler for Game<'_> {
             // SIGTERM, SIGINT or SIGHUP: the shutdown hook's server halt, as a window close.
             if let Err(error) = self.begin_closing_save(true) {
                 self.error = Some(error);
-                event_loop.exit();
+                quit(event_loop);
                 return;
             }
         }
         if self.pending_save.is_some() {
             match self.poll_closing_save() {
-                Ok(true) => event_loop.exit(),
+                Ok(true) => quit(event_loop),
                 Ok(false) => {
                     if let Some(window) = &self.window {
                         window.request_redraw();
@@ -13540,25 +13561,26 @@ impl ApplicationHandler for Game<'_> {
                 }
                 Err(error) => {
                     self.error = Some(error);
-                    event_loop.exit();
+                    quit(event_loop);
                 }
             }
             return;
         }
         if let Err(error) = self.resume_world_entry() {
             self.error = Some(error);
-            event_loop.exit();
+            quit(event_loop);
             return;
         }
         self.tick_server_packs();
         self.poll_control(event_loop);
+        self.touch_update(event_loop);
         if self.pending_save.is_some() {
             return;
         }
         self.poll_pads(event_loop);
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
-            event_loop.exit();
+            quit(event_loop);
             return;
         }
         if let Some(w) = &self.window {
@@ -13576,6 +13598,11 @@ impl ApplicationHandler for Game<'_> {
     /// The application is ending. On macOS, Quit (Cmd+Q) ends it through
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
     /// window turns it into a window close, so Minecraft.stop saves the world.
+    /// The app went to the background: only iOS (and Android) send it.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "ios")]
+        self.enter_background(_event_loop);
+    }
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
@@ -13710,6 +13737,7 @@ impl<'a> Game<'a> {
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
             focused: true,
+            touch: Default::default(),
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
             mouse: MouseLook::default(),
@@ -14939,14 +14967,42 @@ fn write_report(game: &Game<'_>) -> Result<()> {
     Ok(())
 }
 
-fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    EventLoop::new()?.run_app(&mut game)?;
-    horizon_client::discord_presence::stop();
-    write_report(&game)?;
-    if let Some(e) = game.error.take() {
-        return Err(e);
+fn run_event_loop(game: Game<'_>) -> Result<()> {
+    run_app(game, |game| {
+        horizon_client::discord_presence::stop();
+        write_report(game)?;
+        if let Some(e) = game.error.take() {
+            return Err(e);
+        }
+        Ok(())
+    })
+}
+
+/// Set by [`quit`]: the event loop is to end.
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ends the event loop. iOS ignores `exit` (an app can't quit itself, QA1561) and never
+/// returns from `run_app`, so there `ios::Session` ends the run when it sees [`QUITTING`].
+fn quit(event_loop: &ActiveEventLoop) {
+    QUITTING.store(true, std::sync::atomic::Ordering::Relaxed);
+    event_loop.exit();
+}
+
+/// Runs `app` on the event loop, then `finish` (the report, the error) once it ends.
+fn run_app<A: ApplicationHandler>(
+    #[allow(unused_mut)] mut app: A,
+    finish: fn(&mut A) -> Result<()>,
+) -> Result<()> {
+    #[cfg(not(target_os = "ios"))]
+    {
+        EventLoop::new()?.run_app(&mut app)?;
+        finish(&mut app)
     }
-    Ok(())
+    #[cfg(target_os = "ios")]
+    {
+        EventLoop::new()?.run_app(&mut ios::Session::new(app, finish))?;
+        Ok(())
+    }
 }
 
 /// The loading screen's state while the worker loads the resources.
@@ -14998,7 +15054,7 @@ impl Loading {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 self.error = Some(e.into());
-                event_loop.exit();
+                quit(event_loop);
                 return;
             }
         };
@@ -15014,7 +15070,7 @@ impl Loading {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
                 self.error = Some(e);
-                event_loop.exit();
+                quit(event_loop);
                 return;
             }
         }
@@ -15027,7 +15083,7 @@ impl Loading {
         }
         if let Err(error) = self.menu_event(event_loop, event) {
             self.error = Some(error);
-            event_loop.exit();
+            quit(event_loop);
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
@@ -15065,12 +15121,12 @@ impl Loading {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if horizon_threads::stop_requests() > 0 {
             // No world is open yet: nothing to save.
-            event_loop.exit();
+            quit(event_loop);
             return;
         }
         if let Err(error) = self.poll_menu_resources() {
             self.error = Some(error);
-            event_loop.exit();
+            quit(event_loop);
             return;
         }
         if let Some(w) = &self.window {
@@ -15212,6 +15268,11 @@ impl ApplicationHandler for App {
             game.device_event(event_loop, id, event);
         }
     }
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        if let App::Ready(game) = self {
+            game.suspended(event_loop);
+        }
+    }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         enum Step {
             Waiting,
@@ -15227,7 +15288,7 @@ impl ApplicationHandler for App {
             App::Loading(loading) => {
                 loading.about_to_wait(event_loop);
                 if loading.error.is_some() {
-                    event_loop.exit();
+                    quit(event_loop);
                     return;
                 }
                 match if loading.menu.reload_packs {
@@ -15248,12 +15309,12 @@ impl ApplicationHandler for App {
         match step {
             Step::Waiting => {}
             Step::Ready(game) => *self = App::Ready(game),
-            Step::Done => event_loop.exit(),
+            Step::Done => quit(event_loop),
             Step::Failed(e) => {
                 if let App::Loading(loading) = self {
                     loading.error = Some(e);
                 }
-                event_loop.exit();
+                quit(event_loop);
             }
         }
     }
@@ -15296,23 +15357,24 @@ fn run_loading(
         menu,
         error: None,
     };
-    let mut app = App::Loading(Box::new(loading));
-    EventLoop::new()?.run_app(&mut app)?;
-    horizon_client::discord_presence::stop();
-    match app {
-        App::Ready(mut game) => {
-            write_report(&game)?;
-            if let Some(e) = game.error.take() {
-                return Err(e);
+    let app = App::Loading(Box::new(loading));
+    run_app(app, |app| {
+        horizon_client::discord_presence::stop();
+        match app {
+            App::Ready(game) => {
+                write_report(game)?;
+                if let Some(e) = game.error.take() {
+                    return Err(e);
+                }
+            }
+            App::Loading(loading) => {
+                if let Some(e) = loading.error.take() {
+                    return Err(e);
+                }
             }
         }
-        App::Loading(loading) => {
-            if let Some(e) = loading.error {
-                return Err(e);
-            }
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn run() -> Result<()> {

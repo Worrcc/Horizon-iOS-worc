@@ -65,6 +65,10 @@ horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
 
+[target.'cfg(target_os = "ios")'.dependencies]
+# UIKit: the alert that shows why the game stopped (game/ios.rs).
+horizon-ios = { path = "../horizon-ios" }
+
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
@@ -75,7 +79,7 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 # on the PATH.
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
 # OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
 # DirectX 12 driver (`graphicsApi`, graphics.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }

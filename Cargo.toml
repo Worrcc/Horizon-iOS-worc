@@ -1,10 +1,11 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal"]
+exclude = ["launcher", "third_party/winit", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal"]
 members = [
     "crates/horizon-core",
     "crates/horizon-dualsense",
     "crates/horizon-threads",
     "crates/horizon-hdr",
+    "crates/horizon-ios",
     "crates/horizon-world",
     "crates/horizon-client",
     "crates/horizon-client-core",
@@ -65,6 +66,10 @@ large_enum_variant = "allow"
 # folder once a wgpu release has the fix.
 [patch.crates-io]
 wgpu-hal = { path = "third_party/wgpu-hal" }
+# winit 0.30.13 with the iOS keyboard (ios/README.md): hardware keyboards' key presses, and the
+# on-screen keyboard's characters with key codes, which the game's text fields need. Desktop
+# code is unchanged.
+winit = { path = "third_party/winit" }
 
 # Line tables keep file:line in backtraces; full debug info made every
 # example and test binary hundreds of megabytes and slow to link.

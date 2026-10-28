@@ -21,6 +21,12 @@ fn main() {
     } else {
         (logging::game_home(), "client", "Render thread")
     };
+    // iOS starts every app in `/`: the game folder (Documents) is its working directory, as
+    // the launcher makes it elsewhere.
+    #[cfg(target_os = "ios")]
+    if let Err(e) = std::fs::create_dir_all(&home).and_then(|()| std::env::set_current_dir(&home)) {
+        eprintln!("Horizon: can't use {}: {e}", home.display());
+    }
     if !help {
         logging::init(&home, thread);
         // The log's first line names the build, so a bug report that carries the log says which one it was.
