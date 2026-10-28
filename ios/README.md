@@ -1,5 +1,7 @@
 # Horizon on iPhone and iPad
 
+[![ios](https://github.com/Worrcc/Horizon-iOS-worc/actions/workflows/ios.yml/badge.svg?branch=claude/minecraft-ios-port-w46z3k)](https://github.com/Worrcc/Horizon-iOS-worc/actions/workflows/ios.yml)
+
 This fork of [Horizon](https://github.com/horizon-rust/horizon) (based on `launcher@0.2.20`)
 runs the game on iOS and iPadOS. It is the same Rust game: same worlds, same rules, same
 renderer (wgpu on Metal). The iOS port adds touch controls, keyboard and controller support, and
