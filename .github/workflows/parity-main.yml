@@ -23,6 +23,8 @@ env:
 
 jobs:
   parity-main:
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon'
     # A Mac mini runner of its own (ludovics-mac-mini-2 holds only this label since 2026-10-26): behind PR parity jobs
     # this run waited 2 h while every merge replaced the pending one, and on the release runner a release then waited
     # behind the next run. PR parity jobs have ludovics-mac-mini and playhorizon. Not playhorizon: its 4 CPUs

@@ -74,6 +74,11 @@ impl Game<'_> {
             && !self.dialog_open()
     }
 
+    /// Back (Esc) is shown on screens over a world; the title screens have their own buttons.
+    fn touch_back_shown(&self) -> bool {
+        self.title.is_none() || self.screen != Screen::Playing
+    }
+
     fn touch_layout(&self) -> Option<(Layout, f32)> {
         let size = self
             .renderer
@@ -110,7 +115,7 @@ impl Game<'_> {
                 self.show_keyboard(shown);
                 return;
             }
-            if inside(menu_button(&layout, MenuButton::Back), at) {
+            if self.touch_back_shown() && inside(menu_button(&layout, MenuButton::Back), at) {
                 self.apply_touch(event_loop, Output::Key(KeyCode::Escape, true), scale);
                 self.apply_touch(event_loop, Output::Key(KeyCode::Escape, false), scale);
                 return;
@@ -296,7 +301,7 @@ impl Game<'_> {
                 "Aa",
                 self.touch.keyboard,
             );
-            if self.title.is_none() || self.screen != Screen::Playing {
+            if self.touch_back_shown() {
                 button(batch, menu_button(&layout, MenuButton::Back), "Back", false);
             }
             return;

@@ -23,6 +23,10 @@
 
 # Horizon
 
+> **This repository is Horizon-iOS:** a fork of Horizon `launcher@0.2.20` that also runs on
+> iPhone and iPad, with touch controls, keyboards and controllers. Build, install and play it:
+> [ios/README.md](ios/README.md). Everything below is upstream Horizon's README.
+
 Horizon is Minecraft: Java Edition 26.3 rewritten in Rust: a native game that reads the same worlds, follows the same rules and generates the same terrain as the Java game, and is checked against it by 281 differential harnesses. You play it through a small launcher, on the files from your own copy of Minecraft. It is free, open source and unofficial.
 
 > Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft. Horizon contains no Minecraft code, assets or data: you need your own legally obtained copy of Minecraft: Java Edition 26.3.

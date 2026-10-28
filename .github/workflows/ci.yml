@@ -116,7 +116,8 @@ jobs:
   # (.github/workflows/parity-main.yml; releases wait for it). A pull request still runs them itself when it changes
   # a harness, an oracle, a probe or the runner, or carries the run-parity label (run-parity.yml, when it is added).
   parity-scope:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon' && (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.scope.outputs.run }}
@@ -153,7 +154,8 @@ jobs:
   # game directory in HORIZON_MINECRAFT_DIR and the pinned server jar in
   # HORIZON_SERVER_JAR. Start them by hand: gh workflow run checks --ref <branch>.
   vanilla-parity:
-    if: github.event_name == 'workflow_dispatch'
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon' && (github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, linux, horizon-game]
     steps:
       - uses: actions/checkout@v4
@@ -501,7 +503,8 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
         run: python tools/test_float_log_parity.py
   jfr-analysis:
-    if: github.event_name == 'workflow_dispatch'
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon' && (github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, linux, horizon-game]
     steps:
       - uses: actions/checkout@v4

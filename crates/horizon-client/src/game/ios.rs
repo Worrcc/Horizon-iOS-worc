@@ -12,8 +12,19 @@ use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, WindowEvent},
     event_loop::ActiveEventLoop,
-    window::WindowId,
+    platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS},
+    window::{WindowAttributes, WindowId},
 };
+
+/// The game's view: landscape, nothing of the system's over it, and the screen edges kept for
+/// the game, so a swipe from the bottom while walking doesn't leave it (a second swipe does).
+pub(super) fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+    attributes
+        .with_valid_orientations(ValidOrientations::Landscape)
+        .with_prefers_status_bar_hidden(true)
+        .with_prefers_home_indicator_hidden(true)
+        .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
+}
 
 /// The application handler, and what runs once it quits.
 pub(super) struct Session<A> {

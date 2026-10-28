@@ -62,6 +62,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   pick:
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -18,7 +18,8 @@ permissions:
 jobs:
   command:
     # Every other comment skips here, before a runner starts.
-    if: startsWith(github.event.comment.body, '/nightly') && github.event.comment.user.type != 'Bot'
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon' && (startsWith(github.event.comment.body, '/nightly') && github.event.comment.user.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

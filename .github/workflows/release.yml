@@ -47,9 +47,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   decide:
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
     if: >-
+      github.repository == 'horizon-rust/horizon' && (
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

@@ -17,7 +17,8 @@ env:
 
 jobs:
   parity:
-    if: github.event.label.name == 'run-parity'
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
+    if: github.repository == 'horizon-rust/horizon' && (github.event.label.name == 'run-parity')
     uses: ./.github/workflows/parity.yml
     with:
       base: ${{ github.event.pull_request.base.sha }}

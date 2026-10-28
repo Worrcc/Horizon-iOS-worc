@@ -15,12 +15,15 @@ permissions:
 jobs:
   command:
     # Every other comment skips here, before a runner starts.
+    # Forks (the iOS port's repository) have none of Horizon's runners, secrets or releases.
     if: >-
+      github.repository == 'horizon-rust/horizon' && (
       github.event.comment.user.type != 'Bot' && (
       startsWith(github.event.comment.body, '/close') ||
       startsWith(github.event.comment.body, '/reopen') ||
       startsWith(github.event.comment.body, '/label') ||
       startsWith(github.event.comment.body, '/unlabel'))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

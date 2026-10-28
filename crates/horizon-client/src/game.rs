@@ -12568,6 +12568,8 @@ impl ApplicationHandler for Game<'_> {
         let attributes = Window::default_attributes()
             .with_title("Horizon")
             .with_window_icon(horizon_client::window::icon());
+        #[cfg(target_os = "ios")]
+        let attributes = ios::window_attributes(attributes);
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
@@ -14383,10 +14385,13 @@ fn load_resources(
             (assets, render)
         }
         Err(e) => {
-            return Err(format!(
-                "{e}\nPrepare resources with the launcher, or: horizon-prepare --prepare"
-            )
-            .into());
+            let hint = if cfg!(target_os = "ios") {
+                "Copy the prepared resources into the Horizon folder of the Files app, as \
+                 \"resources\" (ios/README.md)"
+            } else {
+                "Prepare resources with the launcher, or: horizon-prepare --prepare"
+            };
+            return Err(format!("{e}\n{hint}").into());
         }
     };
     let assets = Arc::new(assets);
@@ -15041,6 +15046,8 @@ impl Loading {
         let attributes = Window::default_attributes()
             .with_title("Horizon")
             .with_window_icon(horizon_client::window::icon());
+        #[cfg(target_os = "ios")]
+        let attributes = ios::window_attributes(attributes);
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(

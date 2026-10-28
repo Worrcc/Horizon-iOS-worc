@@ -1,0 +1,44 @@
+name: ios
+# The iOS app (ios/README.md): builds and links Horizon.app on GitHub's macOS runner, and keeps the
+# unsigned Horizon.ipa for sideloading. It holds no game files: players add their own.
+on:
+  push:
+    paths:
+      - 'crates/**'
+      - 'third_party/**'
+      - 'ios/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/ios.yml'
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  app:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ios
+      - name: Build Horizon.app and Horizon.ipa
+        run: ios/build.sh
+      - name: Check the bundle
+        run: |
+          plutil -lint target/ios/Horizon.app/Info.plist
+          file target/ios/Horizon.app/horizon-client
+          otool -L target/ios/Horizon.app/horizon-client
+          codesign --verify --verbose target/ios/Horizon.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Horizon-ios-${{ github.sha }}
+          path: target/ios/Horizon.ipa
+          retention-days: 30
