@@ -15388,6 +15388,10 @@ pub fn run() -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };
+    #[cfg(target_os = "ios")]
+    if let Some(message) = ios::missing_resources(&options.resources) {
+        return ios::show_error("Game files needed", message);
+    }
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {

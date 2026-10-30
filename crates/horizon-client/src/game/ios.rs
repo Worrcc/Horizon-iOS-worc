@@ -3,15 +3,19 @@
 //! - `run_app` never returns and `exit` does nothing (an app can't quit itself, QA1561):
 //!   [`Session`] ends the run itself once the game asks to quit, as `run_app`'s caller does
 //!   elsewhere, and shows a fatal error in an alert rather than on a terminal.
+//! - No launcher prepares the game files: [`missing_resources`] says where they go before the
+//!   game tries to load them.
 //! - iOS can end a backgrounded app without a word: going to the background pauses the game
 //!   and saves the world, as `/save-all` does.
 use super::{Game, QUITTING};
 use horizon_client::{Result, crash, logging};
+use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, WindowEvent},
-    event_loop::ActiveEventLoop,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS},
     window::{WindowAttributes, WindowId},
 };
@@ -77,6 +81,14 @@ impl<A: ApplicationHandler> Session<A> {
     }
 }
 
+/// After a fatal error the game gets no more events; the loop only keeps the alert coming up.
+fn wait_for_alert(event_loop: &ActiveEventLoop) {
+    horizon_ios::poll_alert();
+    event_loop.set_control_flow(ControlFlow::WaitUntil(
+        Instant::now() + Duration::from_millis(100),
+    ));
+}
+
 impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running() {
@@ -107,6 +119,9 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
             self.app.about_to_wait(event_loop);
             self.check(event_loop);
         }
+        if !self.running() {
+            wait_for_alert(event_loop);
+        }
     }
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
         log::warn!("Horizon: iOS is low on memory; a lower render distance helps");
@@ -118,6 +133,68 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
             self.app.exiting(event_loop);
         }
     }
+}
+
+/// What to tell a player whose device has no game files at `resources` (relative to the game
+/// folder, Documents), or `None` when they are there.
+pub(super) fn missing_resources(resources: &Path) -> Option<String> {
+    if resources.join("horizon-resources.json").is_file() {
+        return None;
+    }
+    let place = "Files › On My iPhone (or iPad) › Horizon › resources";
+    // Unzipped into a folder of the same name, or copied in under another name.
+    let nested = resources
+        .join("resources")
+        .join("horizon-resources.json")
+        .is_file();
+    log::warn!(
+        "Horizon: no game files at {} (horizon-resources.json is missing)",
+        resources.display()
+    );
+    Some(if nested {
+        format!(
+            "Horizon found its game files, but one folder too deep. Move the inner \"resources\" \
+             folder up, so the file horizon-resources.json is directly in {place}."
+        )
+    } else {
+        format!(
+            "Horizon needs the game files prepared from your own copy of Minecraft, and they \
+             aren't on this device yet.\n\nMake them on a computer, from Minecraft: Java Edition \
+             26.3, with the Horizon launcher (playhorizon.dev). Then copy its \"resources\" folder \
+             to {place}, so the file horizon-resources.json is directly in it.\n\nThe \
+             Horizon-iOS repository's ios/README.md has the steps."
+        )
+    })
+}
+
+/// Shows `message` and nothing else until the player closes the app: no game window, no
+/// crash report (nothing crashed).
+pub(super) fn show_error(title: &'static str, message: String) -> Result<()> {
+    struct ErrorOnly {
+        title: &'static str,
+        message: String,
+        shown: bool,
+    }
+    impl ApplicationHandler for ErrorOnly {
+        fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+            self.about_to_wait(event_loop);
+        }
+        fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            if !self.shown {
+                self.shown = true;
+                horizon_ios::fatal_alert(self.title, &self.message);
+            }
+            wait_for_alert(event_loop);
+        }
+    }
+    logging::flush();
+    EventLoop::new()?.run_app(&mut ErrorOnly {
+        title,
+        message,
+        shown: false,
+    })?;
+    Ok(())
 }
 
 impl Game<'_> {
