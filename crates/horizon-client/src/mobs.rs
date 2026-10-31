@@ -14,6 +14,7 @@ pub mod aquatic;
 pub mod armadillo;
 pub mod axolotl;
 pub mod bat;
+pub mod bedrock_anim;
 pub mod bee;
 pub mod body_anim;
 pub mod brain;
@@ -36,6 +37,7 @@ pub mod finalize;
 pub mod fox;
 pub mod frog;
 pub mod gear;
+pub mod geo;
 pub mod goals;
 pub mod goat;
 pub mod golem;
@@ -379,6 +381,9 @@ pub struct MobType {
     pub food: Arc<[String]>,
     /// TemptGoal items when they differ from the food.
     pub tempt: Arc<[String]>,
+    /// A content mod entity's own animations, played on its own model in place of the
+    /// species' (`geo::animate`).
+    pub own_animations: Option<Arc<geo::Animations>>,
 }
 impl MobType {
     pub fn layer(&self, key: &str) -> Option<&Arc<Part>> {
@@ -502,6 +507,7 @@ impl MobTypes {
                         .or(def.food_tag())
                         .map(tag)
                         .unwrap_or_else(|| Arc::from(Vec::new())),
+                    own_animations: None,
                     category,
                     id,
                 },
@@ -509,7 +515,7 @@ impl MobTypes {
         }
         *TEMPLATES
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = mod_types(&types, &mut out);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = mod_types(root, &types, &mut out);
         Ok(Self { types: out })
     }
 }
@@ -533,8 +539,13 @@ pub fn vanilla_id(id: &str) -> Cow<'_, str> {
 /// Content mods' entities (docs/modpacks.md, entities): the rows the content root appended to
 /// `entity-types.json` with a `horizon` object, each a copy of its template's type (its
 /// species, so its AI, model, animations and sounds) under its own id, with the row's size,
-/// category, fire immunity and attributes, and the mod's texture. Returns each one's template.
-fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) -> BTreeMap<String, String> {
+/// category, fire immunity and attributes, the mod's texture, and its own model and animations
+/// from `root`. Returns each one's template.
+fn mod_types(
+    root: &Path,
+    types: &Value,
+    out: &mut HashMap<String, MobType>,
+) -> BTreeMap<String, String> {
     let mut templates = BTreeMap::new();
     let Some(rows) = types.as_object() else {
         return templates;
@@ -586,6 +597,21 @@ fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) -> BTreeMap<Stri
         t.attributes = Arc::new(attributes);
         if let Some(texture) = horizon["texture"].as_str() {
             t.texture = texture.to_owned();
+        }
+        if let Some(model) = horizon["model"].as_str() {
+            let states = horizon["animations"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            match geo::load(root, model, &states) {
+                Ok((part, animations)) => {
+                    let part = Arc::new(part);
+                    t.layers.insert(geo::MODEL_LAYER.to_owned(), part.clone());
+                    t.model = part;
+                    t.own_animations = animations.map(Arc::new);
+                }
+                Err(e) => log::warn!("Horizon: entity {id}: model {model}: {e}"),
+            }
         }
         out.insert(id.clone(), t);
     }
@@ -2904,6 +2930,7 @@ mod sensor_scan_tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
+            own_animations: None,
         })
     }
     /// `n` mobs in pens of 20 spread over a square of `side` blocks, as on a
@@ -3252,7 +3279,7 @@ mod mod_type_tests {
             },
             "ruby:orphan": {"horizon": {"template": "minecraft:nothing"}}
         });
-        let templates = mod_types(&types, &mut out);
+        let templates = mod_types(Path::new("/nonexistent"), &types, &mut out);
         assert_eq!(
             templates,
             BTreeMap::from([("ruby:ruby_cow".into(), template.id.clone())])

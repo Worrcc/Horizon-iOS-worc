@@ -282,6 +282,7 @@ mod tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
+            own_animations: None,
         });
         Mob::new(1, kind, Vec3::ZERO, 0.0)
     }

@@ -307,20 +307,55 @@ The mod changes its size, attributes, category, fire immunity and texture:
   clients. Code that reads vanilla's tables by entity id (tracking ranges, entity data, NBT)
   reads the template's row through `mobs::vanilla_id`.
 
-This covers creatures that look and act like a vanilla mob with other numbers and skins. What
-deep-tier mods such as Ice and Fire also need, in this order:
+### Entities 0.5, part 2: models of their own
 
-1. **Models of their own:** Bedrock geometry and animations (GeckoLib's format) as data, read
-   from the mod's `assets/`, in place of the template's model.
-2. **Behaviour in mod code:** an `entity` interface for a mod's WASM to steer its mobs (goals,
+A mob can bring its own model and animations in GeckoLib's format, as Blockbench exports them:
+
+```json
+{
+  "template": "minecraft:zombie",
+  "texture": "ruby:entity/golem",
+  "model": "ruby:golem",
+  "animations": { "idle": "animation.golem.idle", "walk": "animation.golem.walk",
+                  "attack": "animation.golem.attack" }
+}
+```
+
+- `model` is `<namespace>:<path>` for `assets/<namespace>/geo/<path>.geo.json`: Bedrock
+  geometry (format 1.12's `minecraft:geometry`, or 1.8's `geometry.<name>`), with bones,
+  pivots, rotations, cubes with box or per-face UV, `inflate`, `mirror`, and cubes' own rotation.
+  `mobs/geo.rs` bakes it into the same parts vanilla's models use: a point (x, y, z) of the
+  Bedrock model is (x, 24 - y, z) of vanilla's model space, and rotations keep their signs.
+  The texture is the declared one, or the template's.
+- `animations` names, for the states `idle`, `walk` and `attack`, animations of
+  `assets/<namespace>/animations/<path>.animation.json` (the model's path).
+  `mobs/bedrock_anim.rs` converts them into vanilla's keyframe animations (positions with y
+  negated, rotations in radians, scales as offsets from 1), as vanilla's `KeyframeAnimations`
+  helpers do. Keyframes are numbers, vectors, `pre`/`post` pairs, linear or `catmullrom`;
+  Molang is read where it is a constant, and anything else counts as 0 with a warning.
+- While it plays its own animations (`mobs/geo.rs` `animate`) the mob turns its `head` bone
+  to where it looks, plays `walk` while its limbs swing (beyond 0.15, as GeckoLib's
+  `isMoving`) or else `idle`, both in real time and looping as their files say, and plays
+  `attack` over them through its swing. Without animations its template's own animation
+  runs, on whichever bones share vanilla's names. The template's overlay layers (armour,
+  collars, outer layers) are not drawn on a model of its own.
+- Everything else is the template's: AI, hitbox (or the declared size), sounds and death.
+
+What deep-tier mods such as Ice and Fire also need, in this order:
+
+1. **Behaviour in mod code:** an `entity` interface for a mod's WASM to steer its mobs (goals,
    targets, attacks, flight, breath attacks, growth stages, taming, riding), budgeted like the
-   other hooks, with vanilla's goals reusable.
-3. **Spawning and worldgen:** natural spawn rules per biome, and structures with their mobs (the
+   other hooks, with vanilla's goals reusable, and to choose which animation plays.
+2. **Spawning and worldgen:** natural spawn rules per biome, and structures with their mobs (the
    carried-over worldgen covers the structure files).
-4. **Block entities and screens:** for machines like forges (API 0.4).
+3. **Block entities and screens:** for machines like forges (API 0.4).
+4. **Other model formats:** Ice and Fire's dragons are Tabula models (`.tbl`, through the
+   Citadel library) with animations in Java, not GeckoLib files. A port needs them converted to
+   Bedrock geometry, and their animations written again as data or in mod code.
 
 Until those exist, a port carries over a mod's blocks, items, recipes, tags, language files,
-worldgen and textures. Its creatures can be declared from templates by hand or by an agent.
+worldgen and textures. Its creatures can be declared from templates by hand or by an agent,
+with GeckoLib models where the mod ships them.
 
 ### Unofficial ports and credits
 

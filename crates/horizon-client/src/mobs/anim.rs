@@ -633,6 +633,9 @@ pub fn setup(
     p: &mut Poses,
     w_anims: &HashMap<String, super::keyframes::Animation>,
 ) {
+    if let Some(a) = &m.kind.own_animations {
+        return super::geo::animate(m, s, p, a);
+    }
     if super::body_anim::anim(m, s, p, w_anims) {
         return;
     }

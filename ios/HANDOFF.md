@@ -95,13 +95,15 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
   and credit doesn't change that. Horizon's route is `horizon-port-pack`, which runs on the
   player's computer from their own jar, keeps the result local, and now labels it "(unofficial
   port)" with the authors credited. A port today carries blocks, items, recipes, tags,
-  language files, worldgen and textures. Its creatures need the rest of API 0.5, in this order
-  (`docs/modpacks.md`, "Entities 0.5, part 1"):
-  1. **Models of their own:** Bedrock geometry and animations (GeckoLib's format) read from a
-     mod's `assets/`, in place of the template's model. The next step; the player hasn't
-     confirmed it yet.
+  language files, worldgen and textures. Its creatures need the rest of API 0.5
+  (`docs/modpacks.md`, "Entities 0.5"):
+  1. **Models of their own: done** (part 2). GeckoLib geometry and animations in a mod's
+     `assets/`, `model` and `animations` (idle, walk, attack) in the entity's JSON. Checked in
+     the game with a test mob: the model, its texture, idle and walk loops, death tip-over.
+     **Ice and Fire's dragons are Tabula models (Citadel), not GeckoLib**: they need a
+     Tabula → Bedrock conversion in `horizon-port-pack`, and their Java animations redone.
   2. An `entity` interface for mod code to steer its mobs (flight, breath attacks, growth,
-     taming, riding).
+     taming, riding), and to pick animations beyond idle/walk/attack.
   3. Spawn rules and structures with their mobs.
   4. Block entities and screens (API 0.4), for machines such as forges.
 - **Mod entities, part 1 ran in the game** (desktop, server-thread single player, with a

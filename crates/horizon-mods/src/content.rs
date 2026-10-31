@@ -168,7 +168,13 @@ struct EntityFile {
     fire_immune: Option<bool>,
     category: Option<String>,
     texture: Option<String>,
+    model: Option<String>,
+    #[serde(default)]
+    animations: std::collections::BTreeMap<String, String>,
 }
+
+/// The states a mod entity's own animations play in (docs/modpacks.md, entities).
+pub const ANIMATION_STATES: &[&str] = &["idle", "walk", "attack"];
 
 /// An entity the mod adds (API 0.5, first part): a vanilla template mob's behaviour (its AI,
 /// model and sounds) under a new id, with its size, attributes and texture changed.
@@ -188,6 +194,26 @@ pub struct Entity {
     /// The model's texture, `<namespace>:entity/<path>` for
     /// `assets/<namespace>/textures/entity/<path>.png` in one of the mod's namespaces.
     pub texture: Option<String>,
+    /// Its own model, `<namespace>:<path>` for `assets/<namespace>/geo/<path>.geo.json`
+    /// (Bedrock geometry, as GeckoLib reads it), in place of the template's.
+    pub model: Option<String>,
+    /// The animation each state plays (from [`ANIMATION_STATES`]), by name in the model's
+    /// `assets/<namespace>/animations/<path>.animation.json`.
+    pub animations: std::collections::BTreeMap<String, String>,
+}
+
+impl Entity {
+    /// The model's geometry file and animation file in the mod.
+    pub fn model_files(&self) -> Option<(String, String)> {
+        model_files(self.model.as_deref()?)
+    }
+}
+fn model_files(model: &str) -> Option<(String, String)> {
+    let (ns, path) = model.split_once(':')?;
+    Some((
+        format!("assets/{ns}/geo/{path}.geo.json"),
+        format!("assets/{ns}/animations/{path}.animation.json"),
+    ))
 }
 
 fn check_entity(file: &EntityFile, namespaces: &[String]) -> Result<(), String> {
@@ -235,6 +261,31 @@ fn check_entity(file: &EntityFile, namespaces: &[String]) -> Result<(), String> 
             return Err(format!(
                 "texture {t:?} is <namespace>:entity/<path>, in one of the mod's namespaces"
             ));
+        }
+    }
+    if let Some(m) = &file.model {
+        let ok = m.split_once(':').is_some_and(|(ns, _)| {
+            namespaces.iter().any(|n| n == ns)
+                && model_files(m).is_some_and(|(geo, _)| check_path(&geo).is_ok())
+        });
+        if !ok {
+            return Err(format!(
+                "model {m:?} is <namespace>:<path>, in one of the mod's namespaces"
+            ));
+        }
+    }
+    if !file.animations.is_empty() && file.model.is_none() {
+        return Err("animations need the entity's own model".into());
+    }
+    for (state, name) in &file.animations {
+        if !ANIMATION_STATES.contains(&state.as_str()) {
+            return Err(format!(
+                "animation state {state:?} is not one of {}",
+                ANIMATION_STATES.join(", ")
+            ));
+        }
+        if name.is_empty() {
+            return Err(format!("animation state {state} names no animation"));
         }
     }
     Ok(())
@@ -481,6 +532,14 @@ impl Content {
                     return Err(format!("{name}: texture {t} has no {png}"));
                 }
             }
+            if let Some((geo, animations)) = file.model.as_deref().and_then(model_files) {
+                if self.files.binary_search(&geo).is_err() {
+                    return Err(format!("{name}: model has no {geo}"));
+                }
+                if !file.animations.is_empty() && self.files.binary_search(&animations).is_err() {
+                    return Err(format!("{name}: animations need {animations}"));
+                }
+            }
             self.entities.push(Entity {
                 id: entity,
                 template: file.template,
@@ -491,6 +550,8 @@ impl Content {
                 fire_immune: file.fire_immune,
                 category: file.category,
                 texture: file.texture,
+                model: file.model,
+                animations: file.animations,
             });
         }
         Ok(())
@@ -641,6 +702,71 @@ capabilities = ["registries"]
         assert_eq!(golem.attributes["max_health"], 60.0);
         assert_eq!(golem.fire_immune, Some(true));
         assert_eq!(golem.texture.as_deref(), Some("ruby:entity/golem"));
+        assert_eq!(golem.model, None);
+    }
+
+    #[test]
+    fn entities_bring_their_own_model() {
+        let decl = br#"{"template": "minecraft:zombie", "model": "ruby:golem",
+            "animations": {"idle": "animation.golem.idle", "walk": "animation.golem.walk"}}"#;
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/entity/ruby_golem.json", decl),
+            ("assets/ruby/geo/golem.geo.json", b"{}"),
+            ("assets/ruby/animations/golem.animation.json", b"{}"),
+        ];
+        let content = hmod("entity-model", MANIFEST_TEXT, files).unwrap();
+        let golem = &content.entities[0];
+        assert_eq!(golem.model.as_deref(), Some("ruby:golem"));
+        assert_eq!(golem.animations["walk"], "animation.golem.walk");
+        assert_eq!(
+            golem.model_files(),
+            Some((
+                "assets/ruby/geo/golem.geo.json".into(),
+                "assets/ruby/animations/golem.animation.json".into()
+            ))
+        );
+        let refused = |decl: &str, files: &[(&str, &[u8])]| {
+            let mut all: Vec<(&str, &[u8])> =
+                vec![("data/ruby/horizon/entity/a.json", decl.as_bytes())];
+            all.extend_from_slice(files);
+            hmod("bad-model", MANIFEST_TEXT, &all).unwrap_err()
+        };
+        let geo: &[(&str, &[u8])] = &[("assets/ruby/geo/golem.geo.json", b"{}")];
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "model": "ruby:golem"}"#,
+                &[]
+            )
+            .contains("has no assets/ruby/geo/golem.geo.json")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "model": "minecraft:golem"}"#,
+                geo
+            )
+            .contains("mod's namespaces")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "animations": {"idle": "a"}}"#,
+                &[]
+            )
+            .contains("own model")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "model": "ruby:golem", "animations": {"fly": "a"}}"#,
+                geo
+            )
+            .contains("animation state \"fly\"")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "model": "ruby:golem", "animations": {"idle": "a"}}"#,
+                geo
+            )
+            .contains("animations need assets/ruby/animations/golem.animation.json")
+        );
     }
 
     #[test]

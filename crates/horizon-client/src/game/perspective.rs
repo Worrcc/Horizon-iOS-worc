@@ -173,6 +173,7 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
             step_sound: None,
             food: Arc::from([]),
             tempt: Arc::from([]),
+            own_animations: None,
         })
     })
 }

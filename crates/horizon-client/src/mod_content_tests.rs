@@ -894,6 +894,10 @@ fn mod_entities_copy_their_template_row() {
         fire_immune: Some(true),
         category: None,
         texture: Some("ruby:entity/golem".into()),
+        model: Some("ruby:golem".into()),
+        animations: [("walk".to_owned(), "animation.golem.walk".to_owned())]
+            .into_iter()
+            .collect(),
     };
     let plan = Plan {
         blocks: Vec::new(),
@@ -951,6 +955,11 @@ fn mod_entities_copy_their_template_row() {
     assert_eq!(
         horizon.get("texture"),
         Some(&J::Str("ruby:entity/golem".into()))
+    );
+    assert_eq!(horizon.get("model"), Some(&J::Str("ruby:golem".into())));
+    assert_eq!(
+        horizon.get("animations").and_then(|a| a.get("walk")),
+        Some(&J::Str("animation.golem.walk".into()))
     );
     // The template is untouched, and a second run refuses the id it now holds.
     assert_eq!(

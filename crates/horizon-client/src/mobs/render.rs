@@ -105,6 +105,10 @@ fn avatar(m: &Mob) -> bool {
 }
 /// The model layer key and texture for the mob's body.
 pub fn body(m: &Mob) -> (String, String) {
+    // A content mod entity's own model (mobs/geo.rs) with its texture or its template's.
+    if m.kind.layers.contains_key(super::geo::MODEL_LAYER) {
+        return (super::geo::MODEL_LAYER.to_owned(), m.kind.texture.clone());
+    }
     let (model, texture) = species_body(m);
     // A content mod entity's own texture (docs/modpacks.md, entities): only a mod's
     // textures are namespaced, and one texture serves adult and baby.
@@ -437,7 +441,8 @@ pub fn body_color(m: &Mob, alpha: f32) -> u32 {
 pub fn layers(m: &Mob) -> Vec<Layer> {
     use Species as S;
     let mut v = Vec::new();
-    if avatar(m) {
+    // The species' overlays fit its model, not a mod entity's own.
+    if avatar(m) || m.kind.layers.contains_key(super::geo::MODEL_LAYER) {
         return v;
     }
     let white = 0xFFFF_FFFF;

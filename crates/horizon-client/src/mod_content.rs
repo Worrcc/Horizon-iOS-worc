@@ -431,6 +431,14 @@ impl<'a> Plan<'a> {
             if let Some(t) = &e.texture {
                 horizon.push(("texture".to_owned(), J::Str(t.clone())));
             }
+            if let Some(m) = &e.model {
+                horizon.push(("model".to_owned(), J::Str(m.clone())));
+            }
+            if !e.animations.is_empty() {
+                let states = e.animations.iter();
+                let states = states.map(|(state, name)| (state.clone(), J::Str(name.clone())));
+                horizon.push(("animations".to_owned(), J::Obj(states.collect())));
+            }
             row.set("horizon", J::Obj(horizon));
             doc.set(&e.id, row);
         }
