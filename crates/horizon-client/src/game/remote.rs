@@ -1681,37 +1681,39 @@ impl Game<'_> {
     }
 
     /// `ClientPacketListener.handleUpdateAttributes` for a mob: its maximum
-    /// health (the hearts drawn over its mount) takes the server's value, from
-    /// `AttributeInstance.calculateValue`.
+    /// health (the hearts drawn over its mount) and its `minecraft:scale` (its drawn size
+    /// and box) take the server's values, from `AttributeInstance.calculateValue`.
     fn remote_mob_attributes(&mut self, id: i32, values: &[play::AttributeSnapshot]) {
+        use horizon_client::mobs::finalize::{Attr, set_base};
         let catalog = &self.motion.attributes;
-        let Some(max_health) = catalog.id("minecraft:max_health") else {
-            return;
-        };
-        let Some(s) = values
-            .iter()
-            .find(|s| s.attribute == max_health.registry_id())
-        else {
-            return;
-        };
-        let amounts = |op: i32| {
-            s.modifiers
-                .iter()
-                .filter(move |m| m.operation == op)
-                .map(|m| m.amount)
-        };
-        let base = s.base + amounts(0).sum::<f64>();
-        let mut value = base + amounts(1).map(|a| base * a).sum::<f64>();
-        for amount in amounts(2) {
-            value *= 1.0 + amount;
+        let mut updates = Vec::new();
+        for (name, attr) in [
+            ("minecraft:max_health", Attr::MaxHealth),
+            ("minecraft:scale", Attr::Scale),
+        ] {
+            let Some(key) = catalog.id(name) else {
+                continue;
+            };
+            let Some(s) = values.iter().find(|s| s.attribute == key.registry_id()) else {
+                continue;
+            };
+            let amounts = |op: i32| {
+                s.modifiers
+                    .iter()
+                    .filter(move |m| m.operation == op)
+                    .map(|m| m.amount)
+            };
+            let base = s.base + amounts(0).sum::<f64>();
+            let mut value = base + amounts(1).map(|a| base * a).sum::<f64>();
+            for amount in amounts(2) {
+                value *= 1.0 + amount;
+            }
+            updates.push((attr, catalog.attribute(key).definition.sanitize(value)));
         }
-        let value = catalog.attribute(max_health).definition.sanitize(value);
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32) {
-            horizon_client::mobs::finalize::set_base(
-                m,
-                horizon_client::mobs::finalize::Attr::MaxHealth,
-                value,
-            );
+            for (attr, value) in updates {
+                set_base(m, attr, value);
+            }
         }
     }
 
@@ -1873,6 +1875,18 @@ impl Game<'_> {
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32)
                 {
                     m.orders.texture = (!name.is_empty()).then(|| std::sync::Arc::from(name));
+                }
+            }
+            // A server mod's `mount` seat: where riders of a content mod's mob sit.
+            C::CustomPayload(p) if p.channel == horizon_client::lan::entity::SEAT_CHANNEL => {
+                let mut r = horizon_protocol::buf::Reader::new(&p.data);
+                if let (Ok(id), Ok(set)) = (r.varint(), r.bool())
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32)
+                {
+                    m.orders.seat = match (set, r.f32(), r.f32()) {
+                        (true, Ok(height), Ok(forward)) => Some((height, forward)),
+                        _ => None,
+                    };
                 }
             }
             // A server mod's order: the animation a content mod's mob plays now.

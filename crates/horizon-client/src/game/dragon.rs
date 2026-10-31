@@ -2911,6 +2911,7 @@ impl Game<'_> {
             leash: None,
             animation: None,
             texture: None,
+            seat: None,
         })
     }
 }

@@ -1721,6 +1721,7 @@ impl Hub {
             leash: None,
             animation: None,
             texture: None,
+            seat: None,
         }
     }
 

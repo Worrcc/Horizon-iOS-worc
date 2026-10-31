@@ -92,7 +92,7 @@ pub(super) mod run {
     }
 
     /// A mob as capability `entities` reads it.
-    fn mod_entity(m: &Mob, dimension: &str) -> ModEntity {
+    fn mod_entity(m: &Mob, dimension: &str, rider: Option<&String>) -> ModEntity {
         ModEntity {
             id: m.id,
             kind: m.kind.id.clone(),
@@ -115,6 +115,18 @@ pub(super) mod run {
                 .collect(),
             age: m.age,
             texture: m.orders.texture.as_deref().map(str::to_owned),
+            rider: rider.map(|player| {
+                let input = m.rider.unwrap_or_default();
+                horizon_mods::EntityRider {
+                    player: player.clone(),
+                    forward: input.forward,
+                    strafe: input.strafe,
+                    jumping: input.jumping,
+                    sprinting: input.sprint,
+                    yaw: input.yaw,
+                    pitch: input.pitch,
+                }
+            }),
             animation: m
                 .orders
                 .animation
@@ -440,13 +452,25 @@ pub(super) mod run {
             let mut snapshot = self.mod_snapshot_with(players);
             if self.mods.entities {
                 let here = self.dim.id();
+                // Who rides which mob: the server's players by their vehicle, and the
+                // window's own player in-frame.
+                let mut riders: std::collections::HashMap<u32, String> = (self.lan.iter())
+                    .flat_map(|h| &h.hub.guests)
+                    .filter_map(|g| Some((g.vehicle?, uuid_string(g.uuid))))
+                    .collect();
+                if self.options.execution_role.is_client()
+                    && self.remote.is_none()
+                    && let Some(id) = self.riding
+                {
+                    riders.insert(id, self.player_uuid_string());
+                }
                 let mut all: Vec<ModEntity> = (self.mobs.iter())
                     .filter(|m| m.alive() && !m.removed)
-                    .map(|m| mod_entity(m, here))
+                    .map(|m| mod_entity(m, here, riders.get(&m.id)))
                     .collect();
                 for (dim, mobs) in self.levels.parked_mobs() {
                     let alive = mobs.iter().filter(|m| m.alive() && !m.removed);
-                    all.extend(alive.map(|m| mod_entity(m, dim.id())));
+                    all.extend(alive.map(|m| mod_entity(m, dim.id(), riders.get(&m.id))));
                 }
                 snapshot.entities = all.into();
                 let root = &self.options.resources;
@@ -523,6 +547,78 @@ pub(super) mod run {
                     None => {}
                 }
             }
+            self.apply_mod_seatings();
+        }
+
+        /// `mount` and `dismount`: a player gets on a content mod's mob (as a player
+        /// mounts a horse: the game's `riding`, swapped in for a server's player) or off it.
+        fn apply_mod_seatings(&mut self) {
+            for (id, who) in std::mem::take(&mut self.mods.seatings) {
+                let Some(i) = self.mobs.iter().position(|m| m.id == id && !m.removed) else {
+                    continue;
+                };
+                if !self.mobs[i].alive() {
+                    continue;
+                }
+                let at = self.mobs[i].position;
+                let near = |p: [f64; 3]| {
+                    (p[0] - at.x).powi(2) + (p[1] - at.y).powi(2) + (p[2] - at.z).powi(2)
+                        <= 16.0 * 16.0
+                };
+                // The window's own player, in-frame.
+                if self.options.execution_role.is_client()
+                    && self.remote.is_none()
+                    && let Some(p) = self.player.as_ref()
+                {
+                    let mine = who.as_deref() == Some(self.player_uuid_string().as_str());
+                    if mine
+                        && self.riding.is_none()
+                        && near([p.position.x, p.position.y, p.position.z])
+                    {
+                        self.riding = Some(id);
+                        self.mount.reset_jump();
+                        self.position_rider();
+                        continue;
+                    }
+                    if who.is_none() && self.riding == Some(id) {
+                        self.dismount_mount();
+                        continue;
+                    }
+                }
+                let Some(mut host) = self.lan.take() else {
+                    continue;
+                };
+                let here = self.dim.id().to_owned();
+                match who {
+                    Some(player) => {
+                        let guest = host.hub.guests.iter().find(|g| {
+                            g.placed
+                                && g.health > 0.0
+                                && g.vehicle.is_none()
+                                && g.dimension == here
+                                && uuid_string(g.uuid) == player
+                                && near(g.position)
+                        });
+                        if let Some(conn) = guest.map(|g| g.conn) {
+                            self.as_guest(&mut host, conn, |game| {
+                                game.riding = Some(id);
+                                game.mount.reset_jump();
+                            });
+                            self.guest_boarded(&mut host, conn, None);
+                        }
+                    }
+                    None => {
+                        let riders: Vec<u32> = (host.hub.guests.iter())
+                            .filter(|g| g.vehicle == Some(id))
+                            .map(|g| g.conn)
+                            .collect();
+                        for conn in riders {
+                            self.as_guest(&mut host, conn, |game| game.dismount_mount());
+                        }
+                    }
+                }
+                self.lan = Some(host);
+            }
         }
 
         /// Spawns server mods asked for in the level in place; those of a level that isn't
@@ -573,6 +669,15 @@ pub(super) mod run {
                     m.needs_sync = true;
                 }
                 EntityOrder::Gravity(on) => m.no_gravity = !on,
+                EntityOrder::Mount(seat) => {
+                    m.orders.seat = Some((seat.height, seat.forward));
+                    let id = m.id;
+                    self.mods.seatings.push((id, Some(seat.player)));
+                }
+                EntityOrder::Dismount => {
+                    let id = m.id;
+                    self.mods.seatings.push((id, None));
+                }
                 EntityOrder::Texture(name) => m.orders.texture = name.map(std::sync::Arc::from),
                 EntityOrder::Sound(sound) => {
                     let at = [m.position.x, m.position.y, m.position.z];

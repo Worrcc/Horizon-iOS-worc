@@ -710,6 +710,20 @@ Access: capability `entities`.
 
 Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): the mobs on the server, and orders to the content mods' own (docs/modpacks.md, entities): where to walk, where to look, how to fly, which of their animations to play, and whom their breath hurts.
 
+### record `rider`
+
+A player riding a mob, and the keys and look they steer with.
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` | The player's UUID, as `players.online` has it. |
+| `forward` | `f32` | 1 forward, -1 back, 0 neither (the movement keys or stick). |
+| `strafe` | `f32` | 1 left, -1 right, 0 neither. |
+| `jumping` | `bool` | The jump key is held. |
+| `sprinting` | `bool` | The sprint key is held, or the player sprints. |
+| `yaw` | `f32` | Where the player looks, vanilla's yaw and pitch in degrees. |
+| `pitch` | `f32` |  |
+
 ### record `entity`
 
 | Field | Type | |
@@ -731,6 +745,17 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `age` | `u32` | Ticks it has lived since it was loaded. |
 | `animation` | `option<string>` | The animation an `animate` order plays on it now. |
 | `texture` | `option<string>` | The per-mob texture override; none uses its type's texture. |
+| `rider` | `option<rider>` | The player riding it, if one does (seated by `mount`), and that player's input this tick. |
+
+### record `mount`
+
+Seat a player on a mob.
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` | That online player's UUID: in the mob's dimension, within 16 blocks, alive and not riding anything. |
+| `height` | `f32` | Seat height above the mob's feet, -16 to 64 blocks. |
+| `forward` | `f32` | Seat distance ahead of the mob's middle along its yaw, -32 to 32. |
 
 ### record `point`
 
@@ -824,6 +849,8 @@ Whom a mob attacks.
 | `scale` | `f32` | Its `minecraft:scale`, 0.0625 to 16: growth. Its size and model follow, on every player's game. |
 | `attribute` | `attribute-change` | Set a base attribute, kept in vanilla's saved attributes list. Raising max_health does not heal; lowering it clamps health. |
 | `heal` | `f32` | LivingEntity.heal: add a finite amount, clamped to 0..max health, only while health is positive (never revives a dead mob). |
+| `mount` | `mount` | Seat that player on it, at that seat (moved with later `mount` orders for the same player). The player gets off as from any mount (sneaking) or on `dismount`; the mob does not move by itself for the rider: the mod moves it from `rider`'s input. |
+| `dismount` |  | Let its rider off, beside it. |
 | `set-data` | `list<tuple<string, option<string>>>` | Store strings on it, kept in its save: a key (1 to 64 characters) to a value (up to 1024), none removes the key. At most 32 keys. |
 
 | Function | Signature | What it does |

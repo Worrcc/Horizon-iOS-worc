@@ -43,6 +43,25 @@ pub fn animation_payload(entity: i32, animation: Option<&Animation>) -> play::Cl
 /// Per-mob texture sync: entity id (varint), texture identifier (empty restores the type).
 pub const TEXTURE_CHANNEL: &str = "horizon:entity_texture";
 
+/// Per-mob rider seat sync: entity id (varint), whether a seat is set (bool), then its
+/// height and forward distance (floats) when it is: where a server mod's `mount` puts riders.
+pub const SEAT_CHANNEL: &str = "horizon:entity_seat";
+
+/// The seat of a newly tracked mob or a changed `mount` order.
+pub fn seat_payload(entity: i32, seat: Option<(f32, f32)>) -> play::Clientbound {
+    let mut w = Writer::new();
+    w.varint(entity);
+    w.bool(seat.is_some());
+    if let Some((height, forward)) = seat {
+        w.f32(height);
+        w.f32(forward);
+    }
+    play::Clientbound::CustomPayload(CustomPayload {
+        channel: SEAT_CHANNEL.into(),
+        data: w.data,
+    })
+}
+
 /// The texture override for a newly tracked mob or a changed order.
 pub fn texture_payload(entity: i32, texture: Option<&str>) -> play::Clientbound {
     let mut w = Writer::new();
@@ -108,6 +127,8 @@ pub struct EntityState {
     pub animation: Option<Animation>,
     /// The per-mob texture override ([`TEXTURE_CHANNEL`]).
     pub texture: Option<Arc<str>>,
+    /// Where riders sit ([`SEAT_CHANNEL`]).
+    pub seat: Option<(f32, f32)>,
 }
 
 impl EntityState {
@@ -133,6 +154,7 @@ impl EntityState {
         self.leash = None;
         self.animation = None;
         self.texture = None;
+        self.seat = None;
     }
 }
 
@@ -270,6 +292,7 @@ struct ServerEntity {
     /// The animation the clients were told of.
     animation: Option<Animation>,
     texture: Option<Arc<str>>,
+    seat: Option<(f32, f32)>,
     /// The level tick it was last seen in, its place in that tick's list, and
     /// whether it was added in it (its first update is the next tick's).
     seen: u32,
@@ -316,6 +339,7 @@ impl ServerEntity {
             leash: e.leash,
             animation: e.animation.clone(),
             texture: e.texture.clone(),
+            seat: e.seat,
             seen: 0,
             index: 0,
             added: true,
@@ -378,6 +402,9 @@ impl ServerEntity {
         if e.texture.is_some() {
             out.push(texture_payload(e.id, e.texture.as_deref()));
         }
+        if e.seat.is_some() {
+            out.push(seat_payload(e.id, e.seat));
+        }
         if e.animation.is_some() {
             out.push(animation_payload(e.id, e.animation.as_ref()));
         }
@@ -397,6 +424,10 @@ impl ServerEntity {
         if e.texture != self.texture {
             out.push(texture_payload(e.id, e.texture.as_deref()));
             self.texture.clone_from(&e.texture);
+        }
+        if e.seat != self.seat {
+            out.push(seat_payload(e.id, e.seat));
+            self.seat = e.seat;
         }
         // A new animation, or the same begun again; its age moving on is no change.
         let begun = |a: &Option<Animation>| a.as_ref().map(|a| (a.0.clone(), a.1));
@@ -984,6 +1015,7 @@ mod tests {
             leash: None,
             animation: None,
             texture: None,
+            seat: None,
         }
     }
 

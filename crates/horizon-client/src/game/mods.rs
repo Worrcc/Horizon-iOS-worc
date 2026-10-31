@@ -82,6 +82,10 @@ pub(super) struct ModsState {
     /// level's next tick.
     #[cfg(feature = "mods")]
     pub(super) mob_orders: Vec<(u32, horizon_mods::EntityOrder)>,
+    /// Server mods' `mount` (the player's UUID) and `dismount` (none) orders, by mob id,
+    /// carried out after the tick's other orders.
+    #[cfg(feature = "mods")]
+    pub(super) seatings: Vec<(u32, Option<String>)>,
     /// Server mods' spawns: dimension, kind, position, yaw and data, made before that
     /// dimension's next tick.
     #[cfg(feature = "mods")]

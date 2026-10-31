@@ -363,6 +363,16 @@ impl Game<'_> {
         };
         let m = &self.mobs[i];
         let mut at = Vec3::new(m.position.x, m.position.y + seat(m.species()), m.position.z);
+        // A content mod's mob seats its rider where its server mod says (`mount`).
+        if let Some((height, forward)) = m.orders.seat {
+            let yaw = f64::from(m.body_yaw.to_radians());
+            let forward = f64::from(forward);
+            at = Vec3::new(
+                m.position.x - forward * yaw.sin(),
+                m.position.y + f64::from(height),
+                m.position.z + forward * yaw.cos(),
+            );
+        }
         if horizon_client::mobs::camel::is_camel(m.species()) {
             // Camel.getPassengerAttachmentPoint: the driver half a block
             // forward, at the body anchor (lower while sitting).

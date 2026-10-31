@@ -29,6 +29,9 @@ pub struct Orders {
     pub animation: Option<(Arc<str>, u32)>,
     /// A loaded mod's texture override, saved and sent to players.
     pub texture: Option<Arc<str>>,
+    /// Where a server mod seats its rider (`mount`): height above the feet and distance
+    /// ahead of the middle along the body's yaw. Not saved: riders get off at a save.
+    pub seat: Option<(f32, f32)>,
     /// What server mods stored on the mob (`set-data`, `spawn`): kept in its save.
     pub data: BTreeMap<String, String>,
 }

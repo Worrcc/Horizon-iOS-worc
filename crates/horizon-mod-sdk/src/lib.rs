@@ -199,7 +199,8 @@ pub mod server {
         ServerCommand,
     };
     pub use horizon::mods::entities::{
-        self, Area, AttributeChange, Entity, Order, Particles, Point, Sound, Target, Walk,
+        self, Area, AttributeChange, Entity, Mount, Order, Particles, Point, Rider, Sound, Target,
+        Walk,
     };
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange, WorldTime};

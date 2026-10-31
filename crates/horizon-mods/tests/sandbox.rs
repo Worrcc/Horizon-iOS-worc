@@ -1362,6 +1362,7 @@ fn mob_orders_consumes_food_once_labels_sneak_clicks_and_targets_a_uuid() {
             age: 0,
             animation: None,
             texture: None,
+            rider: None,
         }]
         .into(),
         ..Default::default()

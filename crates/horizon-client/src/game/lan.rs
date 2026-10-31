@@ -1447,6 +1447,7 @@ impl Game<'_> {
             self.mob_attributes(m, &mut e.attributes);
             e.leash = leash;
             e.texture.clone_from(&m.orders.texture);
+            e.seat = m.orders.seat;
             e.animation =
                 (m.orders.animation.as_ref()).map(|(name, at)| (name.clone(), *at, m.age));
         }

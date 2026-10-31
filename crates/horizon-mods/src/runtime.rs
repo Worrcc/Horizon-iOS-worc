@@ -57,8 +57,9 @@ pub use server_bindings::{
     },
     horizon::mods::entities::{
         Area as EntityArea, AttributeChange as EntityAttributeChange, Entity as ModEntity,
-        Interaction as EntityInteraction, Order as EntityOrder, Particles as EntityParticles,
-        Point as EntityPoint, Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
+        Interaction as EntityInteraction, Mount as EntityMount, Order as EntityOrder,
+        Particles as EntityParticles, Point as EntityPoint, Rider as EntityRider,
+        Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
     horizon::mods::world::{BlockChange, WorldTime},
@@ -1779,6 +1780,14 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
                     .into(),
             )
         }
+        EntityOrder::Mount(m)
+            if m.player.is_empty()
+                || m.player.len() > 64
+                || !(-16.0..=64.0).contains(&m.height)
+                || !(-32.0..=32.0).contains(&m.forward) =>
+        {
+            Err("mount names a player UUID, a height of -16 to 64 and forward of -32 to 32".into())
+        }
         EntityOrder::Heal(amount) if !amount.is_finite() => {
             Err("heal needs a finite amount".into())
         }
@@ -2549,6 +2558,7 @@ mod entity_tests {
                 age: 0,
                 animation: None,
                 texture: None,
+                rider: None,
             }]
             .into(),
             entity_resources: Arc::new(EntityResources {

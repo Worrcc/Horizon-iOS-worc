@@ -755,6 +755,35 @@ interface entities {
         animation: option<string>,
         /// The per-mob texture override; none uses its type's texture.
         texture: option<string>,
+        /// The player riding it, if one does (seated by `mount`), and that
+        /// player's input this tick.
+        rider: option<rider>,
+    }
+    /// A player riding a mob, and the keys and look they steer with.
+    record rider {
+        /// The player's UUID, as `players.online` has it.
+        player: string,
+        /// 1 forward, -1 back, 0 neither (the movement keys or stick).
+        forward: f32,
+        /// 1 left, -1 right, 0 neither.
+        strafe: f32,
+        /// The jump key is held.
+        jumping: bool,
+        /// The sprint key is held, or the player sprints.
+        sprinting: bool,
+        /// Where the player looks, vanilla's yaw and pitch in degrees.
+        yaw: f32,
+        pitch: f32,
+    }
+    /// Seat a player on a mob.
+    record mount {
+        /// That online player's UUID: in the mob's dimension, within 16 blocks,
+        /// alive and not riding anything.
+        player: string,
+        /// Seat height above the mob's feet, -16 to 64 blocks.
+        height: f32,
+        /// Seat distance ahead of the mob's middle along its yaw, -32 to 32.
+        forward: f32,
     }
     record point {
         x: f64,
@@ -865,6 +894,13 @@ interface entities {
         /// LivingEntity.heal: add a finite amount, clamped to 0..max health,
         /// only while health is positive (never revives a dead mob).
         heal(f32),
+        /// Seat that player on it, at that seat (moved with later `mount`
+        /// orders for the same player). The player gets off as from any
+        /// mount (sneaking) or on `dismount`; the mob does not move by itself
+        /// for the rider: the mod moves it from `rider`'s input.
+        mount(mount),
+        /// Let its rider off, beside it.
+        dismount,
         /// Store strings on it, kept in its save: a key (1 to 64 characters)
         /// to a value (up to 1024), none removes the key. At most 32 keys.
         set-data(list<tuple<string, option<string>>>),
