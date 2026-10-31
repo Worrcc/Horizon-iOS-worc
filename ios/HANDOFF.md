@@ -64,23 +64,6 @@ Each item has a fix in the latest build, but nobody has seen it working yet.
   Until then, the Sign in button explains what's missing. The flow itself is untested against
   the real services. Its unit tests cover parsing only.
 
-## Paused here (2026-10-31): resume from this section
-
-- **Branch:** `claude/launcher-mods-shaders-controller-xfv3kk`, all work committed and pushed.
-  No pull request opened.
-- **Done:** instances (below); touch controls hide while a pad is used (`game/touch.rs`
-  `touch_hide`); pad vibration through Core Haptics (`horizon-ios/src/controllers.rs` `vibrate`,
-  raw `msg_send` to CHHapticEngine: type-checked only, never run). Type-checked for iOS (`ios/scripts/check-ios.sh`), unit tests
-  pass (`cargo test -p horizon-client --no-default-features --lib instance_list`), clippy and fmt
-  clean. **Not yet seen on a device:** the Instances button, New Instance, and a switch on
-  the title reloading packs and mods.
-- **Player's answers so far:** launcher in-app (Rust, before the game); code mods via wasmtime
-  with JIT (the player uses StikDebug); controller work wanted: full menu navigation, touch
-  controls hidden while a pad is connected, vibration/lights/triggers, remapping (already
-  exists: Controller Settings > Controller Binds).
-- **Open questions for the player:** launcher screen or controller work next? Modpacks: Horizon
-  registry packs, or Modrinth/CurseForge Java packs (porting runs Java, so on a computer)?
-
 ## The in-app launcher (in progress)
 
 Goal: manage instances, mods, shader packs and modpacks inside the app, and make controllers a
@@ -88,14 +71,13 @@ full input path. Step 1 is done: **instances** (`src/instance_list.rs`, `game/in
 Options › Horizon Settings › Instances; `main.rs` starts in the picked folder). Next steps:
 a launcher screen ahead of the title that brings instances, mods, shader packs and modpack import
 together; controller-only menu navigation everywhere; hiding touch controls while a pad is
-connected; Core Haptics vibration and DualSense lights and triggers. Button remapping already
+connected (done); Core Haptics vibration, DualSense lights and triggers (done, not yet seen on a
+pad: `horizon-ios/src/controllers.rs` `vibrate` and `show`). Button remapping already
 exists (Controller Settings › Controller Binds). Code mods: the player has JIT through StikDebug,
 so the plan is wasmtime with JIT where it is allowed, not an interpreter.
 
 ## Not done yet
 
-- DualSense lights and adaptive triggers (`game/pad/hardware_ios.rs`: `GCDeviceLight`,
-  `GCDualSenseAdaptiveTrigger`).
 - Controller navigation on the startup title while resources load (`Loading` reads no pads;
   `Game`'s title and every screen after it do, through `pad_menu.rs`).
 - Mouse look with an iPad trackpad or mouse (they arrive as touches).

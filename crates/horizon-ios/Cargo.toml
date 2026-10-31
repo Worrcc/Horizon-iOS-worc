@@ -17,6 +17,7 @@ objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSDictionary", "
 # Controllers (gilrs has no iOS backend).
 objc2-game-controller = { version = "0.2.2", default-features = false, features = [
     "std",
+    "GCColor",
     "GCController",
     "GCControllerAxisInput",
     "GCControllerButtonInput",
@@ -24,6 +25,9 @@ objc2-game-controller = { version = "0.2.2", default-features = false, features 
     "GCControllerElement",
     "GCDevice",
     "GCDeviceHaptics",
+    "GCDeviceLight",
+    "GCDualSenseAdaptiveTrigger",
+    "GCDualSenseGamepad",
     "GCExtendedGamepad",
     "GCPhysicalInputProfile",
 ] }

@@ -158,7 +158,9 @@ LiveContainer's Info.plist that counts, so the game may stay at 60 there.
 through Apple's GameController framework, with the same bindings as Horizon on desktop
 ([docs/controllers.md](../docs/controllers.md)). Pair them in iOS's Bluetooth settings.
 The touch controls hide while you play with a controller and come back at your next touch.
-Vibration plays through Core Haptics; turn it off in Controller Settings.
+Vibration plays through Core Haptics. A DualSense's adaptive triggers resist as a bow draws,
+click for a loaded crossbow and buzz while mining, and its lightbar (a DualShock 4's too)
+follows your health or dimension. Each can be turned off in Controller Settings.
 
 **Keyboards**: an iPad's Magic Keyboard or a Bluetooth keyboard works as on desktop (WASD,
 E, Esc, F3 and so on).
@@ -169,8 +171,6 @@ E, Esc, F3 and so on).
   then you can play single player, Open to LAN, and offline-mode servers under an offline name.
 - **Code mods**: Horizon's code mods are WebAssembly compiled at run time, and iOS doesn't let
   apps compile code. Content mods, resource packs and data packs work.
-- **DualSense lights and adaptive triggers.** Vibration works (Core Haptics), on pads that
-  support it.
 - **Mouse look** with an iPad trackpad or mouse: they act as touches for now.
 - **Discord presence** and **`horizon-ctl`** (there's no terminal on iOS).
 - **Open to LAN discovery**: finding LAN worlds by multicast needs Apple's multicast entitlement.

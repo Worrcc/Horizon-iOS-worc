@@ -30,6 +30,39 @@ pub fn gamepads() -> Vec<Gamepad> {
     Vec::new()
 }
 
+/// An adaptive trigger's mode (`GCDualSenseAdaptiveTrigger`). Positions along the travel and
+/// strengths are 0..1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Trigger {
+    Off,
+    /// Even resistance from `start` to the end.
+    Feedback {
+        start: f32,
+        strength: f32,
+    },
+    /// Resistance from `start` that gives way with a click at `end`.
+    Weapon {
+        start: f32,
+        end: f32,
+        strength: f32,
+    },
+    /// A buzz from `start` on.
+    Vibration {
+        start: f32,
+        amplitude: f32,
+        frequency: f32,
+    },
+}
+
+/// Sets the lightbar (pads with a light: DualSense, DualShock 4) and the DualSense's adaptive
+/// triggers, left and right, on every connected pad. A `None` lightbar leaves it as it is.
+pub fn show(lightbar: Option<[u8; 3]>, triggers: [Trigger; 2]) {
+    #[cfg(target_os = "ios")]
+    ios::show(lightbar, triggers);
+    #[cfg(not(target_os = "ios"))]
+    let _ = (lightbar, triggers);
+}
+
 /// Plays a vibration on every connected pad that has haptics: each step's strong and weak motor
 /// levels (0..1) for its milliseconds, one after another. `false` when no pad could play it.
 pub fn vibrate(steps: &[(f32, f32, u32)]) -> bool {
@@ -44,13 +77,14 @@ pub fn vibrate(steps: &[(f32, f32, u32)]) -> bool {
 
 #[cfg(target_os = "ios")]
 mod ios {
-    use super::Gamepad;
+    use super::{Gamepad, Trigger};
     use objc2::rc::{Allocated, Retained};
-    use objc2::runtime::AnyObject;
+    use objc2::runtime::{AnyObject, NSObjectProtocol};
     use objc2::{ClassType, class, msg_send, msg_send_id};
     use objc2_foundation::{NSArray, NSError, NSString};
     use objc2_game_controller::{
-        GCController, GCControllerButtonInput, GCDevice, GCHapticsLocalityDefault,
+        GCColor, GCController, GCControllerButtonInput, GCDevice, GCDualSenseAdaptiveTrigger,
+        GCDualSenseGamepad, GCHapticsLocalityDefault,
     };
     use std::cell::RefCell;
 
@@ -135,6 +169,59 @@ mod ios {
             let pattern: Result<Retained<AnyObject>, Retained<NSError>> =
                 msg_send_id![p, initWithEvents: &*events, parameters: &*none, error: _];
             pattern.ok()
+        }
+    }
+
+    fn set_trigger(trigger: &GCDualSenseAdaptiveTrigger, mode: Trigger) {
+        // Safety: on the main thread, as the game runs.
+        unsafe {
+            match mode {
+                Trigger::Off => trigger.setModeOff(),
+                Trigger::Feedback { start, strength } => {
+                    trigger.setModeFeedbackWithStartPosition_resistiveStrength(start, strength)
+                }
+                Trigger::Weapon {
+                    start,
+                    end,
+                    strength,
+                } => trigger.setModeWeaponWithStartPosition_endPosition_resistiveStrength(
+                    start, end, strength,
+                ),
+                Trigger::Vibration {
+                    start,
+                    amplitude,
+                    frequency,
+                } => trigger.setModeVibrationWithStartPosition_amplitude_frequency(
+                    start, amplitude, frequency,
+                ),
+            }
+        }
+    }
+
+    pub(super) fn show(lightbar: Option<[u8; 3]>, triggers: [Trigger; 2]) {
+        // Safety: GameController's objects are used on the main thread, as the game runs.
+        unsafe {
+            for controller in GCController::controllers().iter() {
+                if let (Some([r, g, b]), Some(light)) = (lightbar, controller.light()) {
+                    let level = |v: u8| f32::from(v) / 255.0;
+                    let colour = GCColor::initWithRed_green_blue(
+                        GCColor::alloc(),
+                        level(r),
+                        level(g),
+                        level(b),
+                    );
+                    light.setColor(&colour);
+                }
+                let Some(pad) = controller.extendedGamepad() else {
+                    continue;
+                };
+                if !pad.is_kind_of::<GCDualSenseGamepad>() {
+                    continue;
+                }
+                let pad: Retained<GCDualSenseGamepad> = Retained::cast(pad);
+                set_trigger(&pad.leftTrigger(), triggers[0]);
+                set_trigger(&pad.rightTrigger(), triggers[1]);
+            }
         }
     }
 

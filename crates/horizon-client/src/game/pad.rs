@@ -86,6 +86,75 @@ mod hardware {
     }
 }
 
+/// What the adaptive triggers feel: the DualSense's own output on desktop, Apple's API on iOS.
+#[cfg(any(feature = "controllers", target_os = "ios"))]
+impl Game<'_> {
+    /// What `key.use` and `key.attack` are doing, for the triggers bound to them.
+    pub(super) fn trigger_feels(&self) -> (gamepad::TriggerFeel, gamepad::TriggerFeel) {
+        let using = match self.using {
+            Some((slot, ticks)) => match self.stack_in(slot) {
+                Some(s) if &*s.item == "minecraft:bow" => {
+                    gamepad::TriggerFeel::Draw(gamepad::bow_power(ticks))
+                }
+                // TridentItem.THROW_THRESHOLD_TIME.
+                Some(s) if &*s.item == "minecraft:trident" => {
+                    gamepad::TriggerFeel::Draw(ticks as f32 / 10.0)
+                }
+                Some(s) if &*s.item == "minecraft:crossbow" => {
+                    gamepad::TriggerFeel::Draw(ticks as f32 / Self::charge_ticks(s).max(1) as f32)
+                }
+                Some(s) if self.blocks_attacks(s).is_some() => gamepad::TriggerFeel::Brace,
+                _ => gamepad::TriggerFeel::Free,
+            },
+            None => self.idle_use_feel(),
+        };
+        // Creative breaks at once; blocks that can't be broken have a negative hardness.
+        let attacking = match &self.mining {
+            Some(m) if !self.creative => {
+                let state = self.world.block(m.pos[0], m.pos[1], m.pos[2]);
+                gamepad::TriggerFeel::Texture(self.res.facts().get(state).hardness)
+            }
+            _ => gamepad::TriggerFeel::Free,
+        };
+        (using, attacking)
+    }
+
+    /// The use trigger while nothing is in use: a loaded crossbow clicks, an item that boosts (a
+    /// rocket while gliding, the stick of the mount being ridden) catches, a shield weighs, and
+    /// locks while an axe has disabled it.
+    fn idle_use_feel(&self) -> gamepad::TriggerFeel {
+        let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
+        let mount = self
+            .riding
+            .and_then(|id| self.mobs.iter().find(|m| m.id == id));
+        let mount = mount.map_or("", |m| m.kind.id.as_str());
+        let feel = |stack: Option<&horizon_client::items::ItemStack>| match stack
+            .map(|s| (s, &*s.item))
+        {
+            Some((s, "minecraft:crossbow")) if s.data().is_some_and(|d| !d.charged.is_empty()) => {
+                gamepad::TriggerFeel::Click
+            }
+            Some((_, "minecraft:firework_rocket")) if gliding => gamepad::TriggerFeel::Boost,
+            Some((_, "minecraft:carrot_on_a_stick")) if mount == "minecraft:pig" => {
+                gamepad::TriggerFeel::Boost
+            }
+            Some((_, "minecraft:warped_fungus_on_a_stick")) if mount == "minecraft:strider" => {
+                gamepad::TriggerFeel::Boost
+            }
+            Some((s, _)) if self.blocks_attacks(s).is_some() => match self.shield_cooldown {
+                0 => gamepad::TriggerFeel::Brace,
+                _ => gamepad::TriggerFeel::Locked,
+            },
+            _ => gamepad::TriggerFeel::Free,
+        };
+        // Use tries the main hand first.
+        match feel(self.stack_in(self.selected)) {
+            gamepad::TriggerFeel::Free => feel(self.offhand.as_ref()),
+            main => main,
+        }
+    }
+}
+
 impl Pads {
     /// A new player entity took over (spawn, respawn, a server joined, a
     /// dimension change): its health is not compared with the old one's.
