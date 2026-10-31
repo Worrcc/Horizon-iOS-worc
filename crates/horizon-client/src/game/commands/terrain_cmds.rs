@@ -522,7 +522,8 @@ impl Game<'_> {
                     return Ok(0);
                 };
                 let ty = self.target_type(t);
-                let table = format!("minecraft:entities/{}", ty.trim_start_matches("minecraft:"));
+                let (namespace, path) = ty.split_once(':').unwrap_or(("minecraft", ty.as_str()));
+                let table = format!("{namespace}:entities/{path}");
                 if t == Target::Player || !self.res.items().has_loot_table(&table) {
                     return Err(err(
                         "commands.drop.no_loot_table.entity",

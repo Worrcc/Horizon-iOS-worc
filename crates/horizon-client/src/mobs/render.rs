@@ -105,6 +105,16 @@ fn avatar(m: &Mob) -> bool {
 }
 /// The model layer key and texture for the mob's body.
 pub fn body(m: &Mob) -> (String, String) {
+    let (model, texture) = species_body(m);
+    // A content mod entity's own texture (docs/modpacks.md, entities): only a mod's
+    // textures are namespaced, and one texture serves adult and baby.
+    if m.kind.texture.contains(':') {
+        return (model, m.kind.texture.clone());
+    }
+    (model, texture)
+}
+/// The model layer key and texture its species draws.
+fn species_body(m: &Mob) -> (String, String) {
     use Species as S;
     let baby = m.is_baby();
     let b = |s: &str| {
@@ -886,7 +896,14 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         None => super::aquatic::rotations(m, alpha, body)
             .unwrap_or_else(|| glam::Mat4::from_rotation_y((180.0 - body).to_radians())),
     };
-    let mut base = origin * rotation;
+    // LivingEntityRenderer.submit: the entity's scale before setupRotations. Only content
+    // mod types set a base scale other than 1.
+    let scale = m
+        .kind
+        .attributes
+        .get("minecraft:scale")
+        .map_or(1.0, |&s| s as f32);
+    let mut base = origin * glam::Mat4::from_scale(glam::Vec3::splat(scale)) * rotation;
     if m.death_time > 0 && !super::creaking::tearing_down(m) {
         let f = ((m.death_time as f32 + alpha - 1.0) / 20.0 * 1.6)
             .sqrt()
@@ -899,7 +916,7 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
             * glam::Mat4::from_rotation_y(((m.age as f32 + alpha) * -75.0).to_radians());
     } else if matches!(m.custom_name.as_deref(), Some("Dinnerbone" | "Grumm")) {
         // isEntityUpsideDown
-        base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, m.height() + 0.1, 0.0))
+        base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, (m.height() + 0.1) / scale, 0.0))
             * glam::Mat4::from_rotation_z(PI);
     }
     // AvatarRenderer.setupRotations, after LivingEntityRenderer's.

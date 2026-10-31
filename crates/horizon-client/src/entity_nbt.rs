@@ -249,6 +249,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         map.entry(key.into()).or_insert(value);
     }
     let id = m.kind.id.as_str();
+    let vanilla = crate::mobs::vanilla_id(id);
     // Only breedable animals have an age; a loaded creature that was saved without
     // one (a frog) stays without.
     let aged = raw.is_none_or(|r| r.get("Age").is_some());
@@ -286,7 +287,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             string(&format!("minecraft:{sound}")),
         );
     }
-    match id {
+    match vanilla.as_ref() {
         // Fox.addAdditionalSaveData; Horizon models only the type.
         "minecraft:fox" => {
             let kind = if m.extra.variant == 1 { "snow" } else { "red" };
@@ -352,7 +353,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         }
         "minecraft:piglin" | "minecraft:piglin_brute" | "minecraft:hoglin" => {
             // Only Piglin.addAdditionalSaveData writes CannotHunt.
-            if id == "minecraft:piglin_brute" {
+            if vanilla == "minecraft:piglin_brute" {
                 map.remove(&"CannotHunt".into());
             }
             map.insert(
@@ -360,7 +361,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 Tag::Byte(i8::from(m.extra.flag2)),
             );
             map.insert("TimeInOverworld".into(), Tag::Int(m.extra.counter2));
-            if id == "minecraft:piglin" {
+            if vanilla == "minecraft:piglin" {
                 // InventoryCarrier.writeInventoryToTag.
                 map.insert(
                     "Inventory".into(),
@@ -390,7 +391,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             if let Some(owner) = m.extra.owner {
                 map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
             }
-            if id == "minecraft:horse" {
+            if vanilla == "minecraft:horse" {
                 let v = i32::from(m.extra.variant) | i32::from(m.extra.variant2) << 8;
                 map.insert("Variant".into(), Tag::Int(v));
             }
@@ -399,7 +400,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 crate::mobs::llama::to_nbt(m, map);
             }
             // Only llamas, donkeys and mules carry chests.
-            if llama || matches!(id, "minecraft:donkey" | "minecraft:mule") {
+            if llama || matches!(vanilla.as_ref(), "minecraft:donkey" | "minecraft:mule") {
                 map.insert("ChestedHorse".into(), Tag::Byte(i8::from(m.extra.chested)));
             }
             if m.extra.chested && !m.extra.items.is_empty() {
@@ -672,7 +673,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         );
     }
     if matches!(
-        id,
+        vanilla.as_ref(),
         "minecraft:zombie"
             | "minecraft:husk"
             | "minecraft:drowned"
@@ -973,7 +974,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
         m.extra.forced_age = number(tag.get("ForcedAge")).unwrap_or(0) as i32;
         m.extra.age_locked = flag(tag, "AgeLocked");
     }
-    if is_animal(&m.kind.id) {
+    if is_animal(crate::mobs::vanilla_id(&m.kind.id).as_ref()) {
         m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
     }
     m.name_visible = flag(tag, "CustomNameVisible");

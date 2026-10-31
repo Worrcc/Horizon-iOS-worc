@@ -1816,25 +1816,27 @@ impl Game<'_> {
         {
             return Err(err("commands.summon.invalidPosition", &[]));
         }
-        let short = kind.trim_start_matches("minecraft:").to_owned();
+        let (namespace, short) = kind.split_once(':').unwrap_or(("minecraft", kind.as_str()));
+        let id = format!("{namespace}:{short}");
+        let vanilla_namespace = namespace == "minecraft";
         if let Some(Arg::Str(nbt)) = ctx.get("nbt").cloned() {
             // With an NBT argument the entity is built from it, unfinalized.
             if self.ui.difficulty == 0
                 && self
                     .res
                     .mob_types()
-                    .get(&format!("minecraft:{short}"))
+                    .get(&id)
                     .is_some_and(|t| t.category == "monster")
             {
                 return Err(err("commands.summon.failed.peaceful", &[]));
             }
             let before = self.spawned_mark();
-            let name = match self.summon_with_nbt(&format!("minecraft:{short}"), pos, &nbt)? {
+            let name = match self.summon_with_nbt(&id, pos, &nbt)? {
                 Some(target) => self.target_name(target),
                 // Spawned as a kind no command target stands for (primed
                 // TNT, falling blocks, projectiles): its type's name.
                 None if self.spawned_mark() != before => {
-                    Text::translate(&format!("entity.minecraft.{short}"), &[])
+                    Text::translate(&format!("entity.{namespace}.{short}"), &[])
                 }
                 None => return Err(err("commands.summon.failed", &[])),
             };
@@ -1854,20 +1856,18 @@ impl Game<'_> {
             self.feedback(Text::translate("commands.summon.success", &[name]));
             return Ok(1);
         }
+        if !vanilla_namespace {
+            return Err(err("commands.summon.failed", &[]));
+        }
         let name;
-        if let Some(t) = self
-            .res
-            .mob_types()
-            .get(&format!("minecraft:{short}"))
-            .cloned()
-        {
+        if let Some(t) = self.res.mob_types().get(&id).cloned() {
             if self.ui.difficulty == 0 && t.category == "monster" {
                 return Err(err("commands.summon.failed.peaceful", &[]));
             }
-            self.spawn_mob(&short, pos, true);
+            self.spawn_mob(short, pos, true);
             name = Text::translate(&format!("entity.minecraft.{short}"), &[]);
         } else {
-            match short.as_str() {
+            match short {
                 "item" => {
                     // An item entity needs an item; vanilla spawns an empty one that despawns.
                     return Err(err("commands.summon.failed", &[]));

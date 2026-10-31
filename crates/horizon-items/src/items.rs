@@ -1137,8 +1137,8 @@ impl Items {
         held: Option<&ItemStack>,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        let name = entity.trim_start_matches("minecraft:");
-        let Some(table) = self.loot.get(&format!("minecraft:entities/{name}")) else {
+        let (namespace, path) = entity.split_once(':').unwrap_or(("minecraft", entity));
+        let Some(table) = self.loot.get(&format!("{namespace}:entities/{path}")) else {
             return vec![];
         };
         let empty = BTreeMap::new();

@@ -205,10 +205,7 @@ impl Game<'_> {
         deals_knockback: bool,
         dismounts: bool,
     ) -> bool {
-        let kind = format!(
-            "minecraft:{}",
-            self.mobs[index].kind.id.trim_start_matches("minecraft:")
-        );
+        let kind = self.mobs[index].kind.id.clone();
         let id = self.mobs[index].id;
         let Some(p) = self.player.as_ref() else {
             return false;

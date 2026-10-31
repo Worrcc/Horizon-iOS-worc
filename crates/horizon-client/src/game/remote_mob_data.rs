@@ -18,8 +18,9 @@ use horizon_world::registry::BlockStateId;
 /// `builtin` names the ids of built-in registries.
 fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32) {
     let species = m.species();
-    let baby = super::lan::baby_index(&m.kind.id);
-    if &*m.kind.id == "minecraft:player" {
+    let kind = horizon_client::mobs::vanilla_id(&m.kind.id);
+    let baby = super::lan::baby_index(&kind);
+    if kind == "minecraft:player" {
         player_poses(m, values);
     }
     for (index, _, value) in values {

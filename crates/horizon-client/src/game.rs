@@ -8559,7 +8559,6 @@ impl Game<'_> {
         let (xd, zd) = self.extra_knockback_direction();
         for i in nearby {
             let kind = self.mobs[i].kind.id.clone();
-            let kind = format!("minecraft:{}", kind.trim_start_matches("minecraft:"));
             let damage = (sweep_damage + self.enchant_damage_bonus(&kind)) * scale;
             let source = self.attack_source(from);
             if self.hurt_by_player(i, damage, source) {
@@ -8656,7 +8655,6 @@ impl Game<'_> {
     /// sounds.
     pub(super) fn attack_mob(&mut self, index: usize) {
         let target_kind = self.mobs[index].kind.id.clone();
-        let target_kind = format!("minecraft:{}", target_kind.trim_start_matches("minecraft:"));
         let (amount, scale, crit, magic) = self.melee_damage(&target_kind);
         let sweep = self.sweep_attack_position(scale, crit);
         let (knockback, knockback_attack) = self.extra_knockback(&target_kind, scale);

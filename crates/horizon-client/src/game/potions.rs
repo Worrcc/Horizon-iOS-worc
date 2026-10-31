@@ -96,7 +96,9 @@ fn mob_can_be_affected(
     effect: &str,
 ) -> bool {
     let effect = effect.trim_start_matches("minecraft:");
-    let kind = kind.trim_start_matches("minecraft:");
+    let own_kind = kind;
+    let kind = horizon_client::mobs::vanilla_id(kind);
+    let kind = kind.strip_prefix("minecraft:").unwrap_or(&kind);
     let overridden = match kind {
         "wither" | "wither_skeleton" => effect == "wither",
         "spider" | "cave_spider" | "nautilus" | "zombie_nautilus" => effect == "poison",
@@ -106,10 +108,7 @@ fn mob_can_be_affected(
     if overridden {
         return false;
     }
-    let in_tag = |tag: &str| {
-        tags.get(tag)
-            .is_some_and(|t| t.contains(&format!("minecraft:{kind}")))
-    };
+    let in_tag = |tag: &str| tags.get(tag).is_some_and(|t| t.contains(own_kind));
     if in_tag("minecraft:immune_to_infested") {
         effect != "infested"
     } else if in_tag("minecraft:immune_to_oozing") {

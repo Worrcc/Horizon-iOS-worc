@@ -170,8 +170,9 @@ pub const TRACKING: &[(&str, u8, u32, bool)] = &[
 
 /// The settings of one entity type; unknown types get the builder defaults.
 pub fn settings(kind: &str) -> (u8, u32, bool) {
+    let kind = crate::mobs::vanilla_id(kind);
     TRACKING
-        .binary_search_by(|row| row.0.cmp(kind))
+        .binary_search_by(|row| row.0.cmp(kind.as_ref()))
         .map_or((5, 3, true), |i| {
             (TRACKING[i].1, TRACKING[i].2, TRACKING[i].3)
         })

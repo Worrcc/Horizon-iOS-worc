@@ -104,10 +104,15 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
      taming, riding).
   3. Spawn rules and structures with their mobs.
   4. Block entities and screens (API 0.4), for machines such as forges.
-- **Mod entities, part 1 has never run in the game**: unit tests only, since the cloud session
-  has no `.local/` game data. The first check is a small content mod declaring a template mob
-  with its own texture, then `/summon <mod>:<name>`, on both single-player paths and on a LAN
-  guest.
+- **Mod entities, part 1 ran in the game** (desktop, server-thread single player, with a
+  local test mod: a zombie template with its own texture, `scale` 1.25, 60 health, fire
+  immune). `/summon` (with and without NBT), the name, health, `@e[type=...]`, fire immunity,
+  the texture and scale, save and reload, and its own death loot all work. The first run found
+  the texture and scale ignored, loot looked up as `minecraft:entities/<ns>:<name>`, and
+  vanilla-id tables (tracking, entity data, NBT, effects) missing mod ids: fixed with
+  `mobs::vanilla_id` (a mod type's template). Not yet checked: the in-frame path and a LAN
+  guest. `/loot ... loot <mod table>` still refuses mod tables (the command's id list).
+  Loot tables in mods use 26.3's format (`modifier`/`type`, not `functions`/`function`).
 - **Block Info:** entities (mobs and their health) need the planned `target` interface
   (`docs/mods.md`, "Planned interfaces").
 - **Faster mods with a JIT:** with StikDebug attached, native cranelift would beat Pulley. Not

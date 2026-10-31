@@ -699,7 +699,10 @@ impl Game<'_> {
                 Target::Mob(id) => self
                     .mobs
                     .iter()
-                    .find(|m| m.id == id && m.kind.id == "minecraft:vex")
+                    .find(|m| {
+                        m.id == id
+                            && horizon_client::mobs::vanilla_id(&m.kind.id) == "minecraft:vex"
+                    })
                     .map(|m| m.extra.counter2 as u32)
                     .filter(|owner| *owner != 0)
                     .map(Target::Mob)

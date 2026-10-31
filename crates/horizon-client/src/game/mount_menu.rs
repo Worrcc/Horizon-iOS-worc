@@ -461,10 +461,12 @@ impl Game<'_> {
         let grey = rgba(64, 64, 64, 255);
         let title = match self.mobs.iter().find(|m| m.id == open.mob) {
             Some(m) => m.custom_name.clone().unwrap_or_else(|| {
-                let key = format!(
-                    "entity.minecraft.{}",
-                    m.kind.id.trim_start_matches("minecraft:")
-                );
+                let (namespace, path) = m
+                    .kind
+                    .id
+                    .split_once(':')
+                    .unwrap_or(("minecraft", &m.kind.id));
+                let key = format!("entity.{namespace}.{path}");
                 self.translate(&key, &key)
             }),
             None => String::new(),

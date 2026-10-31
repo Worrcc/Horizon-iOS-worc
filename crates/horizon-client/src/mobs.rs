@@ -100,7 +100,13 @@ use horizon_core::{
 };
 use horizon_world::block_collision::BlockCollisionRegistry;
 use serde_json::Value;
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+    sync::Arc,
+};
 
 #[derive(Clone, Debug)]
 pub struct Polygon {
@@ -501,17 +507,37 @@ impl MobTypes {
                 },
             );
         }
-        mod_types(&types, &mut out);
+        *TEMPLATES
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = mod_types(&types, &mut out);
         Ok(Self { types: out })
     }
+}
+/// Each content mod entity's template, as the last `MobTypes::load` found them.
+static TEMPLATES: std::sync::RwLock<BTreeMap<String, String>> =
+    std::sync::RwLock::new(BTreeMap::new());
+/// The vanilla type whose tables an entity type uses: a content mod entity's template
+/// (`hztest:red_brute` → `minecraft:zombie`), any other id itself. For code that keys
+/// vanilla's own tables by id (tracking ranges, entity data, NBT, effects); registries,
+/// saves, loot and names keep the entity's own id.
+pub fn vanilla_id(id: &str) -> Cow<'_, str> {
+    if id.starts_with("minecraft:") || !id.contains(':') {
+        return Cow::Borrowed(id);
+    }
+    TEMPLATES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(id)
+        .map_or(Cow::Borrowed(id), |t| Cow::Owned(t.clone()))
 }
 /// Content mods' entities (docs/modpacks.md, entities): the rows the content root appended to
 /// `entity-types.json` with a `horizon` object, each a copy of its template's type (its
 /// species, so its AI, model, animations and sounds) under its own id, with the row's size,
-/// category, fire immunity and attributes, and the mod's texture.
-fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) {
+/// category, fire immunity and attributes, and the mod's texture. Returns each one's template.
+fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) -> BTreeMap<String, String> {
+    let mut templates = BTreeMap::new();
     let Some(rows) = types.as_object() else {
-        return;
+        return templates;
     };
     for (id, row) in rows {
         let Some(horizon) = row.get("horizon") else {
@@ -522,6 +548,7 @@ fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) {
             continue;
         };
         let mut t = template.clone();
+        templates.insert(id.clone(), template.id.clone());
         t.id = id.clone();
         t.width = row["width"].as_f64().unwrap_or(t.width);
         t.height = row["height"].as_f64().unwrap_or(t.height);
@@ -551,12 +578,18 @@ fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) {
         t.knockback_resistance = attr("knockback_resistance").unwrap_or(t.knockback_resistance);
         t.follow_range = attr("follow_range").unwrap_or(t.follow_range);
         t.step_height = attr("step_height").unwrap_or(t.step_height);
+        // Entity.getDimensions: the type's size times its scale (the renderer scales the
+        // model to match).
+        let scale = attr("scale").unwrap_or(1.0);
+        (t.width, t.height, t.eye_height) =
+            (t.width * scale, t.height * scale, t.eye_height * scale);
         t.attributes = Arc::new(attributes);
         if let Some(texture) = horizon["texture"].as_str() {
             t.texture = texture.to_owned();
         }
         out.insert(id.clone(), t);
     }
+    templates
 }
 pub use horizon_client_core::who::Who;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2091,7 +2124,7 @@ impl Mob {
         }
         // Ghast.isReflectedFireball: a fireball a player turned back is
         // no fire to it, and kills it (Ghast.hurtServer: 1000 damage).
-        let reflected = &*self.kind.id == "minecraft:ghast"
+        let reflected = vanilla_id(&self.kind.id) == "minecraft:ghast"
             && source.kind == DamageKind::Fireball
             && source.attacker == Some(Who::Player);
         if source.is_fire() && (self.kind.flags.fire_immune) && !reflected {
@@ -3213,16 +3246,21 @@ mod mod_type_tests {
         let types = json!({
             "ruby:ruby_cow": {
                 "width": 1.8, "category": "monster", "fire_immune": true,
-                "attributes": {"minecraft:max_health": 60.0, "minecraft:attack_damage": 7.0},
+                "attributes": {"minecraft:max_health": 60.0, "minecraft:attack_damage": 7.0,
+                    "minecraft:scale": 2.0},
                 "horizon": {"template": "minecraft:cow", "texture": "ruby:entity/cow"}
             },
             "ruby:orphan": {"horizon": {"template": "minecraft:nothing"}}
         });
-        mod_types(&types, &mut out);
+        let templates = mod_types(&types, &mut out);
+        assert_eq!(
+            templates,
+            BTreeMap::from([("ruby:ruby_cow".into(), template.id.clone())])
+        );
         let t = &out["ruby:ruby_cow"];
         assert_eq!(t.id, "ruby:ruby_cow");
         assert_eq!(t.species, template.species);
-        assert_eq!((t.width, t.height), (1.8, template.height));
+        assert_eq!((t.width, t.height), (3.6, template.height * 2.0));
         assert_eq!(t.category, "monster");
         assert!(t.flags.fire_immune);
         assert_eq!((t.max_health, t.attack_damage), (60.0, 7.0));

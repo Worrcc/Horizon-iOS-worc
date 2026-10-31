@@ -437,6 +437,28 @@ impl<'a> Plan<'a> {
         Ok(())
     }
 
+    /// Copies each mod entity's template attributes with its declared overrides.
+    fn entity_attributes(&self, doc: &mut J) -> Result<()> {
+        for e in &self.entities {
+            let entities = doc.get("entities").ok_or("no entities")?;
+            if entities.get(&e.id).is_some() {
+                return Err(format!("{} is already an entity", e.id).into());
+            }
+            let mut row = entities
+                .get(&e.template)
+                .cloned()
+                .ok_or_else(|| format!("{}: template {} has no attributes", e.id, e.template))?;
+            for (name, value) in &e.attributes {
+                let bits = format!("{:016x}", value.to_bits());
+                row.set(&format!("minecraft:{name}"), J::Str(bits));
+            }
+            doc.get_mut("entities")
+                .ok_or("no entities")?
+                .set(&e.id, row);
+        }
+        Ok(())
+    }
+
     /// What moves in a new block's copies of its template's rows: the
     /// block, and the template's item when it has another name. A block
     /// without an item gets `minecraft:air` where rows name one.
@@ -563,6 +585,7 @@ impl<'a> Plan<'a> {
             }
             "gameplay-facts.json" => states(doc, "states", false, true)?,
             "entity-types.json" => self.entity_types(doc)?,
+            "attributes.json" => self.entity_attributes(doc)?,
             "block-behaviours.json" => {
                 states(doc, "states", false, false)?;
                 let Some(J::Arr(blocks)) = doc.at("blocks") else {
@@ -719,7 +742,8 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 15] = [
+const JSON_TABLES: [&str; 16] = [
+    "attributes.json",
     "entity-types.json",
     "facts.json",
     "registries.json",

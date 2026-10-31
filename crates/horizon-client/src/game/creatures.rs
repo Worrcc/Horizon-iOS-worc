@@ -4094,16 +4094,21 @@ impl Game<'_> {
             return Ok(false);
         };
         let kind = stack.item.trim_end_matches("_spawn_egg").to_owned();
+        let kind = if kind.contains(':') {
+            kind
+        } else {
+            format!("minecraft:{kind}")
+        };
         // EntityType.canSpawn: no monsters in peaceful (FAIL ends the click).
-        let id = format!("minecraft:{}", kind.trim_start_matches("minecraft:"));
+        let id = kind.as_str();
         if self.ui.difficulty == 0
-            && let Some(t) = self.res.mob_types().get(&id)
+            && let Some(t) = self.res.mob_types().get(id)
             && !horizon_client::mobs::spawn_rules::allowed_in_peaceful(t.species)
         {
             return Ok(true);
         }
         // SpawnEggItem.useOn on a spawner sets its mob.
-        if let Some(done) = self.use_spawn_egg_on_spawner(hit.pos, &id) {
+        if let Some(done) = self.use_spawn_egg_on_spawner(hit.pos, &kind) {
             if done {
                 self.swing_arm();
                 self.stats.add("used", &stack.item, 1);

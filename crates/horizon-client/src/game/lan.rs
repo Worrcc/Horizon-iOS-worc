@@ -137,7 +137,7 @@ pub(super) fn entity_uuid(id: u32) -> u128 {
 /// Zombie.DATA_BABY_ID are both the first entry after Mob's (16); Piglin's
 /// comes after AbstractPiglin's zombification flag (17).
 pub(super) fn baby_index(kind: &str) -> Option<u8> {
-    match kind {
+    match horizon_client::mobs::vanilla_id(kind).as_ref() {
         "minecraft:piglin" => Some(17),
         "minecraft:cow"
         | "minecraft:mooshroom"
@@ -191,7 +191,8 @@ fn mob_variant_meta(
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
-    let (kind, e) = (m.kind.id.as_str(), &m.extra);
+    let kind = horizon_client::mobs::vanilla_id(&m.kind.id);
+    let (kind, e) = (kind.as_ref(), &m.extra);
     let id = |registry: &str, name: &str| hub.registry_id(registry, &format!("minecraft:{name}"));
     match kind {
         // Axolotl.DATA_VARIANT (after AgeableMob's two).
@@ -324,7 +325,8 @@ fn mob_meta(
     meta: &mut Vec<(u8, i32, Value)>,
     defaults: &mut Vec<(u8, i32, Value)>,
 ) {
-    let kind = m.kind.id.as_str();
+    let kind = horizon_client::mobs::vanilla_id(&m.kind.id);
+    let kind = kind.as_ref();
     // Entity.DATA_SHARED_FLAGS_ID: on fire 0x01, swimming 0x10 (a drowned
     // under water, `Drowned.setSwimming`), invisible 0x20 (the effect's flag)
     // and glowing 0x40 (LivingEntity.updateGlowingStatus).
@@ -889,7 +891,7 @@ fn mob_freeze_meta(
         meta.push((7, serializer::INT, Value::Int(m.ticks_frozen)));
     }
     defaults.push((7, serializer::INT, Value::Int(0)));
-    if m.kind.id == "minecraft:strider" {
+    if horizon_client::mobs::vanilla_id(&m.kind.id) == "minecraft:strider" {
         if m.extra.flag {
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
         }

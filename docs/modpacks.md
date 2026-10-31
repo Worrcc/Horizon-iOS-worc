@@ -290,15 +290,22 @@ The mod changes its size, attributes, category, fire immunity and texture:
 - `attributes` takes `max_health`, `movement_speed`, `flying_speed`, `attack_damage`,
   `attack_knockback`, `armor`, `armor_toughness`, `knockback_resistance`, `follow_range`,
   `step_height` and `scale`, each 0 to 1024. Sizes are more than 0 and at most 64 blocks.
-  Unknown keys are refused.
+  Unknown keys are refused. `scale` multiplies the size and the drawn model, as vanilla's
+  `minecraft:scale` does.
 - `texture` is `<namespace>:entity/<path>`, for `assets/<namespace>/textures/entity/<path>.png`
   in one of the mod's namespaces. It has to fit the template's model, as a resource pack's
-  retexture does.
+  retexture does, and serves the adult and the baby. Without one the mob keeps its template's.
+- Its loot table is its own, `data/<namespace>/loot_table/entities/<name>.json`, its name
+  `entity.<namespace>.<name>` in the mod's language files, and its tags its own: a mob from
+  the zombie is in `#minecraft:undead` only if the mod adds it.
 - The content root appends the mob to `entity-types.json`, copying the template's row and adding
   a `horizon` object (template, texture). It also adds the mob to the `minecraft:entity_type`
   registry, after vanilla's network ids, and to the ids commands accept. `MobTypes::load`
   builds its type from the template's, and the HUD atlas loads mods' `textures/entity/` as
-  `<namespace>:entity/...` sprites. `/summon <mod>:<name>` spawns it.
+  `<namespace>:entity/...` sprites. `/summon <mod>:<name>` spawns it. The content root also
+  copies the template's default attributes in `attributes.json`, which servers send their
+  clients. Code that reads vanilla's tables by entity id (tracking ranges, entity data, NBT)
+  reads the template's row through `mobs::vanilla_id`.
 
 This covers creatures that look and act like a vanilla mob with other numbers and skins. What
 deep-tier mods such as Ice and Fire also need, in this order:

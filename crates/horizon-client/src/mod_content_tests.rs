@@ -924,6 +924,25 @@ fn mod_entities_copy_their_template_row() {
             .and_then(|a| a.get("minecraft:max_health")),
         Some(&J::Num(serde_json::Number::from_f64(60.0).unwrap()))
     );
+    let mut attributes: J = serde_json::from_str(
+        r#"{"data_version":1,"attributes":[],"entities":{"minecraft:zombie":{"minecraft:armor":"4030000000000000","minecraft:max_health":"4034000000000000"}}}"#,
+    )
+    .unwrap();
+    plan.json("attributes.json", &mut attributes).unwrap();
+    assert_eq!(
+        attributes
+            .get("entities")
+            .and_then(|e| e.get("ruby:ruby_golem"))
+            .and_then(|e| e.get("minecraft:armor")),
+        Some(&J::Str("4030000000000000".into()))
+    );
+    assert_eq!(
+        attributes
+            .get("entities")
+            .and_then(|e| e.get("ruby:ruby_golem"))
+            .and_then(|e| e.get("minecraft:max_health")),
+        Some(&J::Str(format!("{:016x}", 60.0f64.to_bits())))
+    );
     let horizon = row.get("horizon").unwrap();
     assert_eq!(
         horizon.get("template"),
