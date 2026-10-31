@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios
+          targets: aarch64-apple-ios, wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ios
@@ -41,9 +41,17 @@ jobs:
           file target/ios/Horizon.app/horizon-client
           otool -L target/ios/Horizon.app/horizon-client
           codesign --verify --verbose target/ios/Horizon.app
+      - name: Build the official Block Info mod
+        # Players copy it into an instance's horizon-mods folder (ios/README.md, "Mods").
+        run: |
+          cargo build --release -p cargo-horizon-mod
+          (cd mods/official/block-info && ../../../target/release/cargo-horizon-mod horizon-mod build)
+          cp target/horizon-mod/block_info.hmod target/ios/
       - uses: actions/upload-artifact@v4
         with:
           name: Horizon-ios-${{ github.sha }}
-          path: target/ios/Horizon.ipa
+          path: |
+            target/ios/Horizon.ipa
+            target/ios/block_info.hmod
           if-no-files-found: error
           retention-days: 30

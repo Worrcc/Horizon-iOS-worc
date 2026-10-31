@@ -60,8 +60,9 @@ rustup target add "$target" >/dev/null
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/launcher/Cargo.toml" | head -1)"
 
 echo "Building horizon-client for $target ($profile_dir)..."
+# `mods`: code mods, on wasmtime's Pulley interpreter (no JIT on iOS; crates/horizon-mods).
 (cd "$root" && cargo build "${cargo_profile[@]}" --target "$target" -p horizon-client \
-    --bin horizon-client)
+    --bin horizon-client --features mods)
 binary="${CARGO_TARGET_DIR:-$root/target}/$target/$profile_dir/horizon-client"
 
 out="${CARGO_TARGET_DIR:-$root/target}/ios"

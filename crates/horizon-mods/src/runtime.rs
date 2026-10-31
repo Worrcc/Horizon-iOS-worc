@@ -534,6 +534,17 @@ impl Mods {
         if self.engine.is_none() {
             let mut config = Config::new();
             config.wasm_component_model(true).consume_fuel(true);
+            // iOS: Pulley bytecode in place of machine code, which only a JIT entitlement (or a
+            // debugger attached) could run; bounds checks in place of guard pages and signal
+            // handlers, and memories that grow by copying, not inside a 4 GiB reservation an
+            // app's address space has no room for.
+            #[cfg(target_os = "ios")]
+            config
+                .target("pulley64")
+                .map_err(|e| e.to_string())?
+                .signals_based_traps(false)
+                .memory_reservation(0)
+                .memory_guard_size(0);
             let engine = Engine::new(&config).map_err(|e| e.to_string())?;
             let mut linker = Linker::new(&engine);
             HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)

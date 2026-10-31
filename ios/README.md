@@ -134,6 +134,18 @@ one in `Horizon/instances/`; you can also copy a folder in there with the Files 
 instance to play it: with no world open the game switches at once, from a world at the next
 start. Every instance uses the same `resources` folder, and logs stay in `Horizon/logs`.
 
+### Mods
+
+Horizon's mods (`.hmod` files) work on iOS: code mods run on an interpreter, since iOS doesn't
+let apps compile code, so they are slower than on a computer but need no JIT. Copy a `.hmod`
+into the instance's `horizon-mods` folder with the Files app (`Horizon/horizon-mods/`, or
+`Horizon/instances/<instance>/horizon-mods/`), then turn it on in the launcher's **Mods...**.
+Each mod stays off until you do.
+
+The app's build comes with Horizon's **Block Info** mod (`block_info.hmod`, next to the
+`.ipa`): it shows the block under the crosshair, its icon, name and the game or mod it comes
+from, in a box at the top of the screen.
+
 ## Controls
 
 Installed as its own app, Horizon runs in landscape. Under LiveContainer it follows the phone's
@@ -173,8 +185,6 @@ E, Esc, F3 and so on).
 
 - **Online-mode servers** need Microsoft sign-in, which needs a one-time setup (below). Until
   then you can play single player, Open to LAN, and offline-mode servers under an offline name.
-- **Code mods**: Horizon's code mods are WebAssembly compiled at run time, and iOS doesn't let
-  apps compile code. Content mods, resource packs and data packs work.
 - **Mouse look** with an iPad trackpad or mouse: they act as touches for now.
 - **Discord presence** and **`horizon-ctl`** (there's no terminal on iOS).
 - **Open to LAN discovery**: finding LAN worlds by multicast needs Apple's multicast entitlement.

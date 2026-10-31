@@ -75,13 +75,17 @@ modpack import (left out for now, by the player's choice). Done as well: control
 `pad.rs` `StartupPad`; every screen after it has `pad_menu.rs`); hiding touch controls while a pad is
 connected (done); Core Haptics vibration, DualSense lights and triggers (done, not yet seen on a
 pad: `horizon-ios/src/controllers.rs` `vibrate` and `show`). Button remapping already
-exists (Controller Settings › Controller Binds). Code mods: the player has JIT through StikDebug,
-so the plan is wasmtime with JIT where it is allowed, not an interpreter.
+exists (Controller Settings › Controller Binds). Code mods run on iOS on wasmtime's Pulley
+interpreter (`horizon-mods/src/runtime.rs`, `ios/build.sh --features mods`): no JIT needed. The
+runtime's suite passes with Pulley forced on Linux in release; a debug build interprets too
+slowly for the sandbox test's 5 s endless-loop cutoff. Native cranelift when a JIT is there
+(StikDebug) would be faster: not done. The Block Info mod (`mods/official/block-info`, Jade-style
+block tooltip) is built by the ios workflow next to the `.ipa`; entities need the planned
+`target` interface.
 
 ## Not done yet
 
 - Mouse look with an iPad trackpad or mouse (they arrive as touches).
-- Code mods: wasmtime needs a JIT, which iOS forbids. An interpreter (wasmi) would be the route.
 - LAN discovery by multicast needs Apple's multicast entitlement. Joining by address works.
 - Discord presence, `horizon-ctl` (no meaning on iOS).
 - Sign-out takes effect at the next start: `auth::set_current` is a `OnceLock`.
