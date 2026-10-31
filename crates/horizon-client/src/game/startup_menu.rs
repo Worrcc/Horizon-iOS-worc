@@ -634,6 +634,48 @@ impl Loading {
         Ok(())
     }
 
+    /// A controller on the startup title: a pointer, A to click, B to go back.
+    pub(super) fn poll_startup_pad(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(size) = self
+            .renderer
+            .as_ref()
+            .map(|r| [r.config.width, r.config.height])
+        else {
+            return;
+        };
+        if self.gui.is_none() || self.menu.pending.is_some() {
+            return;
+        }
+        let batch = HudBatch::new(size);
+        let inputs = self.pad.poll(
+            &self.settings.controller,
+            (batch.width, batch.height),
+            batch.scale,
+        );
+        for input in inputs {
+            match input {
+                super::pad::StartupInput::Events(events) => self.menu_events(event_loop, events),
+                super::pad::StartupInput::Back => self.menu_back(),
+            }
+        }
+    }
+
+    /// B on the startup title: Esc on what is open.
+    fn menu_back(&mut self) {
+        if self.menu.win.is_some() {
+            self.menu.win = None;
+        } else if self.menu.options_open {
+            let Some(gui) = &self.gui else { return };
+            let events =
+                self.menu
+                    .options
+                    .key(&mut self.settings, &gui.atlas, KeyCode::Escape, None);
+            self.menu_option_events(events);
+        } else if let Some(title) = &mut self.menu.title {
+            title.escape();
+        }
+    }
+
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
         let Some(gui) = &self.gui else { return };
         if self.menu.pending.is_some() {
@@ -737,6 +779,7 @@ mod tests {
             shown: false,
             menu: StartupMenu::default(),
             touch: Default::default(),
+            pad: Default::default(),
             error: None,
         }
     }

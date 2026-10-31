@@ -157,7 +157,8 @@ LiveContainer's Info.plist that counts, so the game may stay at 60 there.
 **Controllers**: Xbox, PlayStation (DualShock 4, DualSense), Switch Pro and MFi pads work
 through Apple's GameController framework, with the same bindings as Horizon on desktop
 ([docs/controllers.md](../docs/controllers.md)). Pair them in iOS's Bluetooth settings.
-The touch controls hide while you play with a controller and come back at your next touch.
+Every menu works with a controller alone: on the first title screen the left stick or D-pad
+moves a pointer, A clicks and B goes back. The touch controls hide while you play with a controller and come back at your next touch.
 Vibration plays through Core Haptics. A DualSense's adaptive triggers resist as a bow draws,
 click for a loaded crossbow and buzz while mining, and its lightbar (a DualShock 4's too)
 follows your health or dimension. Each can be turned off in Controller Settings.

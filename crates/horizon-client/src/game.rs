@@ -15046,6 +15046,8 @@ struct Loading {
     menu: startup_menu::StartupMenu,
     /// Fingers on a touchscreen (iOS): the menu's pointer.
     touch: touch::MenuTouch,
+    /// A controller: the menu's pointer too.
+    pad: pad::StartupPad,
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
@@ -15204,6 +15206,7 @@ impl Loading {
             let events = self.touch.update(size);
             self.menu_events(event_loop, events);
         }
+        self.poll_startup_pad(event_loop);
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();
@@ -15225,6 +15228,9 @@ impl Loading {
         self.draw_menu(&mut batch);
         if let Some(gui) = &self.gui {
             self.touch.draw(&mut batch, &gui.atlas);
+            if let Some((x, y)) = self.pad.pos.filter(|_| self.menu.pending.is_none()) {
+                pad_menu::draw_arrow(&mut batch, &gui.atlas, x, y);
+            }
         }
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
@@ -15310,6 +15316,8 @@ impl Loading {
         game.fullscreen = self.fullscreen;
         game.panorama_rotation = self.panorama_rotation;
         self.menu.handoff(&mut game);
+        // The pads the title read go on in the game (desktop: one gilrs).
+        game.pad = std::mem::take(&mut self.pad.pads);
         game.apply_settings();
         game.previous = Instant::now();
         log::info!(
@@ -15434,6 +15442,7 @@ fn run_loading(
         shown: false,
         menu,
         touch: Default::default(),
+        pad: Default::default(),
         error: None,
     };
     let app = App::Loading(Box::new(loading));

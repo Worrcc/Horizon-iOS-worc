@@ -476,3 +476,113 @@ impl Game<'_> {
         }
     }
 }
+
+/// A controller on the startup title, before the game exists (the title shown while resources
+/// load): the left stick or the D-pad moves a pointer, A clicks, B goes back, the right stick
+/// scrolls, as pointer mode does in `pad_menu.rs` once the game is up. Its pads go to the game.
+#[derive(Default)]
+pub(super) struct StartupPad {
+    pub(super) pads: Pads,
+    /// The pointer, in GUI pixels, once the pad has moved it.
+    pub(super) pos: Option<(f32, f32)>,
+    last: Option<Instant>,
+}
+
+/// What the startup title does with a poll.
+pub(super) enum StartupInput {
+    /// Pointer events, as a mouse sends them.
+    Events(Vec<winit::event::WindowEvent>),
+    /// B: Esc.
+    Back,
+}
+
+impl StartupPad {
+    /// Reads the pads: `size` is the screen in GUI pixels, `scale` physical pixels per GUI pixel.
+    pub(super) fn poll(
+        &mut self,
+        settings: &gamepad::PadSettings,
+        size: (f32, f32),
+        scale: f32,
+    ) -> Vec<StartupInput> {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{
+            DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+        };
+        let now = Instant::now();
+        let seconds = self
+            .last
+            .replace(now)
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f32().min(0.1));
+        if !settings.enabled {
+            return Vec::new();
+        }
+        let state = self.pads.read();
+        let previous = self.pads.state;
+        self.pads.state = state;
+        // Kept current, so a button held when the game takes over is no new press there.
+        let _ = self.pads.edges.update(&state, settings.trigger_threshold);
+        if !state.active(settings) && state == previous {
+            return Vec::new();
+        }
+        self.pads.in_use = true;
+        let pressed = |b: Button| state.held(b) && !previous.held(b);
+        let released = |b: Button| !state.held(b) && previous.held(b);
+        let mut out = Vec::new();
+        let mut events = Vec::new();
+        // GUI pixels a second at full tilt: the screen's height in about a second and a half.
+        let speed = size.1 / 1.5;
+        let mut motion = [0.0f32; 2];
+        if state.left[0].hypot(state.left[1]) > settings.move_deadzone {
+            motion = [state.left[0], -state.left[1]];
+        }
+        for (button, dx, dy) in [
+            (Button::DPadLeft, -1.0, 0.0),
+            (Button::DPadRight, 1.0, 0.0),
+            (Button::DPadUp, 0.0, -1.0),
+            (Button::DPadDown, 0.0, 1.0),
+        ] {
+            if state.held(button) {
+                motion[0] += dx * 0.6;
+                motion[1] += dy * 0.6;
+            }
+        }
+        let start = self.pos.unwrap_or((size.0 / 2.0, size.1 / 2.0));
+        let at = (
+            (start.0 + motion[0] * speed * seconds).clamp(0.0, size.0 - 1.0),
+            (start.1 + motion[1] * speed * seconds).clamp(0.0, size.1 - 1.0),
+        );
+        if self.pos != Some(at) {
+            self.pos = Some(at);
+            events.push(WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(f64::from(at.0 * scale), f64::from(at.1 * scale)),
+            });
+        }
+        for (down, state) in [
+            (pressed(Button::South), ElementState::Pressed),
+            (released(Button::South), ElementState::Released),
+        ] {
+            if down {
+                events.push(WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state,
+                    button: MouseButton::Left,
+                });
+            }
+        }
+        if state.right[1].abs() > settings.look_deadzone {
+            events.push(WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, state.right[1] * 10.0 * seconds),
+                phase: TouchPhase::Moved,
+            });
+        }
+        if !events.is_empty() {
+            out.push(StartupInput::Events(events));
+        }
+        if pressed(Button::East) {
+            out.push(StartupInput::Back);
+        }
+        out
+    }
+}

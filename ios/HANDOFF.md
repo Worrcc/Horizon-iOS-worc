@@ -70,7 +70,8 @@ Goal: manage instances, mods, shader packs and modpacks inside the app, and make
 full input path. Step 1 is done: **instances** (`src/instance_list.rs`, `game/instances.rs`,
 Options › Horizon Settings › Instances; `main.rs` starts in the picked folder). Next steps:
 a launcher screen ahead of the title that brings instances, mods, shader packs and modpack import
-together; controller-only menu navigation everywhere; hiding touch controls while a pad is
+together; controller-only menu navigation everywhere (the startup title has a pad pointer:
+`pad.rs` `StartupPad`; every screen after it has `pad_menu.rs`); hiding touch controls while a pad is
 connected (done); Core Haptics vibration, DualSense lights and triggers (done, not yet seen on a
 pad: `horizon-ios/src/controllers.rs` `vibrate` and `show`). Button remapping already
 exists (Controller Settings › Controller Binds). Code mods: the player has JIT through StikDebug,
@@ -78,8 +79,6 @@ so the plan is wasmtime with JIT where it is allowed, not an interpreter.
 
 ## Not done yet
 
-- Controller navigation on the startup title while resources load (`Loading` reads no pads;
-  `Game`'s title and every screen after it do, through `pad_menu.rs`).
 - Mouse look with an iPad trackpad or mouse (they arrive as touches).
 - Code mods: wasmtime needs a JIT, which iOS forbids. An interpreter (wasmi) would be the route.
 - LAN discovery by multicast needs Apple's multicast entitlement. Joining by address works.
