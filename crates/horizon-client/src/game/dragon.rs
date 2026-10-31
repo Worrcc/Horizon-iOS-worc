@@ -2910,6 +2910,7 @@ impl Game<'_> {
             needs_sync: false,
             leash: None,
             animation: None,
+            texture: None,
         })
     }
 }

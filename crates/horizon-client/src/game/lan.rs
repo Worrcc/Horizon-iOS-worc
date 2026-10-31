@@ -1446,6 +1446,7 @@ impl Game<'_> {
             mob_equipment(m, hub, &mut e.equipment);
             self.mob_attributes(m, &mut e.attributes);
             e.leash = leash;
+            e.texture.clone_from(&m.orders.texture);
             e.animation =
                 (m.orders.animation.as_ref()).map(|(name, at)| (name.clone(), *at, m.age));
         }

@@ -215,6 +215,10 @@ impl Game<'_> {
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.clone();
+        #[cfg(feature = "mods")]
+        {
+            self.mods.entity_resources = None;
+        }
         let context = pack.context.clone();
         self.pack = pack;
         self.gui = gui;

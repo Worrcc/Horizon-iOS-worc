@@ -687,6 +687,8 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
+| `game-rule` | `func(name: string) -> option<string>` | Current server rule value as text, or none for an unknown rule. Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias. |
+| `difficulty` | `func() -> string` | peaceful, easy, normal or hard, as of the start of this call. |
 
 ## `entities`
 
@@ -714,6 +716,7 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `data` | `list<tuple<string, string>>` | What mods stored on it (`set-data`, `spawn`), kept in its save. |
 | `age` | `u32` | Ticks it has lived since it was loaded. |
 | `animation` | `option<string>` | The animation an `animate` order plays on it now. |
+| `texture` | `option<string>` | The per-mob texture override; none uses its type's texture. |
 
 ### record `point`
 
@@ -738,6 +741,24 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `radius` | `f64` | Its radius in blocks, at most 16. |
 | `amount` | `f32` | Hit points every living thing in it but the mob loses (vanilla's `mob_attack` damage from the mob), at most 1024. |
 | `fire` | `u32` | Seconds those not immune to fire burn after, at most 30. |
+
+### record `sound`
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` | A vanilla sound event id or a loaded mod's sounds.json event. |
+| `volume` | `f32` |  |
+| `pitch` | `f32` |  |
+
+### record `particles`
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` | A vanilla particle type with no options. |
+| `at` | `point` | Position in the mob's dimension. |
+| `delta` | `point` |  |
+| `speed` | `f32` |  |
+| `count` | `u32` | At most 256; zero sends one with delta * speed as its velocity. |
 
 ### record `interaction`
 
@@ -770,6 +791,9 @@ Whom a mob attacks.
 | `push` | `point` | Set its motion in blocks per tick, each axis -4 to 4: flight, leaps and dives. |
 | `gravity` | `bool` | Whether gravity pulls it (false: it stays where it is pushed). |
 | `animate` | `option<string>` | Play one of the animations of its own model's animation file, from its start (a looping one loops); none: back to its states' (idle, walk, attack). Players' games see it too. |
+| `texture` | `option<string>` | A loaded mod's <namespace>:entity/<path> texture; none restores the type's texture. Saved on the mob and sent to every player. |
+| `sound` | `sound` | Play a sound at the mob, within 16 * max(1, volume) blocks. |
+| `particles` | `particles` | Send particles to players within 32 blocks, in the mob's dimension. |
 | `hurt-area` | `area` | Hurt and burn what is in an area: a breath, a stomp. |
 | `discard` |  | Remove it, with no drops (`Entity.discard`). |
 | `target` | `target` | Have it attack, as its own goals do: its template's attacks (melee, arrows, ...) on that target. |

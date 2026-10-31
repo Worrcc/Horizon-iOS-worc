@@ -12,6 +12,7 @@ pub const DATA_ENTRIES: usize = 32;
 /// The save's keys: Horizon's own, beside vanilla's.
 const DATA: &str = "horizon:data";
 const ANIMATION: &str = "horizon:animation";
+const TEXTURE: &str = "horizon:texture";
 
 /// A mob's standing orders.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -24,6 +25,8 @@ pub struct Orders {
     /// elapsed ticks are `age.wrapping_sub(start)`, so a start before the age a loaded mob
     /// begins at (0) still counts right.
     pub animation: Option<(Arc<str>, u32)>,
+    /// A loaded mod's texture override, saved and sent to players.
+    pub texture: Option<Arc<str>>,
     /// What server mods stored on the mob (`set-data`, `spawn`): kept in its save.
     pub data: BTreeMap<String, String>,
 }
@@ -32,6 +35,10 @@ pub struct Orders {
 pub fn write_nbt(m: &Mob, map: &mut Compound) {
     map.remove(&DATA.into());
     map.remove(&ANIMATION.into());
+    map.remove(&TEXTURE.into());
+    if let Some(texture) = &m.orders.texture {
+        map.insert(TEXTURE.into(), Tag::String((&**texture).into()));
+    }
     if !m.orders.data.is_empty() {
         let data = m.orders.data.iter();
         let data = data.map(|(k, v)| (k.as_str(), Tag::String(v.as_str().into())));
@@ -49,6 +56,9 @@ pub fn write_nbt(m: &Mob, map: &mut Compound) {
 
 /// Reads what [`write_nbt`] saved: the animation goes on where it was.
 pub fn read_nbt(m: &mut Mob, tag: &Tag) {
+    if let Some(Tag::String(texture)) = tag.get(TEXTURE) {
+        m.orders.texture = Some(Arc::from(texture.to_string_lossy()));
+    }
     if let Some(Tag::Compound(data)) = tag.get(DATA) {
         let strings = data.iter().filter_map(|(k, v)| match v {
             Tag::String(s) => Some((k.to_string_lossy(), s.to_string_lossy())),

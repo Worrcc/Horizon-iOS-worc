@@ -1623,6 +1623,33 @@ mod tests {
         assert_eq!(name("/elsewhere/x.png"), None);
     }
 
+    #[test]
+    fn atlas_packs_unreferenced_mod_entity_variants() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-entity-variants-{}", std::process::id()));
+        let dir = root.join("assets/ruby/textures/entity/dragon");
+        fs::create_dir_all(&dir).unwrap();
+        for name in ["blue_stage3", "blue_stage3_sleeping", "blue_stage3_eyes"] {
+            write_strip(
+                &dir.join(format!("{name}.png")),
+                16,
+                16,
+                &[[0, 128, 255, 255]],
+                None,
+            );
+        }
+        // No entity JSON or model names these variants.
+        let atlas = HudAtlas::pack(&root, &root, &["entity"], false).unwrap();
+        for name in ["blue_stage3", "blue_stage3_sleeping", "blue_stage3_eyes"] {
+            assert!(
+                atlas
+                    .sprites
+                    .contains_key(&format!("ruby:entity/dragon/{name}"))
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// Write a PNG `width x height` whose `frames` stacked rows are solid
     /// colours, then its mcmeta beside it.
     fn write_strip(path: &Path, width: u32, height: u32, frames: &[[u8; 4]], mcmeta: Option<&str>) {

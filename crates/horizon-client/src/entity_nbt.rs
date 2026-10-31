@@ -2864,16 +2864,29 @@ mod sheep_nbt_tests {
         m.orders.data.insert("stage".into(), "3".into());
         m.age = 100;
         m.orders.animation = Some((Arc::from("animation.roar"), 60));
+        m.orders.texture = Some(Arc::from("ruby:entity/dragon/blue_stage3"));
         let tag = mob_to_nbt(&m, [1, 2, 3, 4], None);
         let mut back = mob_from_nbt(&tag, &types, 2).unwrap();
         assert_eq!(scale(&back), 2.5);
         assert_eq!(back.dims().1, m.dims().1);
         assert_eq!(back.orders.data["stage"], "3");
+        assert_eq!(back.orders.texture, m.orders.texture);
         back.age = 500;
         let tag = mob_to_nbt(&back, [1, 2, 3, 4], None);
         let again = mob_from_nbt(&tag, &types, 3).unwrap();
         let (name, start) = again.orders.animation.clone().unwrap();
         assert_eq!(&*name, "animation.roar");
+        assert_eq!(again.orders.texture, m.orders.texture);
+        back.orders.texture = None;
+        let cleared = mob_to_nbt(&back, [1, 2, 3, 4], None);
+        assert!(cleared.get("horizon:texture").is_none());
+        assert!(
+            mob_from_nbt(&cleared, &types, 6)
+                .unwrap()
+                .orders
+                .texture
+                .is_none()
+        );
         // 40 ticks along when saved first; loaded at age 0, 500 ticks more by the second save.
         assert_eq!(again.age.wrapping_sub(start), 540);
         // A mob with none of it saves none of Horizon's keys.

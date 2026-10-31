@@ -689,6 +689,11 @@ interface %world {
     /// in order after this call returns, before that dimension's next tick;
     /// one in a chunk not loaded then is skipped. At most 4096 per call.
     set-blocks: func(dimension: string, blocks: list<block-change>) -> result<_, string>;
+    /// Current server rule value as text, or none for an unknown rule.
+    /// Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias.
+    game-rule: func(name: string) -> option<string>;
+    /// peaceful, easy, normal or hard, as of the start of this call.
+    difficulty: func() -> string;
 }
 
 /// Capability `entities`, server mods only (manifest `api = "0.3"`,
@@ -724,6 +729,8 @@ interface entities {
         age: u32,
         /// The animation an `animate` order plays on it now.
         animation: option<string>,
+        /// The per-mob texture override; none uses its type's texture.
+        texture: option<string>,
     }
     record point {
         x: f64,
@@ -745,6 +752,22 @@ interface entities {
         amount: f32,
         /// Seconds those not immune to fire burn after, at most 30.
         fire: u32,
+    }
+    record sound {
+        /// A vanilla sound event id or a loaded mod's sounds.json event.
+        name: string,
+        volume: f32,
+        pitch: f32,
+    }
+    record particles {
+        /// A vanilla particle type with no options.
+        name: string,
+        /// Position in the mob's dimension.
+        at: point,
+        delta: point,
+        speed: f32,
+        /// At most 256; zero sends one with delta * speed as its velocity.
+        count: u32,
     }
     /// A player's right click on a content mod's mob.
     record interaction {
@@ -780,6 +803,13 @@ interface entities {
         /// from its start (a looping one loops); none: back to its states'
         /// (idle, walk, attack). Players' games see it too.
         animate(option<string>),
+        /// A loaded mod's <namespace>:entity/<path> texture; none restores
+        /// the type's texture. Saved on the mob and sent to every player.
+        texture(option<string>),
+        /// Play a sound at the mob, within 16 * max(1, volume) blocks.
+        sound(sound),
+        /// Send particles to players within 32 blocks, in the mob's dimension.
+        particles(particles),
         /// Hurt and burn what is in an area: a breath, a stomp.
         hurt-area(area),
         /// Remove it, with no drops (`Entity.discard`).

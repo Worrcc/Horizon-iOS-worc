@@ -216,6 +216,18 @@ fn model_files(model: &str) -> Option<(String, String)> {
     ))
 }
 
+/// The same safe resource identifier for entity JSON and per-mob texture orders.
+pub fn entity_texture(name: &str) -> bool {
+    name.split_once(':').is_some_and(|(ns, path)| {
+        name.len() <= 32767
+            && !ns.is_empty()
+            && ns != "minecraft"
+            && path.starts_with("entity/")
+            && path.len() > "entity/".len()
+            && check_path(&format!("assets/{ns}/textures/{path}.png")).is_ok()
+    })
+}
+
 fn check_entity(file: &EntityFile, namespaces: &[String]) -> Result<(), String> {
     if !vanilla_id(&file.template) {
         return Err(format!(
@@ -252,11 +264,9 @@ fn check_entity(file: &EntityFile, namespaces: &[String]) -> Result<(), String> 
         ));
     }
     if let Some(t) = &file.texture {
-        let ok = t.split_once(':').is_some_and(|(ns, path)| {
-            namespaces.iter().any(|n| n == ns)
-                && path.starts_with("entity/")
-                && check_path(&format!("assets/{ns}/textures/{path}.png")).is_ok()
-        });
+        let ok = t
+            .split_once(':')
+            .is_some_and(|(ns, _)| namespaces.iter().any(|n| n == ns) && entity_texture(t));
         if !ok {
             return Err(format!(
                 "texture {t:?} is <namespace>:entity/<path>, in one of the mod's namespaces"

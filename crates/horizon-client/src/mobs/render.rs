@@ -107,9 +107,19 @@ fn avatar(m: &Mob) -> bool {
 pub fn body(m: &Mob) -> (String, String) {
     // A content mod entity's own model (mobs/geo.rs) with its texture or its template's.
     if m.kind.layers.contains_key(super::geo::MODEL_LAYER) {
-        return (super::geo::MODEL_LAYER.to_owned(), m.kind.texture.clone());
+        return (
+            super::geo::MODEL_LAYER.to_owned(),
+            m.orders
+                .texture
+                .as_deref()
+                .unwrap_or(&m.kind.texture)
+                .to_owned(),
+        );
     }
     let (model, texture) = species_body(m);
+    if let Some(texture) = &m.orders.texture {
+        return (model, texture.to_string());
+    }
     // A content mod entity's own texture (docs/modpacks.md, entities): only a mod's
     // textures are namespaced, and one texture serves adult and baby.
     if m.kind.texture.contains(':') {
@@ -1528,6 +1538,39 @@ pub fn held_item_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_orders_override_template_and_geometry_bodies_and_reset() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        if !root.join("entity-models.json").exists() {
+            return;
+        }
+        let types = super::super::MobTypes::load(&root).unwrap();
+        for geometry in [false, true] {
+            let mut kind = types.types["minecraft:cow"].clone();
+            kind.id = "ruby:dragon".into();
+            kind.texture = "ruby:entity/dragon/red".into();
+            if geometry {
+                kind.layers
+                    .insert(super::super::geo::MODEL_LAYER.into(), kind.model.clone());
+            }
+            let mut mob = Mob::new(
+                1,
+                std::sync::Arc::new(kind),
+                horizon_core::geometry::Vec3::ZERO,
+                0.0,
+            );
+            let original = body(&mob);
+            mob.orders.texture = Some(std::sync::Arc::from("ruby:entity/dragon/blue"));
+            assert_eq!(
+                body(&mob),
+                (original.0.clone(), "ruby:entity/dragon/blue".into())
+            );
+            mob.orders.texture = None;
+            assert_eq!(body(&mob), original);
+        }
+    }
 
     /// VillagerProfessionLayer's textures (type, or baby for a baby;
     /// profession; level) of every villager and zombie villager are in the

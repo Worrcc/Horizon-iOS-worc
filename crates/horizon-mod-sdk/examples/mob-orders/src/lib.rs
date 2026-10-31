@@ -6,10 +6,11 @@
 //! lets gravity back. `/raise <kind>` spawns one beside the player, `/grow <scale>` sizes the
 //! nearest, `/attack` sets it on the nearest player, `/label <key> <value>` stores a string on it
 //! (kept in its save) and `/info` says what it is. Right clicks tell the player what they
-//! held; a bone stores their UUID as the mob's `owner`.
+//! held; a bone stores their UUID as the mob's `owner`. `/paint <texture|none>` changes
+//! its texture, `/roar` sends a sound and flame particles, and `/info` reports mobGriefing.
 use horizon_mod_sdk::server::{
-    Area, Args, Argument, Entity, Order, Player, Point, Registration, ServerMod, Target, Walk,
-    entities, players,
+    Area, Args, Argument, Entity, Order, Particles, Player, Point, Registration, ServerMod, Sound,
+    Target, Walk, entities, players, world,
 };
 
 /// How far the orders reach, in blocks.
@@ -59,6 +60,8 @@ impl ServerMod for MobOrders {
                 .command_with("grow", [Argument::number("scale")])
                 .command("attack")
                 .command_with("label", [Argument::word("key"), Argument::word("value")])
+                .command_with("paint", [Argument::text("texture")])
+                .command("roar")
                 .command("info"),
         ))
     }
@@ -168,17 +171,58 @@ impl ServerMod for MobOrders {
                 entities::give_orders(&[(mob.id, Order::SetData(vec![(key, value)]))])?;
                 Ok(None)
             }
+            "roar" => {
+                let mob = nearest(player)?;
+                let at = Point {
+                    x: mob.x,
+                    y: mob.y + 1.0,
+                    z: mob.z,
+                };
+                entities::give_orders(&[
+                    (
+                        mob.id,
+                        Order::Sound(Sound {
+                            name: "minecraft:entity.ender_dragon.growl".into(),
+                            volume: 1.0,
+                            pitch: 1.0,
+                        }),
+                    ),
+                    (
+                        mob.id,
+                        Order::Particles(Particles {
+                            name: "minecraft:flame".into(),
+                            at,
+                            delta: Point {
+                                x: 0.5,
+                                y: 0.5,
+                                z: 0.5,
+                            },
+                            speed: 0.05,
+                            count: 32,
+                        }),
+                    ),
+                ])?;
+                Ok(Some(format!("{} roars", mob.kind)))
+            }
+            "paint" => {
+                let mob = nearest(player)?;
+                let texture = args.string("texture").unwrap_or_default();
+                let texture = (texture != "none").then(|| texture.to_string());
+                entities::give_orders(&[(mob.id, Order::Texture(texture))])?;
+                Ok(Some(format!("{} painted", mob.kind)))
+            }
             "info" => {
                 let mob = nearest(player)?;
                 let data: Vec<String> = mob.data.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 Ok(Some(format!(
-                    "{} #{}: scale {}, health {}/{}, data [{}]",
+                    "{} #{}: scale {}, health {}/{}, data [{}], mobGriefing {}",
                     mob.kind,
                     mob.id,
                     mob.scale,
                     mob.health,
                     mob.max_health,
-                    data.join(", ")
+                    data.join(", "),
+                    world::game_rule("mobGriefing").unwrap_or_else(|| "unknown".into())
                 )))
             }
             _ => Err("Unknown command".into()),

@@ -1867,6 +1867,14 @@ impl Game<'_> {
                     }
                 }
             }
+            C::CustomPayload(p) if p.channel == horizon_client::lan::entity::TEXTURE_CHANNEL => {
+                let mut r = horizon_protocol::buf::Reader::new(&p.data);
+                if let (Ok(id), Ok(name)) = (r.varint(), r.string(32767))
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32)
+                {
+                    m.orders.texture = (!name.is_empty()).then(|| std::sync::Arc::from(name));
+                }
+            }
             // A server mod's order: the animation a content mod's mob plays now.
             C::CustomPayload(p) if p.channel == horizon_client::lan::entity::ANIMATION_CHANNEL => {
                 let mut r = horizon_protocol::buf::Reader::new(&p.data);

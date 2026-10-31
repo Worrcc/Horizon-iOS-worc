@@ -57,7 +57,8 @@ pub use server_bindings::{
     },
     horizon::mods::entities::{
         Area as EntityArea, Entity as ModEntity, Interaction as EntityInteraction,
-        Order as EntityOrder, Point as EntityPoint, Target as EntityTarget, Walk as EntityWalk,
+        Order as EntityOrder, Particles as EntityParticles, Point as EntityPoint,
+        Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
     horizon::mods::world::BlockChange,
@@ -150,6 +151,15 @@ const STORAGE_MAX_KEYS: usize = 64;
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
+/// Resource names accepted by entity orders, shared across ticks until resources reload.
+#[derive(Clone, Debug, Default)]
+pub struct EntityResources {
+    pub textures: std::collections::HashSet<String>,
+    pub sounds: std::collections::HashSet<String>,
+    /// Only vanilla particle codecs with no options, by network id.
+    pub particles: std::collections::HashMap<String, i32>,
+}
+
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -171,11 +181,16 @@ pub struct Snapshot {
     pub font_widths: Arc<[f32]>,
     /// The players on the server, for server mods.
     pub players: Vec<ServerPlayer>,
+    /// Current server rules and difficulty, for read-only capability `world` queries.
+    pub game_rules: std::collections::BTreeMap<String, String>,
+    pub difficulty: String,
     /// The loaded mobs, for capability `entities`; the game fills it only
     /// while a running mod has it ([`Mods::wants_entities`]).
     pub entities: Arc<[ModEntity]>,
     /// The content mods' mob types, for `entities.spawn`; filled with [`Snapshot::entities`].
     pub mob_kinds: Arc<[String]>,
+    /// Loaded resources used to check texture, sound and particle orders.
+    pub entity_resources: Arc<EntityResources>,
     /// Players' right clicks on content mods' mobs during the last tick, for
     /// `entities.interactions`.
     pub interactions: Arc<[EntityInteraction]>,
@@ -1623,6 +1638,18 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn game_rule(&mut self, name: String) -> Option<String> {
+        let name = name.strip_prefix("minecraft:").unwrap_or(&name);
+        let name = if name == "mobGriefing" {
+            "mob_griefing"
+        } else {
+            name
+        };
+        self.snapshot.game_rules.get(name).cloned()
+    }
+    fn difficulty(&mut self) -> String {
+        self.snapshot.difficulty.clone()
+    }
     fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.block(&dimension, x, y, z)
@@ -1696,6 +1723,26 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
         EntityOrder::Push(p) if ![p.x, p.y, p.z].iter().all(|v| (-4.0..=4.0).contains(v)) => {
             Err("push is -4 to 4 blocks per tick on each axis".into())
         }
+        EntityOrder::Sound(s)
+            if !s.volume.is_finite() || s.volume < 0.0 || !s.pitch.is_finite() || s.pitch < 0.0 =>
+        {
+            Err("sound needs a finite, nonnegative volume and pitch".into())
+        }
+        EntityOrder::Particles(p)
+            if !finite(&p.at)
+                || !finite(&p.delta)
+                || ![p.delta.x, p.delta.y, p.delta.z]
+                    .iter()
+                    .all(|d| (*d as f32).is_finite())
+                || !p.speed.is_finite()
+                || p.speed < 0.0
+                || p.count > 256 =>
+        {
+            Err("particles need finite points and a nonnegative speed, count at most 256".into())
+        }
+        EntityOrder::Texture(Some(name)) if !crate::content::entity_texture(name) => {
+            Err("texture is <namespace>:entity/<path>".into())
+        }
         EntityOrder::Animate(Some(name)) if name.is_empty() || name.len() > 256 => {
             Err("animate names an animation of 1 to 256 characters".into())
         }
@@ -1706,6 +1753,21 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
                 || a.fire > 30 =>
         {
             Err("hurt-area is a radius up to 16, up to 1024 hit points, up to 30 s of fire".into())
+        }
+        _ => Ok(()),
+    }
+}
+fn check_order_names(order: &EntityOrder, snapshot: &Snapshot) -> Result<(), String> {
+    let resources = &snapshot.entity_resources;
+    match order {
+        EntityOrder::Texture(Some(name)) if !resources.textures.contains(name) => {
+            Err(format!("no loaded mod entity texture {name}"))
+        }
+        EntityOrder::Sound(s) if !resources.sounds.contains(&s.name) => {
+            Err(format!("unknown sound event {}", s.name))
+        }
+        EntityOrder::Particles(p) if !resources.particles.contains_key(&p.name) => {
+            Err(format!("unknown particle type without options {}", p.name))
         }
         _ => Ok(()),
     }
@@ -1759,7 +1821,11 @@ impl entities::Host for State {
                 Some(e) if !own_kind(&e.kind) => {
                     return Err(format!("mob {id} is {}, not a content mod's", e.kind));
                 }
-                Some(_) => check_order(order).map_err(|e| format!("mob {id}: {e}"))?,
+                Some(_) => {
+                    check_order(order).map_err(|e| format!("mob {id}: {e}"))?;
+                    check_order_names(order, &self.snapshot)
+                        .map_err(|e| format!("mob {id}: {e}"))?;
+                }
             }
         }
         if !orders.is_empty() {
@@ -2184,9 +2250,8 @@ fn storage_key_ok(key: &str) -> bool {
 mod entity_tests {
     use super::*;
 
-    #[test]
-    fn interactions_read_the_snapshot_in_order_up_to_256() {
-        let mut state = State {
+    fn state() -> State {
+        State {
             name: "Mob Orders".into(),
             id: "mob_orders".into(),
             snapshot: Arc::new(Snapshot::default()),
@@ -2204,7 +2269,12 @@ mod entity_tests {
             storage_budget: STORAGE_WRITE_BUDGET,
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn interactions_read_the_snapshot_in_order_up_to_256() {
+        let mut state = state();
         for count in [0, 2, 256, 300] {
             let clicks: Vec<_> = (0..count)
                 .map(|mob| EntityInteraction {
@@ -2229,6 +2299,166 @@ mod entity_tests {
                     assert_eq!(click.item, expected.item);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn texture_orders_need_safe_loaded_mod_textures() {
+        let name = "ruby:entity/dragon/blue_stage3";
+        let order = EntityOrder::Texture(Some(name.into()));
+        let snapshot = Snapshot {
+            entity_resources: Arc::new(EntityResources {
+                textures: [name.to_string()].into(),
+                ..EntityResources::default()
+            }),
+            ..Snapshot::default()
+        };
+        assert!(check_order(&order).is_ok());
+        assert!(check_order_names(&order, &snapshot).is_ok());
+        assert!(check_order_names(&order, &Snapshot::default()).is_err());
+        assert!(check_order_names(&EntityOrder::Texture(None), &snapshot).is_ok());
+        for bad in [
+            "",
+            "entity/blue",
+            "minecraft:entity/pig",
+            "ruby:block/blue",
+            "ruby:entity/../blue",
+            "ruby:entity/",
+            "Ruby:entity/blue",
+        ] {
+            assert!(
+                check_order(&EntityOrder::Texture(Some(bad.into()))).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn effects_validate_names_bounds_and_queue_batches_atomically() {
+        let sound = |name: &str, volume, pitch| {
+            EntityOrder::Sound(EntitySound {
+                name: name.into(),
+                volume,
+                pitch,
+            })
+        };
+        let particles = |name: &str, speed, count| {
+            EntityOrder::Particles(EntityParticles {
+                name: name.into(),
+                at: point(1.0, 64.0, 2.0),
+                delta: point(0.5, 0.5, 0.5),
+                speed,
+                count,
+            })
+        };
+        let roar = sound("ruby:roar", 2.0, 0.5);
+        let flame = particles("minecraft:flame", 0.1, 256);
+        let mut state = state();
+        state.snapshot = Arc::new(Snapshot {
+            entities: vec![ModEntity {
+                id: 1,
+                kind: "ruby:dragon".into(),
+                dimension: "minecraft:overworld".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                yaw: 0.0,
+                health: 20.0,
+                max_health: 20.0,
+                on_ground: true,
+                target: None,
+                target_player: false,
+                scale: 1.0,
+                data: vec![],
+                age: 0,
+                animation: None,
+                texture: None,
+            }]
+            .into(),
+            entity_resources: Arc::new(EntityResources {
+                sounds: [
+                    "ruby:roar".into(),
+                    "minecraft:entity.ender_dragon.growl".into(),
+                ]
+                .into(),
+                particles: [("minecraft:flame".into(), 32)].into(),
+                ..EntityResources::default()
+            }),
+            ..Snapshot::default()
+        });
+        for valid in [
+            roar.clone(),
+            flame.clone(),
+            particles("minecraft:flame", 0.0, 0),
+            sound("minecraft:entity.ender_dragon.growl", 0.0, 0.0),
+        ] {
+            assert!(check_order(&valid).is_ok());
+            assert!(check_order_names(&valid, &state.snapshot).is_ok());
+        }
+        for bad in [
+            sound("ruby:missing", 1.0, 1.0),
+            particles("minecraft:missing", 0.0, 1),
+            particles("minecraft:dust", 0.0, 1),
+            particles("minecraft:dragon_breath", 0.0, 1),
+            sound("ruby:roar", f32::NAN, 1.0),
+            sound("ruby:roar", 1.0, f32::INFINITY),
+            sound("ruby:roar", -1.0, 1.0),
+            sound("ruby:roar", 1.0, -1.0),
+            particles("minecraft:flame", -1.0, 1),
+            particles("minecraft:flame", f32::NAN, 1),
+            particles("minecraft:flame", 0.0, 257),
+            EntityOrder::Particles(EntityParticles {
+                name: "minecraft:flame".into(),
+                at: point(f64::NAN, 0.0, 0.0),
+                delta: point(0.0, 0.0, 0.0),
+                speed: 0.0,
+                count: 1,
+            }),
+            EntityOrder::Particles(EntityParticles {
+                name: "minecraft:flame".into(),
+                at: point(0.0, 0.0, 0.0),
+                delta: point(f64::MAX, 0.0, 0.0),
+                speed: 0.0,
+                count: 1,
+            }),
+        ] {
+            assert!(
+                entities::Host::give_orders(&mut state, vec![(1, roar.clone()), (1, bad)]).is_err()
+            );
+            assert!(state.out.is_empty());
+        }
+        entities::Host::give_orders(&mut state, vec![(1, roar), (1, flame)]).unwrap();
+        assert!(matches!(&state.out[..], [Output::Orders { orders, .. }] if orders.len() == 2));
+    }
+
+    #[test]
+    fn world_queries_read_current_rules_and_difficulty() {
+        let mut state = state();
+        assert_eq!(
+            mod_world::Host::game_rule(&mut state, "unknown".into()),
+            None
+        );
+        for (griefing, difficulty) in [("true", "normal"), ("false", "hard")] {
+            state.snapshot = Arc::new(Snapshot {
+                game_rules: [
+                    ("mob_griefing".into(), griefing.into()),
+                    ("random_tick_speed".into(), "9".into()),
+                ]
+                .into(),
+                difficulty: difficulty.into(),
+                ..Snapshot::default()
+            });
+            for name in ["mobGriefing", "mob_griefing", "minecraft:mob_griefing"] {
+                assert_eq!(
+                    mod_world::Host::game_rule(&mut state, name.into()).as_deref(),
+                    Some(griefing)
+                );
+            }
+            assert_eq!(
+                mod_world::Host::game_rule(&mut state, "random_tick_speed".into()).as_deref(),
+                Some("9")
+            );
+            assert_eq!(mod_world::Host::difficulty(&mut state), difficulty);
         }
     }
 

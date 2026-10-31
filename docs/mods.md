@@ -481,7 +481,7 @@ its component targets the WIT world `horizon-server-mod` instead of
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
 | `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
-| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `interactions()`: the last tick's right clicks on content mods' mobs (player UUID, mob id, kind, held item), in order, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
+| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, texture, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `interactions()`: the last tick's right clicks on content mods' mobs (player UUID, mob id, kind, held item), in order, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
 
 | Hook (export `server-events`) | When |
 |---|---|
@@ -524,7 +524,14 @@ Some(64)).optional()])`, read with `args.integer("height")`; `command(name)`
 alone takes free text, an optional `text` argument named `args`
 (`args.text()` is the line as typed either way).
 
-**Capability `world`.** Reads are of the server's loaded chunks as they are
+**Capability `world`.** API level 9 adds read-only `game-rule(name) ->
+option<string>` and `difficulty() -> string`: the server's current rule values
+(`"true"`, `"false"`, or a decimal integer), and `peaceful`, `easy`, `normal`,
+`hard`. Unknown rules return none. Use 26.3 names, optionally prefixed with
+`minecraft:`; `mobGriefing` also reads `mob_griefing`. They are refreshed before
+each hook or command call, including rules or difficulty changed by commands.
+
+Reads are of the server's loaded chunks as they are
 during the call: the game lends a server mod's call the levels' chunk maps
 (moved, not copied, and only while a running mod has `world`), so a read
 costs a map lookup and no copy of the world. A dimension with no chunk loaded
@@ -535,6 +542,12 @@ that code. Changes for a dimension whose level isn't ticking wait for it
 (in-frame single player ticks only the player's), up to 65,536 blocks; a
 change in a chunk that isn't loaded when it is made is skipped, as `/setblock`
 refuses one.
+
+API level 9 adds the texture, sound and particles orders and the entity record's
+`texture: option<string>`. The `mob-orders` example demonstrates `/paint
+<texture|none>`, `/roar` (sound and flame particles), and `/info` (including
+`mobGriefing`). This experimental interface's changed entity and order types
+require rebuilding server mods against this SDK.
 
 **Capability `entities`.** The behaviour of content mods' mobs
 ([modpacks.md](modpacks.md), entities): a server mod reads the mobs as they
@@ -551,6 +564,9 @@ gone by then are dropped):
 | `push(point)` | sets its motion, -4 to 4 blocks per tick on each axis: flight, leaps |
 | `gravity(bool)` | whether gravity pulls it |
 | `animate(option<string>)` | plays an animation of its own model's file (docs/modpacks.md) from its start, once, looping or held at its end as the file says; none goes back to idle, walk and attack. Players' games are told on the `horizon:entity_animation` channel, with how long it has played, so one that comes into view joins in where it is |
+| `texture(option<string>)` | overrides the mob's texture with `<namespace>:entity/<path>` from a loaded mod's assets; none restores its type's. All variants under `textures/entity/` are available, including ones no entity JSON names. Saved as `horizon:texture` and synced on `horizon:entity_texture` when tracking starts and on changes |
+| `sound(sound)` | plays a vanilla sound event or a loaded mod's `sounds.json` event at the mob (`name`, finite nonnegative `volume` and `pitch`), sent as vanilla's sound packet within `16 * max(1, volume)` blocks |
+| `particles(particles)` | a vanilla particle type with no options (`name`, `at`, `delta`, finite nonnegative `speed`, `count` at most 256), sent as vanilla's level-particles packet within 32 blocks in the mob's dimension; zero count sends one with velocity `delta * speed`. Names are checked now; unknown sounds and particles, or particles needing options, reject the entire batch |
 | `hurt-area(area)` | every living thing but the mob within a radius (up to 16) of a point takes up to 1024 hit points as the mob's attack (`mob_attack`) and burns up to 30 s: a breath, a stomp. Players too, LAN guests included |
 | `discard` | removes it, with no death and no drops |
 | `target(target)` | whom it attacks with its template's own attacks: `none`, `mob(id)` or `nearest-player` (the player it sees) |

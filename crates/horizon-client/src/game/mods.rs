@@ -75,6 +75,9 @@ pub(super) struct ModsState {
     /// loaded mobs to read.
     #[cfg(feature = "mods")]
     pub(super) entities: bool,
+    /// Entity order resource names cached for the current content root.
+    #[cfg(feature = "mods")]
+    pub(super) entity_resources: Option<(PathBuf, std::sync::Arc<horizon_mods::EntityResources>)>,
     /// Server mods' orders to mobs, by mob id, carried out before their
     /// level's next tick.
     #[cfg(feature = "mods")]
@@ -529,8 +532,21 @@ impl Game<'_> {
             cps,
             font_widths: self.mods.font_widths.clone(),
             players,
+            game_rules: if self.mods.world {
+                horizon_client::gamerules::RULES
+                    .iter()
+                    .filter_map(|r| {
+                        Some((r.name.to_string(), self.ui.rules.get(r.name)?.to_string()))
+                    })
+                    .collect()
+            } else {
+                Default::default()
+            },
+            difficulty: horizon_client::title::DIFFICULTIES[usize::from(self.ui.difficulty) & 3]
+                .into(),
             entities: Default::default(),
             mob_kinds: Default::default(),
+            entity_resources: Default::default(),
             interactions: Default::default(),
             view_hit: self.mod_view_hit(),
             recipes,

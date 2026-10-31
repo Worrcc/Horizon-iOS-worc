@@ -40,6 +40,20 @@ pub fn animation_payload(entity: i32, animation: Option<&Animation>) -> play::Cl
     })
 }
 
+/// Per-mob texture sync: entity id (varint), texture identifier (empty restores the type).
+pub const TEXTURE_CHANNEL: &str = "horizon:entity_texture";
+
+/// The texture override for a newly tracked mob or a changed order.
+pub fn texture_payload(entity: i32, texture: Option<&str>) -> play::Clientbound {
+    let mut w = Writer::new();
+    w.varint(entity);
+    w.string(texture.unwrap_or(""));
+    play::Clientbound::CustomPayload(CustomPayload {
+        channel: TEXTURE_CHANNEL.into(),
+        data: w.data,
+    })
+}
+
 /// The attribute instances of `now` that differ from what `sent` held (an
 /// instance is never removed: one that disappears is left as it was sent).
 pub fn changed_attributes(
@@ -92,6 +106,8 @@ pub struct EntityState {
     pub leash: Option<i32>,
     /// A content mod's mob: the animation a server mod's order plays ([`ANIMATION_CHANNEL`]).
     pub animation: Option<Animation>,
+    /// The per-mob texture override ([`TEXTURE_CHANNEL`]).
+    pub texture: Option<Arc<str>>,
 }
 
 impl EntityState {
@@ -116,6 +132,7 @@ impl EntityState {
         self.needs_sync = false;
         self.leash = None;
         self.animation = None;
+        self.texture = None;
     }
 }
 
@@ -252,6 +269,7 @@ struct ServerEntity {
     leash: Option<i32>,
     /// The animation the clients were told of.
     animation: Option<Animation>,
+    texture: Option<Arc<str>>,
     /// The level tick it was last seen in, its place in that tick's list, and
     /// whether it was added in it (its first update is the next tick's).
     seen: u32,
@@ -297,6 +315,7 @@ impl ServerEntity {
             was_riding: false,
             leash: e.leash,
             animation: e.animation.clone(),
+            texture: e.texture.clone(),
             seen: 0,
             index: 0,
             added: true,
@@ -356,6 +375,9 @@ impl ServerEntity {
                 dest,
             }));
         }
+        if e.texture.is_some() {
+            out.push(texture_payload(e.id, e.texture.as_deref()));
+        }
         if e.animation.is_some() {
             out.push(animation_payload(e.id, e.animation.as_ref()));
         }
@@ -371,6 +393,10 @@ impl ServerEntity {
             out.push(riding.set_passengers(e.id));
             self.passengers.clear();
             self.passengers.extend_from_slice(passengers);
+        }
+        if e.texture != self.texture {
+            out.push(texture_payload(e.id, e.texture.as_deref()));
+            self.texture.clone_from(&e.texture);
         }
         // A new animation, or the same begun again; its age moving on is no change.
         let begun = |a: &Option<Animation>| a.as_ref().map(|a| (a.0.clone(), a.1));
@@ -957,6 +983,7 @@ mod tests {
             needs_sync: false,
             leash: None,
             animation: None,
+            texture: None,
         }
     }
 
@@ -993,6 +1020,41 @@ mod tests {
         let mut out = Vec::new();
         s.send_changes(e, &Riding::default(), &mut out);
         out
+    }
+
+    #[test]
+    fn texture_orders_pair_change_and_clear_without_waiting_for_movement() {
+        let mut e = state(0.0);
+        e.texture = Some(Arc::from("ruby:entity/dragon/blue"));
+        let mut s = added(&e);
+        let mut spawn = Vec::new();
+        s.pairing(&e, 100, &Riding::default(), &mut spawn);
+        let textures = |packets: Vec<play::Clientbound>| -> Vec<Vec<u8>> {
+            packets
+                .into_iter()
+                .filter_map(|p| match p {
+                    play::Clientbound::CustomPayload(p) if p.channel == TEXTURE_CHANNEL => {
+                        Some(p.data)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(textures(spawn).len(), 1);
+        assert!(textures(changes(&mut s, &e)).is_empty());
+        e.texture = Some(Arc::from("ruby:entity/dragon/red"));
+        let payloads = textures(changes(&mut s, &e));
+        let mut reader = horizon_protocol::buf::Reader::new(&payloads[0]);
+        assert_eq!(reader.varint().unwrap(), e.id);
+        assert_eq!(reader.string(32767).unwrap(), "ruby:entity/dragon/red");
+        assert!(textures(changes(&mut s, &e)).is_empty());
+        e.texture = None;
+        let payloads = textures(changes(&mut s, &e));
+        let mut reader = horizon_protocol::buf::Reader::new(&payloads[0]);
+        assert_eq!(reader.varint().unwrap(), e.id);
+        assert_eq!(reader.string(32767).unwrap(), "");
+        e.reset(2, 2, "ruby:dragon");
+        assert!(e.texture.is_none());
     }
 
     #[test]

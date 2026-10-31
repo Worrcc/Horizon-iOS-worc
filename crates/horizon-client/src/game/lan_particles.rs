@@ -92,10 +92,10 @@ impl Game<'_> {
         speed: f64,
         count: u32,
     ) {
-        let (Some(host), Some(particle)) = (&self.lan, self.network_particle(options, None)) else {
+        let Some(particle) = self.network_particle(options, None) else {
             return;
         };
-        let packet = C::LevelParticles(play::LevelParticles {
+        self.lan_particle_packet(&play::LevelParticles {
             particle,
             override_limiter: false,
             always_show: false,
@@ -105,15 +105,6 @@ impl Game<'_> {
             count: count as i32,
             randomization: 0,
         });
-        for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
-            // ServerLevel compares the player's block centre, strictly within 32.
-            let distance: f64 = (0..3)
-                .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
-                .sum();
-            if distance < 32.0 * 32.0 {
-                g.send(&packet);
-            }
-        }
     }
 
     /// `LivingEntity.checkFallDamage`'s `ServerLevel.sendParticles` of the
@@ -375,10 +366,7 @@ impl Game<'_> {
         let Some(particle) = self.network_particle(options, None) else {
             return;
         };
-        let Some(host) = self.lan.as_ref() else {
-            return;
-        };
-        let body = C::LevelParticles(play::LevelParticles {
+        self.lan_particle_packet(&play::LevelParticles {
             particle,
             override_limiter: false,
             always_show: false,
@@ -387,8 +375,16 @@ impl Game<'_> {
             max_speed: [speed as f32; 3],
             count: count as i32,
             randomization: 0,
-        })
-        .encode();
+        });
+    }
+
+    /// A level particle packet to every player within the vanilla 32-block range.
+    pub(super) fn lan_particle_packet(&self, packet: &play::LevelParticles) {
+        let Some(host) = self.lan.as_ref() else {
+            return;
+        };
+        let at = packet.pos;
+        let body = C::LevelParticles(packet.clone()).encode();
         for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
             // BlockPos.closerToCenterThan(at, 32): from the centre of the
             // player's block.

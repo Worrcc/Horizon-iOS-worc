@@ -114,6 +114,7 @@ pub(super) mod run {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             age: m.age,
+            texture: m.orders.texture.as_deref().map(str::to_owned),
             animation: m
                 .orders
                 .animation
@@ -438,6 +439,54 @@ pub(super) mod run {
                     all.extend(alive.map(|m| mod_entity(m, dim.id())));
                 }
                 snapshot.entities = all.into();
+                let root = &self.options.resources;
+                if self
+                    .mods
+                    .entity_resources
+                    .as_ref()
+                    .is_none_or(|(p, _)| p != root)
+                {
+                    let namespaces = horizon_client::mod_content::namespaces(root);
+                    let textures = horizon_client::atlas_sources::list_textures(root)
+                        .into_iter()
+                        .filter(|t| {
+                            t.split_once(':')
+                                .is_some_and(|(ns, _)| namespaces.iter().any(|n| n == ns))
+                        })
+                        .filter(|t| horizon_mods::content::entity_texture(t))
+                        .collect();
+                    let builtin = horizon_protocol::registry::Builtin::find(root)
+                        .and_then(|p| horizon_protocol::registry::Builtin::load(&p).ok())
+                        .unwrap_or_default();
+                    let mut sounds: std::collections::HashSet<String> =
+                        self.audio.engine.registry.names().cloned().collect();
+                    if let Some(ids) = builtin.get("minecraft:sound_event") {
+                        sounds.extend(ids.names.iter().cloned());
+                    }
+                    // Reading the codec with just its id succeeds exactly for types with no options.
+                    let particles = builtin
+                        .get("minecraft:particle_type")
+                        .into_iter()
+                        .flat_map(|ids| &ids.ids)
+                        .filter(|(_, id)| {
+                            let mut w = horizon_protocol::buf::Writer::new();
+                            w.varint(**id);
+                            horizon_protocol::entity_data::Particle::read(
+                                &mut horizon_protocol::buf::Reader::new(&w.data),
+                            )
+                            .is_ok()
+                        })
+                        .map(|(name, id)| (name.clone(), *id))
+                        .collect();
+                    let resources = horizon_mods::EntityResources {
+                        textures,
+                        sounds,
+                        particles,
+                    };
+                    self.mods.entity_resources =
+                        Some((root.clone(), std::sync::Arc::new(resources)));
+                }
+                snapshot.entity_resources = self.mods.entity_resources.as_ref().unwrap().1.clone();
                 let kinds = self.res.mob_types().keys();
                 let kinds = kinds.filter(|k| !k.starts_with("minecraft:")).cloned();
                 snapshot.mob_kinds = kinds.collect::<Vec<_>>().into();
@@ -502,6 +551,31 @@ pub(super) mod run {
                     m.needs_sync = true;
                 }
                 EntityOrder::Gravity(on) => m.no_gravity = !on,
+                EntityOrder::Texture(name) => m.orders.texture = name.map(std::sync::Arc::from),
+                EntityOrder::Sound(sound) => {
+                    let at = [m.position.x, m.position.y, m.position.z];
+                    if let Some(host) = &self.lan {
+                        let source = horizon_client::settings::sound_source(&sound.name) as i32;
+                        host.hub
+                            .sound(&sound.name, at, sound.volume, sound.pitch, source, None);
+                    }
+                    if self.options.execution_role.is_client()
+                        && self.remote.is_none()
+                        && self.player.as_ref().is_some_and(|p| {
+                            let d = [
+                                p.position.x - at[0],
+                                p.position.y - at[1],
+                                p.position.z - at[2],
+                            ];
+                            d.iter().map(|d| d * d).sum::<f64>()
+                                <= (f64::from(sound.volume.max(1.0)) * 16.0).powi(2)
+                        })
+                    {
+                        self.audio
+                            .play_unshared(&sound.name, Some(at), sound.volume, sound.pitch);
+                    }
+                }
+                EntityOrder::Particles(p) => self.mod_particles(&p),
                 EntityOrder::Animate(name) => {
                     let age = m.age;
                     m.orders.animation = name.map(|n| (std::sync::Arc::from(n), age));
@@ -538,6 +612,47 @@ pub(super) mod run {
                         }
                     }
                 }
+            }
+        }
+
+        fn mod_particles(&mut self, p: &horizon_mods::EntityParticles) {
+            use horizon_client::particles::{ParticleOptions, ParticleType};
+            let Some((_, resources)) = &self.mods.entity_resources else {
+                return;
+            };
+            let Some(&id) = resources.particles.get(&p.name) else {
+                return;
+            };
+            let at = [p.at.x, p.at.y, p.at.z];
+            let delta = [p.delta.x, p.delta.y, p.delta.z];
+            self.lan_particle_packet(&play::LevelParticles {
+                particle: horizon_protocol::entity_data::Particle { id, data: None },
+                override_limiter: false,
+                always_show: false,
+                pos: at,
+                dist: delta.map(|d| d as f32),
+                max_speed: [p.speed; 3],
+                count: p.count as i32,
+                randomization: 0,
+            });
+            if self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && self.player.as_ref().is_some_and(|p| {
+                    let pos = [p.position.x, p.position.y, p.position.z];
+                    (0..3)
+                        .map(|k| (pos[k].floor() + 0.5 - at[k]).powi(2))
+                        .sum::<f64>()
+                        < 32.0 * 32.0
+                })
+                && let Some(ty) = ParticleType::from_name(&p.name)
+            {
+                self.particles.send_particles(
+                    &ParticleOptions::simple(ty),
+                    at,
+                    delta,
+                    f64::from(p.speed),
+                    p.count,
+                );
             }
         }
 
