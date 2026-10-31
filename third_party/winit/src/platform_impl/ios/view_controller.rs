@@ -1,11 +1,13 @@
 use std::cell::Cell;
 
 use objc2::rc::Retained;
-use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::runtime::AnyClass;
+use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_foundation::{MainThreadMarker, NSObject, NSSet};
 use objc2_ui_kit::{
     UIDevice, UIInterfaceOrientationMask, UIPress, UIPressesEvent, UIRectEdge, UIResponder,
     UIStatusBarStyle, UIUserInterfaceIdiom, UIView, UIViewController,
+    UIWindowSceneGeometryPreferencesIOS,
 };
 
 use super::app_state::{self};
@@ -177,6 +179,37 @@ impl WinitViewController {
         self.ivars().supported_orientations.set(mask);
         #[allow(deprecated)]
         UIViewController::attemptRotationToDeviceOrientation(mtm);
+        self.request_supported_orientations();
+    }
+
+    /// Horizon: iOS 16 and later ignore `attemptRotationToDeviceOrientation`: the controller says
+    /// its orientations changed, and the window's scene is asked to rotate to one of them.
+    pub(crate) fn request_supported_orientations(&self) {
+        let mask = self.ivars().supported_orientations.get();
+        // SAFETY: selectors and classes checked at run time before use; main thread only.
+        unsafe {
+            let responds: bool = msg_send![
+                self,
+                respondsToSelector: sel!(setNeedsUpdateOfSupportedInterfaceOrientations)
+            ];
+            if !responds {
+                return;
+            }
+            self.setNeedsUpdateOfSupportedInterfaceOrientations();
+            let Some(scene) = self.viewIfLoaded().and_then(|v| v.window()).and_then(|w| w.windowScene())
+            else {
+                return;
+            };
+            if AnyClass::get("UIWindowSceneGeometryPreferencesIOS").is_none() {
+                return;
+            }
+            let mtm = MainThreadMarker::from(self);
+            let preferences = UIWindowSceneGeometryPreferencesIOS::initWithInterfaceOrientations(
+                mtm.alloc(),
+                mask,
+            );
+            scene.requestGeometryUpdateWithPreferences_errorHandler(&preferences, None);
+        }
     }
 
     pub(crate) fn new(

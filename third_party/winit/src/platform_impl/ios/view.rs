@@ -69,15 +69,6 @@ declare_class!(
 
             let window = self.window().unwrap();
             let window_bounds = window.bounds();
-            let screen = window.screen();
-            let screen_space = screen.coordinateSpace();
-            let screen_frame = self.convertRect_toCoordinateSpace(window_bounds, &screen_space);
-            let scale_factor = screen.scale();
-            let size = crate::dpi::LogicalSize {
-                width: screen_frame.size.width as f64,
-                height: screen_frame.size.height as f64,
-            }
-            .to_physical(scale_factor as f64);
 
             // If the app is started in landscape, the view frame and window bounds can be mismatched.
             // The view frame will be in portrait and the window bounds in landscape. So apply the
@@ -86,6 +77,16 @@ declare_class!(
             if view_frame != window_bounds {
                 self.setFrame(window_bounds);
             }
+
+            // Horizon: the view's own bounds at its own scale, the size `inner_size` and the Metal
+            // layer (which follows the view's layer) have. The rectangle converted to the screen's
+            // space was taken before the frame above was fixed, and in the screen's scale.
+            let bounds = self.bounds();
+            let size = crate::dpi::LogicalSize {
+                width: bounds.size.width as f64,
+                height: bounds.size.height as f64,
+            }
+            .to_physical(self.contentScaleFactor() as f64);
 
             app_state::handle_nonuser_event(
                 mtm,

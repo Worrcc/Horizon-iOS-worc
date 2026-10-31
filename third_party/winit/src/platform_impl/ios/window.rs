@@ -184,11 +184,14 @@ impl Inner {
     }
 
     pub fn inner_size(&self) -> PhysicalSize<u32> {
+        // Horizon: the whole view, as `Resized` reports it and as the Metal layer covers it. The
+        // safe area that winit returned here is smaller, so a surface sized from it was stretched
+        // over the view; a game drawing edge to edge keeps its own margins.
         let scale_factor = self.scale_factor();
-        let safe_area = self.safe_area_screen_space();
+        let bounds = self.view.bounds();
         let size = LogicalSize {
-            width: safe_area.size.width as f64,
-            height: safe_area.size.height as f64,
+            width: bounds.size.width as f64,
+            height: bounds.size.height as f64,
         };
         size.to_physical(scale_factor)
     }
@@ -564,6 +567,9 @@ impl Window {
 
         // Horizon: hardware keyboards' presses reach the controller (keyboard.rs).
         unsafe { view_controller.becomeFirstResponder() };
+        // Horizon: iOS 16 and scene-based hosts take the orientations from the scene only once
+        // asked; the controller's own answer alone left LiveContainer in portrait.
+        view_controller.request_supported_orientations();
 
         let inner = Inner { window, view_controller, view, gl_or_metal_backed };
         Ok(Window { inner: MainThreadBound::new(inner, mtm) })

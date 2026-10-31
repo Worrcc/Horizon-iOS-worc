@@ -14,10 +14,11 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
+    dpi::PhysicalSize,
     event::{DeviceEvent, DeviceId, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS},
-    window::{WindowAttributes, WindowId},
+    window::{Window, WindowAttributes, WindowId},
 };
 
 /// The game's view: landscape, nothing of the system's over it, and the screen edges kept for
@@ -28,6 +29,36 @@ pub(super) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
         .with_prefers_status_bar_hidden(true)
         .with_prefers_home_indicator_hidden(true)
         .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
+}
+
+/// The window's sizes, in the log: what a wrong-sized picture comes down to.
+pub(super) fn log_window(window: &Window) {
+    let (inner, outer) = (window.inner_size(), window.outer_size());
+    log::info!(
+        "Horizon: iOS window {}x{} px (screen frame {}x{} px) at scale {}",
+        inner.width,
+        inner.height,
+        outer.width,
+        outer.height,
+        window.scale_factor()
+    );
+}
+
+/// The window's size when the surface (`surface`, in pixels) no longer has it: a `Resized` lost
+/// around a rotation would otherwise leave the picture stretched over the screen.
+pub(super) fn size_change(window: &Window, surface: [u32; 2]) -> Option<PhysicalSize<u32>> {
+    let size = window.inner_size();
+    if size.width == 0 || size.height == 0 || [size.width, size.height] == surface {
+        return None;
+    }
+    log::info!(
+        "Horizon: iOS window is {}x{} px, the surface {}x{}: resizing",
+        size.width,
+        size.height,
+        surface[0],
+        surface[1]
+    );
+    Some(size)
 }
 
 /// The application handler, and what runs once it quits.

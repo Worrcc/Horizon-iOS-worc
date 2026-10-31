@@ -711,6 +711,7 @@ mod tests {
             handle: None,
             shown: false,
             menu: StartupMenu::default(),
+            touch: Default::default(),
             error: None,
         }
     }

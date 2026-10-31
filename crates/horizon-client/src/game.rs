@@ -13575,6 +13575,13 @@ impl ApplicationHandler for Game<'_> {
         }
         self.tick_server_packs();
         self.poll_control(event_loop);
+        #[cfg(target_os = "ios")]
+        if let (Some(w), Some(r)) = (&self.window, &self.renderer)
+            && let Some(size) = ios::size_change(w, [r.config.width, r.config.height])
+        {
+            let id = w.id();
+            self.window_event(event_loop, id, WindowEvent::Resized(size));
+        }
         self.touch_update(event_loop);
         if self.pending_save.is_some() {
             return;
@@ -15028,6 +15035,8 @@ struct Loading {
     handle: Option<JoinHandle<()>>,
     shown: bool,
     menu: startup_menu::StartupMenu,
+    /// Fingers on a touchscreen (iOS): the menu's pointer.
+    touch: touch::MenuTouch,
     error: Option<Box<dyn std::error::Error>>,
 }
 impl Loading {
@@ -15066,6 +15075,8 @@ impl Loading {
             }
         };
         horizon_client::telemetry::note_display(&window);
+        #[cfg(target_os = "ios")]
+        ios::log_window(&window);
         let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
         match loading_renderer(
             window.clone(),
@@ -15088,9 +15099,40 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
+        if touch::ENABLED
+            && let WindowEvent::Touch(t) = event
+        {
+            let Some(size) = self
+                .renderer
+                .as_ref()
+                .map(|r| [r.config.width, r.config.height])
+            else {
+                return;
+            };
+            match self.touch.touch(t, size) {
+                touch::MenuTouchAction::ToggleKeyboard => {
+                    self.touch.keyboard = !self.touch.keyboard;
+                    if let Some(window) = &self.window {
+                        window.set_ime_allowed(self.touch.keyboard);
+                    }
+                }
+                touch::MenuTouchAction::Events(events) => self.menu_events(event_loop, events),
+            }
+            return;
+        }
         if let Err(error) = self.menu_event(event_loop, event) {
             self.error = Some(error);
             quit(event_loop);
+        }
+    }
+    /// The pointer events a touch stands for.
+    fn menu_events(&mut self, event_loop: &ActiveEventLoop, events: Vec<WindowEvent>) {
+        for event in events {
+            if let Err(error) = self.menu_event(event_loop, event) {
+                self.error = Some(error);
+                quit(event_loop);
+                return;
+            }
         }
     }
     /// The menu bundle arrived: rebuild the loading screen with the real atlas
@@ -15136,6 +15178,21 @@ impl Loading {
             quit(event_loop);
             return;
         }
+        #[cfg(target_os = "ios")]
+        if let (Some(w), Some(r)) = (&self.window, &self.renderer)
+            && let Some(size) = ios::size_change(w, [r.config.width, r.config.height])
+        {
+            let id = w.id();
+            self.window_event(event_loop, id, WindowEvent::Resized(size));
+        }
+        if let Some(size) = self
+            .renderer
+            .as_ref()
+            .map(|r| [r.config.width, r.config.height])
+        {
+            let events = self.touch.update(size);
+            self.menu_events(event_loop, events);
+        }
         if let Some(w) = &self.window {
             if self.options.as_ref().is_some_and(|o| o.offscreen) {
                 self.draw();
@@ -15155,6 +15212,9 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
+        if let Some(gui) = &self.gui {
+            self.touch.draw(&mut batch, &gui.atlas);
+        }
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
@@ -15362,6 +15422,7 @@ fn run_loading(
         handle: Some(loader),
         shown: false,
         menu,
+        touch: Default::default(),
         error: None,
     };
     let app = App::Loading(Box::new(loading));

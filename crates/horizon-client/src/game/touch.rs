@@ -3,7 +3,7 @@
 //! the buttons over the HUD. On iOS only: desktop touchscreens keep winit's own behaviour.
 use super::{Game, Screen};
 use horizon_client::{
-    hud::{HudBatch, rgba},
+    hud::{HudAtlas, HudBatch, rgba},
     touch_controls::{Button, Layout, Output, TouchControls},
 };
 use std::time::Instant;
@@ -38,6 +38,147 @@ fn menu_button(layout: &Layout, button: MenuButton) -> [f32; 4] {
 
 fn inside([x, y, w, h]: [f32; 4], (px, py): (f32, f32)) -> bool {
     px >= x - 2.0 && px < x + w + 2.0 && py >= y - 2.0 && py < y + h + 2.0
+}
+
+/// The GUI's size and scale for a window of `size` pixels.
+fn layout_of(size: [u32; 2]) -> (Layout, f32) {
+    let batch = HudBatch::new(size);
+    (
+        Layout {
+            width: batch.width,
+            height: batch.height,
+        },
+        batch.scale,
+    )
+}
+
+/// The window event a menu pointer output stands for, on `device`. `None` for the world's
+/// outputs.
+fn pointer_event(device: DeviceId, output: Output, scale: f32) -> Option<WindowEvent> {
+    Some(match output {
+        Output::Pointer(x, y) => WindowEvent::CursorMoved {
+            device_id: device,
+            position: winit::dpi::PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale)),
+        },
+        Output::PointerButton(pressed) => WindowEvent::MouseInput {
+            device_id: device,
+            state: if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+            button: MouseButton::Left,
+        },
+        Output::Scroll(lines) => WindowEvent::MouseWheel {
+            device_id: device,
+            delta: MouseScrollDelta::LineDelta(0.0, lines),
+            phase: TouchPhase::Moved,
+        },
+        _ => return None,
+    })
+}
+
+/// A touch button: a dark box (light while pressed) with a thin edge and its label.
+fn draw_button(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4], label: &str, down: bool) {
+    let [x, y, w, h] = rect;
+    let fill = if down {
+        rgba(255, 255, 255, 0x70)
+    } else {
+        rgba(0, 0, 0, 0x60)
+    };
+    batch.fill(atlas, x, y, w, h, fill);
+    let edge = rgba(255, 255, 255, 0x50);
+    batch.fill(atlas, x, y, w, 1.0, edge);
+    batch.fill(atlas, x, y + h - 1.0, w, 1.0, edge);
+    batch.fill(atlas, x, y, 1.0, h, edge);
+    batch.fill(atlas, x + w - 1.0, y, 1.0, h, edge);
+    let tw = HudBatch::text_width(atlas, label);
+    batch.text(
+        atlas,
+        label,
+        (x + (w - tw) / 2.0).round(),
+        (y + (h - 8.0) / 2.0).round(),
+        u32::MAX,
+        true,
+    );
+}
+
+/// Touch on the startup menu (the title screen shown while the world's resources load, before
+/// `Game` exists): the first finger is the pointer, and the keyboard button shows the keyboard
+/// for its text fields.
+#[derive(Default)]
+pub(super) struct MenuTouch {
+    controls: TouchControls,
+    device: Option<DeviceId>,
+    /// The on-screen keyboard is up (`Window::set_ime_allowed`).
+    pub keyboard: bool,
+}
+
+/// What a touch on the startup menu does.
+pub(super) enum MenuTouchAction {
+    /// Pointer events for the menu.
+    Events(Vec<WindowEvent>),
+    /// The keyboard button: show or hide the keyboard.
+    ToggleKeyboard,
+}
+
+impl MenuTouch {
+    /// A touch on a window of `size` pixels.
+    pub(super) fn touch(&mut self, touch: Touch, size: [u32; 2]) -> MenuTouchAction {
+        let (layout, scale) = layout_of(size);
+        let at = (
+            touch.location.x as f32 / scale,
+            touch.location.y as f32 / scale,
+        );
+        if touch.phase == TouchPhase::Started
+            && inside(menu_button(&layout, MenuButton::Keyboard), at)
+        {
+            return MenuTouchAction::ToggleKeyboard;
+        }
+        self.device = Some(touch.device_id);
+        let outputs =
+            self.controls
+                .touch(touch.id, touch.phase, at, &layout, false, Instant::now());
+        MenuTouchAction::Events(self.events(outputs, scale))
+    }
+
+    /// Once a frame: a finger held still starts a drag.
+    pub(super) fn update(&mut self, size: [u32; 2]) -> Vec<WindowEvent> {
+        if !self.controls.used {
+            return Vec::new();
+        }
+        let (_, scale) = layout_of(size);
+        let outputs = self.controls.update(Instant::now());
+        self.events(outputs, scale)
+    }
+
+    fn events(&self, outputs: Vec<Output>, scale: f32) -> Vec<WindowEvent> {
+        let Some(device) = self.device else {
+            return Vec::new();
+        };
+        outputs
+            .into_iter()
+            .filter_map(|o| pointer_event(device, o, scale))
+            .collect()
+    }
+
+    /// The keyboard button, once a finger has touched the screen.
+    pub(super) fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
+        if !ENABLED || !self.controls.used {
+            return;
+        }
+        let layout = Layout {
+            width: batch.width,
+            height: batch.height,
+        };
+        draw_button(
+            batch,
+            atlas,
+            menu_button(&layout, MenuButton::Keyboard),
+            "Aa",
+            self.keyboard,
+        );
+    }
 }
 
 #[derive(Default)]
@@ -84,14 +225,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])?;
-        let batch = HudBatch::new(size);
-        Some((
-            Layout {
-                width: batch.width,
-                height: batch.height,
-            },
-            batch.scale,
-        ))
+        Some(layout_of(size))
     }
 
     /// `WindowEvent::Touch`.
@@ -204,34 +338,15 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
                 pressed
             }
-            Output::Pointer(x, y) => {
-                self.touch_window_event(event_loop, |device_id| WindowEvent::CursorMoved {
-                    device_id,
-                    position: winit::dpi::PhysicalPosition::new(
-                        f64::from(x * scale),
-                        f64::from(y * scale),
-                    ),
-                });
-                Ok(())
-            }
-            Output::PointerButton(pressed) => {
-                self.touch_window_event(event_loop, |device_id| WindowEvent::MouseInput {
-                    device_id,
-                    state: if pressed {
-                        ElementState::Pressed
-                    } else {
-                        ElementState::Released
-                    },
-                    button: MouseButton::Left,
-                });
-                Ok(())
-            }
-            Output::Scroll(lines) => {
-                self.touch_window_event(event_loop, |device_id| WindowEvent::MouseWheel {
-                    device_id,
-                    delta: MouseScrollDelta::LineDelta(0.0, lines),
-                    phase: TouchPhase::Moved,
-                });
+            Output::Pointer(..) | Output::PointerButton(_) | Output::Scroll(_) => {
+                let (Some(device), Some(id)) =
+                    (self.touch.device, self.window.as_ref().map(|w| w.id()))
+                else {
+                    return;
+                };
+                if let Some(event) = pointer_event(device, output, scale) {
+                    self.window_event(event_loop, id, event);
+                }
                 Ok(())
             }
         };
@@ -250,18 +365,6 @@ impl Game<'_> {
         self.play_mouse(button, pressed)
     }
 
-    fn touch_window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        event: impl FnOnce(DeviceId) -> WindowEvent,
-    ) {
-        let (Some(device), Some(id)) = (self.touch.device, self.window.as_ref().map(|w| w.id()))
-        else {
-            return;
-        };
-        self.window_event(event_loop, id, event(device));
-    }
-
     /// The buttons over the HUD, once a finger has touched the screen.
     pub(super) fn draw_touch_controls(&self, batch: &mut HudBatch) {
         if !ENABLED || !self.touch.controls.used {
@@ -272,27 +375,8 @@ impl Game<'_> {
             height: batch.height,
         };
         let atlas = &self.gui.atlas;
-        let button = |batch: &mut HudBatch, [x, y, w, h]: [f32; 4], label: &str, down: bool| {
-            let fill = if down {
-                rgba(255, 255, 255, 0x70)
-            } else {
-                rgba(0, 0, 0, 0x60)
-            };
-            batch.fill(atlas, x, y, w, h, fill);
-            let edge = rgba(255, 255, 255, 0x50);
-            batch.fill(atlas, x, y, w, 1.0, edge);
-            batch.fill(atlas, x, y + h - 1.0, w, 1.0, edge);
-            batch.fill(atlas, x, y, 1.0, h, edge);
-            batch.fill(atlas, x + w - 1.0, y, 1.0, h, edge);
-            let tw = HudBatch::text_width(atlas, label);
-            batch.text(
-                atlas,
-                label,
-                (x + (w - tw) / 2.0).round(),
-                (y + (h - 8.0) / 2.0).round(),
-                u32::MAX,
-                true,
-            );
+        let button = |batch: &mut HudBatch, rect: [f32; 4], label: &str, down: bool| {
+            draw_button(batch, atlas, rect, label, down)
         };
         if !self.touch_playing() {
             button(
