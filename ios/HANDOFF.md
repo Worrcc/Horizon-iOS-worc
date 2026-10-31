@@ -64,6 +64,21 @@ Each item has a fix in the latest build, but nobody has seen it working yet.
   Until then, the Sign in button explains what's missing. The flow itself is untested against
   the real services. Its unit tests cover parsing only.
 
+## Paused here (2026-10-31): resume from this section
+
+- **Branch:** `claude/launcher-mods-shaders-controller-xfv3kk`, all work committed and pushed.
+  No pull request opened.
+- **Done:** instances (below). Type-checked for iOS (`ios/scripts/check-ios.sh`), unit tests
+  pass (`cargo test -p horizon-client --no-default-features --lib instance_list`), clippy and fmt
+  clean. **Not yet seen on a device:** the Instances button, New Instance, and a switch on
+  the title reloading packs and mods.
+- **Player's answers so far:** launcher in-app (Rust, before the game); code mods via wasmtime
+  with JIT (the player uses StikDebug); controller work wanted: full menu navigation, touch
+  controls hidden while a pad is connected, vibration/lights/triggers, remapping (already
+  exists: Controller Settings > Controller Binds).
+- **Open questions for the player:** launcher screen or controller work next? Modpacks: Horizon
+  registry packs, or Modrinth/CurseForge Java packs (porting runs Java, so on a computer)?
+
 ## The in-app launcher (in progress)
 
 Goal: manage instances, mods, shader packs and modpacks inside the app, and make controllers a
