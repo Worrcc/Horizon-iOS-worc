@@ -249,8 +249,8 @@ fn cube(
         [x0, y1, z1],
     ];
     // Box UV offsets (ModelPart.Cube): u, u+d, u+d+w, u+d+2w, u+2d+w, u+2d+2w; v, v+d, v+d+h.
-    let uv = v3(&c["uv"], [0.0; 3]);
-    let (u, v) = (uv[0], uv[1]);
+    let at = |i: usize| c["uv"][i].as_f64().unwrap_or(0.0) as f32;
+    let (u, v) = (at(0), at(1));
     let us = [
         u,
         u + d,
@@ -461,6 +461,10 @@ mod tests {
         let top = &arm.polygons[0];
         assert_eq!(top.normal, [0.0, -1.0, 0.0]);
         assert_eq!(&top.vertices[0][..3], &[-1.0, 0.0, -2.0]);
+        // Box UV from (40, 16): the -y face spans u 44..46, v 16..20 (reversed when mirrored).
+        let uv = |v: [f32; 5]| [v[3] * 64.0, v[4] * 64.0];
+        assert_eq!(uv(top.vertices[3]), [46.0, 16.0]);
+        assert_eq!(uv(top.vertices[0]), [46.0, 20.0]);
         // The face labelled west lies on +x once mirrored, facing +x.
         let west = &arm.polygons[2];
         assert_eq!(west.normal, [1.0, 0.0, 0.0]);

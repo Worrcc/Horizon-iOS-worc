@@ -61,6 +61,8 @@ pub struct Report {
     pub worldgen_types: crate::worldgen::Upgrade,
     /// The loader's convention biome tags the structures name, carried.
     pub convention_biome_tags: usize,
+    /// Tabula models written as Bedrock geometry and animations, for the mod's entities.
+    pub tabula: crate::tabula::Report,
 }
 
 /// The pack around a mod being carried.
@@ -735,6 +737,10 @@ pub fn carry(
         let Some(keep) = place(&name, &owned) else {
             continue;
         };
+        // Tabula models are carried as Bedrock geometry below; the game reads no `.tbl`.
+        if name.ends_with(".tbl") {
+            continue;
+        }
         if name.split('/').any(|p| p == ".." || p.is_empty()) {
             continue;
         }
@@ -1101,6 +1107,7 @@ pub fn carry(
     let owned: Vec<String> = owned.iter().map(|n| n.to_string()).collect();
     let owned: Vec<&str> = owned.iter().map(String::as_str).collect();
     unregistered_recipes(&inside, &outside, id, &owned, &mut report)?;
+    report.tabula = crate::tabula::carry(&mut zip, &owned, &inside)?;
     let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
     let name = if info.name.is_empty() { id } else { &info.name };
     let (title, authors, description) = port_credits(name, &info.authors);

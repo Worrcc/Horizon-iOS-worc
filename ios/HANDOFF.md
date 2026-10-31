@@ -100,8 +100,10 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
   1. **Models of their own: done** (part 2). GeckoLib geometry and animations in a mod's
      `assets/`, `model` and `animations` (idle, walk, attack) in the entity's JSON. Checked in
      the game with a test mob: the model, its texture, idle and walk loops, death tip-over.
-     **Ice and Fire's dragons are Tabula models (Citadel), not GeckoLib**: they need a
-     Tabula → Bedrock conversion in `horizon-port-pack`, and their Java animations redone.
+     **Ice and Fire's dragons are Tabula models (Citadel)**: `horizon-port-pack` converts them
+     (`tabula.rs`): all 192 of Ice and Fire 2.0's models, and pose folders as animations. A
+     converted fire dragon (red_4 texture, `tail` idle, `walk` loop) was checked in the game,
+     locally only.
   2. An `entity` interface for mod code to steer its mobs (flight, breath attacks, growth,
      taming, riding), and to pick animations beyond idle/walk/attack.
   3. Spawn rules and structures with their mobs.

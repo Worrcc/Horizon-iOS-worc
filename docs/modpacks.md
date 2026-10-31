@@ -349,9 +349,18 @@ What deep-tier mods such as Ice and Fire also need, in this order:
 2. **Spawning and worldgen:** natural spawn rules per biome, and structures with their mobs (the
    carried-over worldgen covers the structure files).
 3. **Block entities and screens:** for machines like forges (API 0.4).
-4. **Other model formats:** Ice and Fire's dragons are Tabula models (`.tbl`, through the
-   Citadel library) with animations in Java, not GeckoLib files. A port needs them converted to
-   Bedrock geometry, and their animations written again as data or in mod code.
+
+**Tabula models** (`.tbl`, through the Citadel library: Ice and Fire's dragons and sea serpents)
+are converted when a mod is carried over (`crates/horizon-port-pack/src/tabula.rs`): each
+`assets/<ns>/models/tabula/<path>.tbl` becomes `assets/<ns>/geo/tabula/<path>.geo.json`, a bone
+per cube. Such mods keep a folder of poses of one model (`firedragon_ground`, `_flying`,
+`_bite1`...) and move between them in Java; for each folder's base model (named `base`,
+`ground`, `default` or `idle`, else the first) carry-over writes
+`assets/<ns>/animations/tabula/<path>.animation.json` beside it, holding every other model as a
+pose (`animation.<stem>`) and each numbered run as a loop, 0.25 s a pose
+(`animation.firedragon_walk` from `walk1` to `walk4`). The mod's own timing and blending stay
+in its Java code: an entity declared with these picks its idle, walk and attack loops, and
+the `entities` interface for mod code is what chooses among the rest.
 
 Until those exist, a port carries over a mod's blocks, items, recipes, tags, language files,
 worldgen and textures. Its creatures can be declared from templates by hand or by an agent,
