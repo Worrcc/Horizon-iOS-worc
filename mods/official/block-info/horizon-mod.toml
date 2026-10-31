@@ -1,0 +1,9 @@
+id = "block_info"
+name = "Block Info"
+version = "1.0.0"
+description = "What you're looking at: the block under the crosshair, its icon, its name in your language and the game or mod it comes from, in a box at the top of the screen. Where it sits, how far it looks and whether it shows coordinates are on its settings page."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "render", "recipes", "ui", "storage"]
+experimental = ["render", "recipes", "ui"]
