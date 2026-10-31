@@ -136,6 +136,19 @@ fn png_size(path: &Path) -> Option<(u32, u32)> {
     (header[..8] == *b"\x89PNG\r\n\x1a\n" && header[12..16] == *b"IHDR")
         .then(|| (field(16), field(20)))
 }
+/// A texture's sprite name: its path under vanilla's `textures/` (`entity/pig/pig_temperate`),
+/// or `<namespace>:<path>` for another namespace's (`ruby:entity/golem`).
+fn sprite_name(root: &Path, textures: &Path, path: &Path) -> Option<String> {
+    let plain = |p: &Path| p.with_extension("").to_string_lossy().replace('\\', "/");
+    if let Ok(rest) = path.strip_prefix(textures) {
+        return Some(plain(rest));
+    }
+    let rest = path.strip_prefix(root.join("assets")).ok()?;
+    let mut parts = rest.components();
+    let ns = parts.next()?.as_os_str().to_str()?.to_owned();
+    let rest = parts.as_path().strip_prefix("textures").ok()?;
+    Some(format!("{ns}:{}", plain(rest)))
+}
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -393,18 +406,26 @@ impl HudAtlas {
         for folder in folders {
             walk(&textures.join(folder), &mut files);
         }
+        // Content mods' entity textures (docs/modpacks.md, entities), named
+        // `<namespace>:entity/...` so they never meet vanilla's names.
+        if folders.contains(&"entity") {
+            for ns in fs::read_dir(root.join("assets"))
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if ns.file_name() != "minecraft" {
+                    walk(&ns.path().join("textures/entity"), &mut files);
+                }
+            }
+        }
         files.retain(|p| {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
         });
         type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = path
-                .strip_prefix(&textures)
-                .ok()?
-                .with_extension("")
-                .to_string_lossy()
-                .replace('\\', "/");
+            let name = sprite_name(root, &textures, path)?;
             let (mut w, mut h, pixels) = decode(path).ok()?;
             let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
             let animation = mcmeta
@@ -1585,6 +1606,22 @@ impl HudRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_textures_are_named_by_namespace() {
+        let root = Path::new("/r");
+        let textures = root.join("assets/minecraft/textures");
+        let name = |p: &str| sprite_name(root, &textures, Path::new(p));
+        assert_eq!(
+            name("/r/assets/minecraft/textures/entity/pig/pig.png").as_deref(),
+            Some("entity/pig/pig")
+        );
+        assert_eq!(
+            name("/r/assets/ruby/textures/entity/golem.png").as_deref(),
+            Some("ruby:entity/golem")
+        );
+        assert_eq!(name("/elsewhere/x.png"), None);
+    }
 
     /// Write a PNG `width x height` whose `frames` stacked rows are solid
     /// colours, then its mcmeta beside it.

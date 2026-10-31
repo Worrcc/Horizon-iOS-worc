@@ -881,3 +881,62 @@ fn a_replacing_mod_tag_reaches_the_root() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+#[test]
+fn mod_entities_copy_their_template_row() {
+    let golem = Entity {
+        id: "ruby:ruby_golem".into(),
+        template: "minecraft:zombie".into(),
+        width: Some(1.5),
+        height: None,
+        eye_height: None,
+        attributes: [("max_health".to_owned(), 60.0)].into_iter().collect(),
+        fire_immune: Some(true),
+        category: None,
+        texture: Some("ruby:entity/golem".into()),
+    };
+    let plan = Plan {
+        blocks: Vec::new(),
+        items: Vec::new(),
+        entities: vec![&golem],
+        states: 0,
+        defaults: BTreeMap::new(),
+        sounds: BTreeMap::new(),
+    };
+    let mut doc: J = serde_json::from_str(
+        r#"{"minecraft:zombie": {"width": 0.6, "height": 1.95, "category": "monster",
+            "fire_immune": false, "attributes": {"minecraft:max_health": 20.0}}}"#,
+    )
+    .unwrap();
+    plan.json("entity-types.json", &mut doc).unwrap();
+    let row = doc.get("ruby:ruby_golem").unwrap();
+    assert_eq!(
+        row.get("width"),
+        Some(&J::Num(serde_json::Number::from_f64(1.5).unwrap()))
+    );
+    assert_eq!(
+        row.get("height"),
+        doc.get("minecraft:zombie").unwrap().get("height")
+    );
+    assert_eq!(row.get("fire_immune"), Some(&J::Bool(true)));
+    assert_eq!(
+        row.get("attributes")
+            .and_then(|a| a.get("minecraft:max_health")),
+        Some(&J::Num(serde_json::Number::from_f64(60.0).unwrap()))
+    );
+    let horizon = row.get("horizon").unwrap();
+    assert_eq!(
+        horizon.get("template"),
+        Some(&J::Str("minecraft:zombie".into()))
+    );
+    assert_eq!(
+        horizon.get("texture"),
+        Some(&J::Str("ruby:entity/golem".into()))
+    );
+    // The template is untouched, and a second run refuses the id it now holds.
+    assert_eq!(
+        doc.get("minecraft:zombie").unwrap().get("fire_immune"),
+        Some(&J::Bool(false))
+    );
+    assert!(plan.json("entity-types.json", &mut doc).is_err());
+}

@@ -174,7 +174,7 @@ frame, chat and command hooks. Server mods do not run yet. What a content pack n
 | Accessory slots (what Curios does) | — | Curios users (6 require it, more use it optionally) | **0.4** | built-in slots API |
 | Mod networking between its client and server halves | — | machines and up | **0.4** | `net` interface (already planned in mods.md) |
 | Custom recipe types: machine recipes with their own JSON | — | machines and up | **0.4** | recipe-type registry: the mod declares its JSON schema and a display layout for the recipe viewer |
-| Entities: types, attributes, AI goals and brains, spawning | — | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable |
+| Entities: types, attributes, AI goals and brains, spawning | **types from a vanilla template** ([below](#entities-05-part-1-mobs-from-a-template)) | deep (87) | 0.5 | `entity` interface, AI in the mod with vanilla goals reusable |
 | Custom renderers and animated models (block-entity, entity, item; GeckoLib's format) | — | deep | 0.5 | data models (Bedrock geometry + animations), plus a budgeted draw-list interface for the rest |
 | Dimensions: dimension types, levels, chunk generators | — | about 10 (Twilight Forest, Aether, Ad Astra, Undergarden, ...) | 0.5 | JSON part with worldgen; custom generators as mod code |
 | New hooks into vanilla behaviour (what Mixins do) | — | deep | as asked | each becomes a named hook, added for everyone |
@@ -269,6 +269,59 @@ How the game loads them, without touching vanilla's path:
 - Not in 0.2: multiplayer registry sync (single player and the integrated server first), worlds
   opened without a mod they used (vanilla turns unknown blocks into air; we will ask first),
   vanilla ids redefined by a mod (refused).
+
+### Entities 0.5, part 1: mobs from a template
+
+A content mod declares a mob in `data/<id>/horizon/entity/<name>.json`. Like a block, it copies
+a vanilla **template**: the template's species gives it its AI, model, animations and sounds.
+The mod changes its size, attributes, category, fire immunity and texture:
+
+```json
+{
+  "template": "minecraft:zombie",
+  "width": 1.2, "height": 2.4, "eye_height": 2.1,
+  "attributes": { "max_health": 60, "attack_damage": 7, "movement_speed": 0.3 },
+  "category": "monster",
+  "fire_immune": true,
+  "texture": "ruby:entity/golem"
+}
+```
+
+- `attributes` takes `max_health`, `movement_speed`, `flying_speed`, `attack_damage`,
+  `attack_knockback`, `armor`, `armor_toughness`, `knockback_resistance`, `follow_range`,
+  `step_height` and `scale`, each 0 to 1024. Sizes are more than 0 and at most 64 blocks.
+  Unknown keys are refused.
+- `texture` is `<namespace>:entity/<path>`, for `assets/<namespace>/textures/entity/<path>.png`
+  in one of the mod's namespaces. It has to fit the template's model, as a resource pack's
+  retexture does.
+- The content root appends the mob to `entity-types.json`, copying the template's row and adding
+  a `horizon` object (template, texture). It also adds the mob to the `minecraft:entity_type`
+  registry, after vanilla's network ids, and to the ids commands accept. `MobTypes::load`
+  builds its type from the template's, and the HUD atlas loads mods' `textures/entity/` as
+  `<namespace>:entity/...` sprites. `/summon <mod>:<name>` spawns it.
+
+This covers creatures that look and act like a vanilla mob with other numbers and skins. What
+deep-tier mods such as Ice and Fire also need, in this order:
+
+1. **Models of their own:** Bedrock geometry and animations (GeckoLib's format) as data, read
+   from the mod's `assets/`, in place of the template's model.
+2. **Behaviour in mod code:** an `entity` interface for a mod's WASM to steer its mobs (goals,
+   targets, attacks, flight, breath attacks, growth stages, taming, riding), budgeted like the
+   other hooks, with vanilla's goals reusable.
+3. **Spawning and worldgen:** natural spawn rules per biome, and structures with their mobs (the
+   carried-over worldgen covers the structure files).
+4. **Block entities and screens:** for machines like forges (API 0.4).
+
+Until those exist, a port carries over a mod's blocks, items, recipes, tags, language files,
+worldgen and textures. Its creatures can be declared from templates by hand or by an agent.
+
+### Unofficial ports and credits
+
+`horizon-port-pack` names every port "<name> (unofficial port)", lists the original mod's
+authors (from `mods.toml` or `fabric.mod.json`) as its authors, and says in its description
+that it is an unofficial port of their work, which they neither made nor support. Ports are
+made on the player's computer from their own copy of the mod and stay there
+([Licences](#licences)).
 
 ## The pipeline: `horizon-port-pack`
 

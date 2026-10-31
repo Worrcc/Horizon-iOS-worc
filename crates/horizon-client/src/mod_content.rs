@@ -15,7 +15,7 @@
 //! The loaders need no mod code, vanilla state ids never move, and with no
 //! content mod the root is the base root itself.
 use crate::{Result, blocks::MAP_COLORS};
-use horizon_mods::content::{Block, Content, Rarity};
+use horizon_mods::content::{Block, Content, Entity, Rarity};
 use horizon_world::nbt::{self, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
@@ -240,6 +240,8 @@ struct NewItem {
 struct Plan<'a> {
     blocks: Vec<NewBlock<'a>>,
     items: Vec<NewItem>,
+    /// Mod entities, mods and entities in id order.
+    entities: Vec<&'a Entity>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -371,10 +373,68 @@ impl<'a> Plan<'a> {
         Ok(Plan {
             blocks,
             items,
+            entities: sorted
+                .iter()
+                .flat_map(|m| {
+                    let mut e: Vec<&Entity> = m.content.entities.iter().collect();
+                    e.sort_by(|a, b| a.id.cmp(&b.id));
+                    e
+                })
+                .collect(),
             states: names.len(),
             defaults,
             sounds,
         })
+    }
+
+    /// Each mod entity's copy of its template's row in `entity-types.json`, with its overrides
+    /// and a `horizon` object naming the template (the mob code it runs) and its texture.
+    fn entity_types(&self, doc: &mut J) -> Result<()> {
+        let num = |v: f64| {
+            serde_json::Number::from_f64(v)
+                .map(J::Num)
+                .ok_or("an attribute that is not a number")
+        };
+        for e in &self.entities {
+            if doc.get(&e.id).is_some() {
+                return Err(format!("{} is already an entity", e.id).into());
+            }
+            let mut row = doc
+                .get(&e.template)
+                .cloned()
+                .ok_or_else(|| format!("{}: template {} is not an entity", e.id, e.template))?;
+            for (key, v) in [
+                ("width", e.width),
+                ("height", e.height),
+                ("eye_height", e.eye_height),
+            ] {
+                if let Some(v) = v {
+                    row.set(key, num(f64::from(v))?);
+                }
+            }
+            if let Some(f) = e.fire_immune {
+                row.set("fire_immune", J::Bool(f));
+            }
+            if let Some(c) = &e.category {
+                row.set("category", J::Str(c.clone()));
+            }
+            if !e.attributes.is_empty() {
+                if row.get("attributes").is_none() {
+                    row.set("attributes", J::Obj(Vec::new()));
+                }
+                let attributes = row.get_mut("attributes").ok_or("no attributes")?;
+                for (name, v) in &e.attributes {
+                    attributes.set(&format!("minecraft:{name}"), num(*v)?);
+                }
+            }
+            let mut horizon = vec![("template".to_owned(), J::Str(e.template.clone()))];
+            if let Some(t) = &e.texture {
+                horizon.push(("texture".to_owned(), J::Str(t.clone())));
+            }
+            row.set("horizon", J::Obj(horizon));
+            doc.set(&e.id, row);
+        }
+        Ok(())
     }
 
     /// What moves in a new block's copies of its template's rows: the
@@ -502,6 +562,7 @@ impl<'a> Plan<'a> {
                 }
             }
             "gameplay-facts.json" => states(doc, "states", false, true)?,
+            "entity-types.json" => self.entity_types(doc)?,
             "block-behaviours.json" => {
                 states(doc, "states", false, false)?;
                 let Some(J::Arr(blocks)) = doc.at("blocks") else {
@@ -543,10 +604,16 @@ impl<'a> Plan<'a> {
                 // this report, so new ones get the ids after vanilla's, in plan order.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
                 let new_blocks = self.blocks.iter().map(|b| b.decl.id.clone());
+                let new_entities: Vec<String> =
+                    self.entities.iter().map(|e| e.id.clone()).collect();
                 for (registry, names) in [
                     ("minecraft:item", new_items.collect::<Vec<_>>()),
                     ("minecraft:block", new_blocks.collect()),
+                    ("minecraft:entity_type", new_entities),
                 ] {
+                    if names.is_empty() && registry == "minecraft:entity_type" {
+                        continue;
+                    }
                     let Some(J::Obj(entries)) =
                         doc.get_mut(registry).and_then(|r| r.get_mut("entries"))
                     else {
@@ -583,6 +650,9 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:block/ids") {
                     ids.extend(new_blocks());
+                }
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:entity_type/ids") {
+                    ids.extend(self.entities.iter().map(|e| J::Str(e.id.clone())));
                 }
             }
             "mob-data.json" => states(doc, "states", false, false)?,
@@ -649,7 +719,8 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 14] = [
+const JSON_TABLES: [&str; 15] = [
+    "entity-types.json",
     "facts.json",
     "registries.json",
     "gameplay-facts.json",

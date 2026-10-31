@@ -501,7 +501,61 @@ impl MobTypes {
                 },
             );
         }
+        mod_types(&types, &mut out);
         Ok(Self { types: out })
+    }
+}
+/// Content mods' entities (docs/modpacks.md, entities): the rows the content root appended to
+/// `entity-types.json` with a `horizon` object, each a copy of its template's type (its
+/// species, so its AI, model, animations and sounds) under its own id, with the row's size,
+/// category, fire immunity and attributes, and the mod's texture.
+fn mod_types(types: &Value, out: &mut HashMap<String, MobType>) {
+    let Some(rows) = types.as_object() else {
+        return;
+    };
+    for (id, row) in rows {
+        let Some(horizon) = row.get("horizon") else {
+            continue;
+        };
+        let Some(template) = horizon["template"].as_str().and_then(|t| out.get(t)) else {
+            log::warn!("Horizon: entity {id}: its template isn't a mob Horizon has");
+            continue;
+        };
+        let mut t = template.clone();
+        t.id = id.clone();
+        t.width = row["width"].as_f64().unwrap_or(t.width);
+        t.height = row["height"].as_f64().unwrap_or(t.height);
+        t.eye_height = row["eye_height"].as_f64().unwrap_or(t.eye_height);
+        if let Some(c) = row["category"].as_str() {
+            t.category = c.to_owned();
+        }
+        if let Some(f) = row["fire_immune"].as_bool() {
+            t.flags.fire_immune = f;
+        }
+        let mut attributes = (*t.attributes).clone();
+        if let Some(values) = row["attributes"].as_object() {
+            for (k, v) in values {
+                if let Some(v) = v.as_f64() {
+                    attributes.insert(k.clone(), v);
+                }
+            }
+        }
+        let attr = |k: &str| attributes.get(&format!("minecraft:{k}")).copied();
+        t.max_health = attr("max_health").map_or(t.max_health, |v| v as f32);
+        t.speed = attr("movement_speed").unwrap_or(t.speed);
+        t.flying_speed = attr("flying_speed").unwrap_or(t.flying_speed);
+        t.attack_damage = attr("attack_damage").map_or(t.attack_damage, |v| v as f32);
+        t.attack_knockback = attr("attack_knockback").unwrap_or(t.attack_knockback);
+        t.armor = attr("armor").map_or(t.armor, |v| v as f32);
+        t.armor_toughness = attr("armor_toughness").map_or(t.armor_toughness, |v| v as f32);
+        t.knockback_resistance = attr("knockback_resistance").unwrap_or(t.knockback_resistance);
+        t.follow_range = attr("follow_range").unwrap_or(t.follow_range);
+        t.step_height = attr("step_height").unwrap_or(t.step_height);
+        t.attributes = Arc::new(attributes);
+        if let Some(texture) = horizon["texture"].as_str() {
+            t.texture = texture.to_owned();
+        }
+        out.insert(id.clone(), t);
     }
 }
 pub use horizon_client_core::who::Who;
@@ -3144,5 +3198,36 @@ mod push_tests {
             let after = t.elapsed().as_secs_f64() * 1e3;
             println!("{n} mobs pushing each other: {before:.3} ms -> {after:.3} ms");
         }
+    }
+}
+
+#[cfg(test)]
+mod mod_type_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_mod_mob_is_its_template_with_its_own_numbers() {
+        let template = (*sensor_scan_tests::kind()).clone();
+        let mut out = HashMap::from([(template.id.clone(), template.clone())]);
+        let types = json!({
+            "ruby:ruby_cow": {
+                "width": 1.8, "category": "monster", "fire_immune": true,
+                "attributes": {"minecraft:max_health": 60.0, "minecraft:attack_damage": 7.0},
+                "horizon": {"template": "minecraft:cow", "texture": "ruby:entity/cow"}
+            },
+            "ruby:orphan": {"horizon": {"template": "minecraft:nothing"}}
+        });
+        mod_types(&types, &mut out);
+        let t = &out["ruby:ruby_cow"];
+        assert_eq!(t.id, "ruby:ruby_cow");
+        assert_eq!(t.species, template.species);
+        assert_eq!((t.width, t.height), (1.8, template.height));
+        assert_eq!(t.category, "monster");
+        assert!(t.flags.fire_immune);
+        assert_eq!((t.max_health, t.attack_damage), (60.0, 7.0));
+        assert_eq!(t.attributes["minecraft:max_health"], 60.0);
+        assert_eq!(t.texture, "ruby:entity/cow");
+        assert!(!out.contains_key("ruby:orphan"));
     }
 }

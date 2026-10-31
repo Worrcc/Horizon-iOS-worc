@@ -10,6 +10,8 @@ pub struct JarInfo {
     pub name: String,
     pub version: String,
     pub license: String,
+    /// The mod's authors as its metadata names them, for the port's credits.
+    pub authors: Vec<String>,
     /// Required dependencies by mod id (loaders and `minecraft` left out).
     pub depends: Vec<String>,
     pub census: Census,
@@ -115,6 +117,11 @@ pub fn mods_toml(text: &str) -> Result<JarInfo, String> {
         name: get(first, "displayName"),
         version: get(first, "version"),
         license: get(Some(&doc), "license"),
+        // `authors` is one free-text string in mods.toml ("A, B and C").
+        authors: Some(get(first, "authors"))
+            .filter(|a| !a.trim().is_empty())
+            .into_iter()
+            .collect(),
         mod_id,
         depends,
         census: Census::default(),
@@ -145,6 +152,14 @@ pub fn fabric(text: &str) -> Result<JarInfo, String> {
         name: s("name"),
         version: s("version"),
         license,
+        // A name, or a person object with one.
+        authors: v["authors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.as_str().or_else(|| a["name"].as_str()))
+            .map(str::to_owned)
+            .collect(),
         depends,
         census: Census::default(),
     })
@@ -194,6 +209,7 @@ license = "MIT"
 modId = "ruby"
 version = "1.2.0"
 displayName = "Ruby"
+authors = "Ann and Bo"
 [[dependencies.ruby]]
 modId = "neoforge"
 type = "required"
@@ -218,17 +234,20 @@ mandatory = true
             ("ruby", "1.2.0", "MIT")
         );
         assert_eq!(info.depends, ["geckolib", "curios"]);
+        assert_eq!(info.authors, ["Ann and Bo"]);
     }
 
     #[test]
     fn reads_fabric_metadata() {
         let info = fabric(
             r#"{"id": "gem", "version": "3", "name": "Gem", "license": ["MIT", "Apache-2.0"],
+                "authors": ["Ann", {"name": "Bo"}],
                 "depends": {"fabricloader": "*", "fabric-api": "*", "minecraft": "1.21.1", "cloth-config": "*"}}"#,
         )
         .unwrap();
         assert_eq!(info.license, "MIT OR Apache-2.0");
         assert_eq!(info.depends, ["cloth-config"]);
+        assert_eq!(info.authors, ["Ann", "Bo"]);
     }
 
     #[test]

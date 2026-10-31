@@ -1103,11 +1103,15 @@ pub fn carry(
     unregistered_recipes(&inside, &outside, id, &owned, &mut report)?;
     let q = |s: &str| toml::Value::String(s.to_owned()).to_string();
     let name = if info.name.is_empty() { id } else { &info.name };
+    let (title, authors, description) = port_credits(name, &info.authors);
+    let authors: Vec<String> = authors.iter().map(|a| q(a)).collect();
     let mut manifest = format!(
-        "# Carried over from {jar} by horizon-port-pack, for local use only.\n# Licence: {license}\nid = {}\nname = {}\nversion = {}\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        "# Carried over from {jar} by horizon-port-pack, for local use only.\n# Licence: {license}\nid = {}\nname = {}\nversion = {}\ndescription = {}\nauthors = [{}]\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
         q(id),
-        q(name),
+        q(&title),
         q(&info.version),
+        q(&description),
+        authors.join(", "),
         jar = jar.file_name().unwrap_or_default().to_string_lossy(),
         license = if info.license.is_empty() {
             "not stated"
@@ -1240,9 +1244,42 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// What a port calls itself and whom it credits: "<name> (unofficial port)", the original
+/// authors as its authors, and a description that says whose work it is and that they have
+/// nothing to do with it.
+fn port_credits(name: &str, authors: &[String]) -> (String, Vec<String>, String) {
+    let by = if authors.is_empty() {
+        "its original authors".to_owned()
+    } else {
+        authors.join(", ")
+    };
+    let description = format!(
+        "Unofficial port of {name} by {by}, carried over by horizon-port-pack from your own copy \
+         of the mod. All credit goes to its authors; they did not make this port and do not \
+         support it. Report problems to Horizon, not to them."
+    );
+    let mut credited = authors.to_vec();
+    if credited.is_empty() {
+        credited.push(format!("{name}'s authors"));
+    }
+    (format!("{name} (unofficial port)"), credited, description)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ports_say_they_are_unofficial_and_credit_the_authors() {
+        let (title, authors, description) = port_credits("Gem", &["Ann".into(), "Bo".into()]);
+        assert_eq!(title, "Gem (unofficial port)");
+        assert_eq!(authors, ["Ann", "Bo"]);
+        assert!(description.starts_with("Unofficial port of Gem by Ann, Bo"));
+        assert!(description.contains("All credit goes to its authors"));
+        let (_, authors, description) = port_credits("Gem", &[]);
+        assert_eq!(authors, ["Gem's authors"]);
+        assert!(description.contains("by its original authors"));
+    }
     use std::io::Write;
 
     /// YUNG's pools carry comments, which Minecraft's lenient reader skips;

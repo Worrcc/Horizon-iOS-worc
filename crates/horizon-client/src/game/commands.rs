@@ -1841,6 +1841,19 @@ impl Game<'_> {
             self.feedback(Text::translate("commands.summon.success", &[name]));
             return Ok(1);
         }
+        // A content mod's mob (docs/modpacks.md, entities): its own namespace.
+        if !kind.starts_with("minecraft:") && self.res.mob_types().contains_key(kind.as_str()) {
+            let monster = self.res.mob_types()[kind.as_str()].category == "monster";
+            if self.ui.difficulty == 0 && monster {
+                return Err(err("commands.summon.failed.peaceful", &[]));
+            }
+            self.spawn_mob(&kind, pos, true)
+                .ok_or_else(|| err("commands.summon.failed", &[]))?;
+            let (ns, path) = kind.split_once(':').unwrap_or_default();
+            let name = Text::translate(&format!("entity.{ns}.{path}"), &[]);
+            self.feedback(Text::translate("commands.summon.success", &[name]));
+            return Ok(1);
+        }
         let name;
         if let Some(t) = self
             .res

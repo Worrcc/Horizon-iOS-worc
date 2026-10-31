@@ -1,6 +1,7 @@
 //! A content mod's `assets/` and `data/` (API 0.2, docs/modpacks.md): the
-//! files it adds to the game's resource tree, and the blocks and items it
-//! declares in `data/<id>/horizon/block/` and `data/<id>/horizon/item/`.
+//! files it adds to the game's resource tree, and the blocks, items and entities it
+//! declares in `data/<id>/horizon/block/`, `data/<id>/horizon/item/` and
+//! `data/<id>/horizon/entity/`.
 //!
 //! Content is data, not code: nothing here runs in the sandbox. What a mod
 //! may add is fenced instead. Its own namespaces (its id and the ones its
@@ -129,6 +130,116 @@ pub struct Item {
     pub rarity: Option<Rarity>,
 }
 
+/// The attributes an entity may set, vanilla's names without `minecraft:`.
+pub const ENTITY_ATTRIBUTES: [&str; 11] = [
+    "max_health",
+    "movement_speed",
+    "flying_speed",
+    "attack_damage",
+    "attack_knockback",
+    "armor",
+    "armor_toughness",
+    "knockback_resistance",
+    "follow_range",
+    "step_height",
+    "scale",
+];
+/// Vanilla's mob categories (`MobCategory`).
+const CATEGORIES: [&str; 8] = [
+    "monster",
+    "creature",
+    "ambient",
+    "axolotls",
+    "underground_water_creature",
+    "water_creature",
+    "water_ambient",
+    "misc",
+];
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntityFile {
+    template: String,
+    width: Option<f32>,
+    height: Option<f32>,
+    eye_height: Option<f32>,
+    #[serde(default)]
+    attributes: std::collections::BTreeMap<String, f64>,
+    fire_immune: Option<bool>,
+    category: Option<String>,
+    texture: Option<String>,
+}
+
+/// An entity the mod adds (API 0.5, first part): a vanilla template mob's behaviour (its AI,
+/// model and sounds) under a new id, with its size, attributes and texture changed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entity {
+    /// `<mod id>:<path>`.
+    pub id: String,
+    /// The vanilla mob it copies, `minecraft:<path>`.
+    pub template: String,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub eye_height: Option<f32>,
+    /// Attribute values by name (`max_health`, ...), from [`ENTITY_ATTRIBUTES`].
+    pub attributes: std::collections::BTreeMap<String, f64>,
+    pub fire_immune: Option<bool>,
+    pub category: Option<String>,
+    /// The model's texture, `<namespace>:entity/<path>` for
+    /// `assets/<namespace>/textures/entity/<path>.png` in one of the mod's namespaces.
+    pub texture: Option<String>,
+}
+
+fn check_entity(file: &EntityFile, namespaces: &[String]) -> Result<(), String> {
+    if !vanilla_id(&file.template) {
+        return Err(format!(
+            "template {:?} is not a vanilla entity (minecraft:...)",
+            file.template
+        ));
+    }
+    for (name, v) in [
+        ("width", file.width),
+        ("height", file.height),
+        ("eye_height", file.eye_height),
+    ] {
+        if v.is_some_and(|v| !(v.is_finite() && v > 0.0 && v <= 64.0)) {
+            return Err(format!("{name} is more than 0 and at most 64 blocks"));
+        }
+    }
+    for (name, v) in &file.attributes {
+        if !ENTITY_ATTRIBUTES.contains(&name.as_str()) {
+            return Err(format!(
+                "attribute {name:?} is not one of {}",
+                ENTITY_ATTRIBUTES.join(", ")
+            ));
+        }
+        if !v.is_finite() || *v < 0.0 || *v > 1024.0 {
+            return Err(format!("attribute {name} is 0 to 1024"));
+        }
+    }
+    if let Some(c) = &file.category
+        && !CATEGORIES.contains(&c.as_str())
+    {
+        return Err(format!(
+            "category {c:?} is not one of {}",
+            CATEGORIES.join(", ")
+        ));
+    }
+    if let Some(t) = &file.texture {
+        let ok = t.split_once(':').is_some_and(|(ns, path)| {
+            namespaces.iter().any(|n| n == ns)
+                && path.starts_with("entity/")
+                && check_path(&format!("assets/{ns}/textures/{path}.png")).is_ok()
+        });
+        if !ok {
+            return Err(format!(
+                "texture {t:?} is <namespace>:entity/<path>, in one of the mod's namespaces"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
@@ -143,6 +254,7 @@ pub struct Content {
     pub files: Vec<String>,
     pub blocks: Vec<Block>,
     pub items: Vec<Item>,
+    pub entities: Vec<Entity>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -229,6 +341,7 @@ impl Content {
             files,
             blocks: Vec::new(),
             items: Vec::new(),
+            entities: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest)?;
@@ -271,6 +384,7 @@ impl Content {
         }
         let mut blocks = Vec::new();
         let mut items = Vec::new();
+        let mut entities = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -291,7 +405,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks and items are declared in data/{id}/horizon/"
+                    "{name}: blocks, items and entities are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -311,9 +425,11 @@ impl Content {
                 blocks.push((block, name.clone()));
             } else if let Some(item) = parse("item") {
                 items.push((item, name.clone()));
+            } else if let Some(entity) = parse("entity") {
+                entities.push((entity, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/*.json and item/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/*.json, item/*.json and entity/*.json only"
                 ));
             }
         }
@@ -352,6 +468,29 @@ impl Content {
                 template: file.template,
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
+            });
+        }
+        for (entity, name) in entities {
+            let file: EntityFile =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            check_entity(&file, &self.namespaces).map_err(|e| format!("{name}: {e}"))?;
+            if let Some(t) = &file.texture {
+                let (ns, path) = t.split_once(':').unwrap_or_default();
+                let png = format!("assets/{ns}/textures/{path}.png");
+                if self.files.binary_search(&png).is_err() {
+                    return Err(format!("{name}: texture {t} has no {png}"));
+                }
+            }
+            self.entities.push(Entity {
+                id: entity,
+                template: file.template,
+                width: file.width,
+                height: file.height,
+                eye_height: file.eye_height,
+                attributes: file.attributes,
+                fire_immune: file.fire_immune,
+                category: file.category,
+                texture: file.texture,
             });
         }
         Ok(())
@@ -482,6 +621,75 @@ capabilities = ["registries"]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
         assert_eq!(content.items[0].rarity, Some(Rarity::Uncommon));
+    }
+
+    const ENTITY: &[u8] = br#"{"template": "minecraft:zombie", "width": 1.2, "height": 2.4,
+        "attributes": {"max_health": 60, "attack_damage": 7}, "fire_immune": true,
+        "category": "monster", "texture": "ruby:entity/golem"}"#;
+
+    #[test]
+    fn entities_copy_a_vanilla_mob() {
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/entity/ruby_golem.json", ENTITY),
+            ("assets/ruby/textures/entity/golem.png", b"png"),
+        ];
+        let content = hmod("entity", MANIFEST_TEXT, files).unwrap();
+        let golem = &content.entities[0];
+        assert_eq!(golem.id, "ruby:ruby_golem");
+        assert_eq!(golem.template, "minecraft:zombie");
+        assert_eq!((golem.width, golem.height), (Some(1.2), Some(2.4)));
+        assert_eq!(golem.attributes["max_health"], 60.0);
+        assert_eq!(golem.fire_immune, Some(true));
+        assert_eq!(golem.texture.as_deref(), Some("ruby:entity/golem"));
+    }
+
+    #[test]
+    fn refuses_entities_it_cannot_load() {
+        let refused = |decl: &str, texture: bool| {
+            let mut files: Vec<(&str, &[u8])> =
+                vec![("data/ruby/horizon/entity/a.json", decl.as_bytes())];
+            if texture {
+                files.push(("assets/ruby/textures/entity/golem.png", b"png"));
+            }
+            hmod("bad-entity", MANIFEST_TEXT, &files).unwrap_err()
+        };
+        assert!(refused(r#"{"template": "ruby:other"}"#, false).contains("not a vanilla entity"));
+        assert!(
+            refused(r#"{"template": "minecraft:zombie", "height": 0}"#, false).contains("height")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "attributes": {"luck": 1}}"#,
+                false
+            )
+            .contains("attribute \"luck\"")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "category": "boss"}"#,
+                false
+            )
+            .contains("category")
+        );
+        // Another mod's texture, and one the mod doesn't carry.
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "texture": "minecraft:entity/zombie/zombie"}"#,
+                true
+            )
+            .contains("mod's namespaces")
+        );
+        assert!(
+            refused(
+                r#"{"template": "minecraft:zombie", "texture": "ruby:entity/missing"}"#,
+                true
+            )
+            .contains("has no assets/ruby/textures/entity/missing.png")
+        );
+        assert!(
+            refused(r#"{"template": "minecraft:zombie", "ai": "x"}"#, false)
+                .contains("unknown field")
+        );
     }
 
     #[test]
