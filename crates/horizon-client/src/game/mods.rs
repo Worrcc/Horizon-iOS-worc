@@ -198,6 +198,43 @@ fn vanilla_command(name: &str) -> bool {
         .any(|&c| d.nodes[c].name() == name)
 }
 
+/// The mods in `horizon-mods/` and the dev mods as the Mods page lists them, read from their
+/// manifests: what the startup menu shows before any mod runs (iOS opens on it).
+pub(super) fn installed_on_disk(dev: &[std::path::PathBuf]) -> Vec<mod_list::Installed> {
+    let dir = Game::options_path().with_file_name(mod_list::DIR);
+    let mut paths = horizon_mods::find(&dir);
+    paths.retain(|p| !dev.contains(p));
+    paths.extend(dev.iter().cloned());
+    paths
+        .iter()
+        .map(|path| match horizon_mods::Package::read(path) {
+            Ok(package) => {
+                let m = package.manifest;
+                mod_list::Installed {
+                    title: format!("{} {}", m.name, m.version),
+                    description: m.description,
+                    id: m.id,
+                    problem: None,
+                    dev: dev.contains(path),
+                    has_settings: false,
+                }
+            }
+            Err(e) => mod_list::Installed {
+                id: String::new(),
+                title: path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into(),
+                description: String::new(),
+                problem: Some(e),
+                dev: false,
+                has_settings: false,
+            },
+        })
+        .collect()
+}
+
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left

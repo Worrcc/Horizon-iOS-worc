@@ -249,6 +249,8 @@ impl Game<'_> {
                     self.instance_event(e);
                 }
                 Event::ModSettings(i) => self.open_mod_screen(i, true),
+                // The running game's list is its mods' own (`list_mods`).
+                Event::ListMods => {}
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
             }
         }

@@ -345,8 +345,11 @@ impl Loading {
             self.menu.set_root(root, &self.settings);
         }
         self.apply_menu_settings();
-        self.menu.options.pack_selection = self.settings.resource_packs.clone();
-        self.menu.reload_packs = true;
+        // Reloading packs rebuilds every atlas, seconds on a phone: only when they differ.
+        if self.menu.options.pack_selection != self.settings.resource_packs {
+            self.menu.options.pack_selection = self.settings.resource_packs.clone();
+            self.menu.reload_packs = true;
+        }
     }
 
     /// iOS opens on the launcher page (instances, their mods, shader packs and settings) once
@@ -438,6 +441,10 @@ impl Loading {
                 }
                 // Mods' settings pages open only in a running game.
                 Event::ModSettings(_) => {}
+                Event::ListMods => {
+                    let dev = self.options.as_ref().map_or(&[][..], |o| &o.dev_mods[..]);
+                    self.settings.mods.installed = super::mods::installed_on_disk(dev);
+                }
                 // The startup menu runs before the game opens a control socket.
                 Event::ButtonClick | Event::CopyAgentDetails => {}
             }

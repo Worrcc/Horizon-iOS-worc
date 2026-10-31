@@ -933,6 +933,9 @@ pub enum Event {
     OpenModFolder,
     /// The Shader Packs page opened: list `shaderpacks/` into `shader_packs`.
     ListShaderPacks,
+    /// The Mods page opened: a game lists its running mods already; the startup menu reads
+    /// `horizon-mods/` into `mods.installed`.
+    ListMods,
     /// A shader pack was picked or turned off: save and apply it.
     ShaderPack,
     OpenShaderPackFolder,
@@ -1517,11 +1520,11 @@ impl OptionsUi {
                         "No mods: put .hmod files in the horizon-mods folder",
                     )];
                 }
-                s.mods
-                    .installed
-                    .iter()
-                    .enumerate()
-                    .map(|(i, installed)| {
+                // Content mods (blocks, items, mobs) are read once, when the game loads.
+                let note =
+                    Row::Note("Mods adding blocks, items or mobs change at the next start".into());
+                std::iter::once(note)
+                    .chain(s.mods.installed.iter().enumerate().map(|(i, installed)| {
                         let mut label = Text::literal(format!("{}: ", installed.title))
                             .append(on_off(s.mods.is_on(i)));
                         if installed.problem.is_some() {
@@ -1549,7 +1552,7 @@ impl OptionsUi {
                             let widget = button(0.0, 0.0, 310.0, label, Act::ToggleMod(i));
                             Row::Buttons(if dead { inactive(widget) } else { widget }, None)
                         }
-                    })
+                    }))
                     .collect()
             }
             Page::ShaderPacks => {
@@ -2543,6 +2546,9 @@ impl OptionsUi {
                         Act::Push(p) => {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
+                            }
+                            if p == Page::Mods {
+                                events.push(Event::ListMods);
                             }
                             if matches!(p, Page::Instances | Page::Launcher) {
                                 events.push(Event::ListInstances);
