@@ -289,7 +289,7 @@ The mod changes its size, attributes, category, fire immunity and texture:
 
 - `attributes` takes `max_health`, `movement_speed`, `flying_speed`, `attack_damage`,
   `attack_knockback`, `armor`, `armor_toughness`, `knockback_resistance`, `follow_range`,
-  `step_height` and `scale`, each 0 to 1024. Sizes are more than 0 and at most 64 blocks.
+  `step_height`, `scale`, `safe_fall_distance` and `fall_damage_multiplier` (0: no fall damage), each 0 to 1024. Sizes are more than 0 and at most 64 blocks.
   Unknown keys are refused. `scale` multiplies the size and the drawn model, as vanilla's
   `minecraft:scale` does.
 - `texture` is `<namespace>:entity/<path>`, for `assets/<namespace>/textures/entity/<path>.png`

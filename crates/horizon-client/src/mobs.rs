@@ -590,6 +590,9 @@ fn mod_types(
         t.knockback_resistance = attr("knockback_resistance").unwrap_or(t.knockback_resistance);
         t.follow_range = attr("follow_range").unwrap_or(t.follow_range);
         t.step_height = attr("step_height").unwrap_or(t.step_height);
+        t.safe_fall_distance = attr("safe_fall_distance").unwrap_or(t.safe_fall_distance);
+        t.fall_damage_multiplier =
+            attr("fall_damage_multiplier").unwrap_or(t.fall_damage_multiplier);
         t.attributes = Arc::new(attributes);
         if let Some(texture) = horizon["texture"].as_str() {
             t.texture = texture.to_owned();

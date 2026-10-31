@@ -1737,12 +1737,12 @@ fn check_data<'a>(
 fn check_order(order: &EntityOrder) -> Result<(), String> {
     match order {
         EntityOrder::Attribute(a)
-            if a.name == "scale"
+            if crate::content::TYPE_ONLY_ATTRIBUTES.contains(&a.name.as_str())
                 || !crate::content::ENTITY_ATTRIBUTES.contains(&a.name.as_str())
                 || !(0.0..=1024.0).contains(&a.value) =>
         {
             Err(
-                "attribute names an entity JSON attribute (except scale), with a base of 0 to 1024"
+                "attribute names an entity JSON attribute (except scale and the fall ones), with a base of 0 to 1024"
                     .into(),
             )
         }
@@ -2621,7 +2621,7 @@ mod entity_tests {
         };
         for name in crate::content::ENTITY_ATTRIBUTES
             .into_iter()
-            .filter(|n| *n != "scale")
+            .filter(|n| !crate::content::TYPE_ONLY_ATTRIBUTES.contains(n))
         {
             for value in [0.0, 500.0, 1024.0] {
                 assert!(

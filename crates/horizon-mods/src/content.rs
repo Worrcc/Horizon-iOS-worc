@@ -131,7 +131,7 @@ pub struct Item {
 }
 
 /// The attributes an entity may set, vanilla's names without `minecraft:`.
-pub const ENTITY_ATTRIBUTES: [&str; 11] = [
+pub const ENTITY_ATTRIBUTES: [&str; 13] = [
     "max_health",
     "movement_speed",
     "flying_speed",
@@ -143,7 +143,12 @@ pub const ENTITY_ATTRIBUTES: [&str; 11] = [
     "follow_range",
     "step_height",
     "scale",
+    "safe_fall_distance",
+    "fall_damage_multiplier",
 ];
+/// Of [`ENTITY_ATTRIBUTES`], those only a type sets: the `attribute` order refuses them.
+pub const TYPE_ONLY_ATTRIBUTES: [&str; 3] =
+    ["scale", "safe_fall_distance", "fall_damage_multiplier"];
 /// Vanilla's mob categories (`MobCategory`).
 const CATEGORIES: [&str; 8] = [
     "monster",
