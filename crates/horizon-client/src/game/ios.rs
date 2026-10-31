@@ -21,26 +21,51 @@ use winit::{
     window::{Window, WindowAttributes, WindowId},
 };
 
-/// The game's view: landscape, nothing of the system's over it, and the screen edges kept for
-/// the game, so a swipe from the bottom while walking doesn't leave it (a second swipe does).
+/// The game's view: any orientation, nothing of the system's over it, and the screen edges kept
+/// for the game, so a swipe from the bottom while walking doesn't leave it (a second swipe
+/// does). Forcing landscape fought hosts that run apps in their own orientation (LiveContainer):
+/// iOS then rotated the view itself, and the picture no longer filled the screen. The app's
+/// Info.plist still makes an installed app landscape-only.
 pub(super) fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
     attributes
-        .with_valid_orientations(ValidOrientations::Landscape)
+        .with_valid_orientations(ValidOrientations::LandscapeAndPortrait)
         .with_prefers_status_bar_hidden(true)
         .with_prefers_home_indicator_hidden(true)
         .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
 }
 
+thread_local! {
+    /// The game's window, for the geometry logged at each resize.
+    static WINDOW: std::cell::RefCell<Option<std::sync::Arc<Window>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// The window's sizes, in the log: what a wrong-sized picture comes down to.
-pub(super) fn log_window(window: &Window) {
+pub(super) fn log_window(window: &std::sync::Arc<Window>) {
+    WINDOW.set(Some(window.clone()));
     let (inner, outer) = (window.inner_size(), window.outer_size());
     log::info!(
-        "Horizon: iOS window {}x{} px (screen frame {}x{} px) at scale {}",
+        "Horizon: iOS window {}x{} px (screen frame {}x{} px) at scale {}: {}",
         inner.width,
         inner.height,
         outer.width,
         outer.height,
-        window.scale_factor()
+        window.scale_factor(),
+        horizon_ios::describe_window(&**window)
+    );
+}
+
+/// A resize, with the geometry UIKit gives the view then.
+fn log_resize(size: PhysicalSize<u32>) {
+    let geometry = WINDOW.with_borrow(|w| {
+        w.as_ref()
+            .map(|w| horizon_ios::describe_window(&**w))
+            .unwrap_or_default()
+    });
+    log::info!(
+        "Horizon: iOS resize to {}x{} px: {geometry}",
+        size.width,
+        size.height
     );
 }
 
@@ -134,6 +159,9 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let WindowEvent::Resized(size) = &event {
+            log_resize(*size);
+        }
         if self.running() {
             self.app.window_event(event_loop, id, event);
             self.check(event_loop);

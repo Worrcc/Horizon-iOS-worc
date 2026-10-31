@@ -1505,6 +1505,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "objc2-game-controller",
  "objc2-ui-kit",
+ "raw-window-handle",
  "security-framework",
 ]
 

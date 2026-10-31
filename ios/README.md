@@ -123,6 +123,9 @@ If the game files are missing, the app says so (and where its crash report is), 
 
 ## Controls
 
+Installed as its own app, Horizon runs in landscape. Under LiveContainer it follows the phone's
+orientation, so turn the phone sideways to play in landscape.
+
 **Touch** (shown once you touch the screen):
 
 | Where | What |

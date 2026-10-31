@@ -6,6 +6,10 @@ license.workspace = true
 rust-version = "1.85"
 description = "The UIKit calls of the iOS app that the crates forbidding unsafe code can't make"
 
+[dependencies]
+# The game window's view, for `describe_window`.
+raw-window-handle = "0.6.2"
+
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5.1"
 objc2 = "0.5.2"
@@ -28,11 +32,14 @@ objc2-ui-kit = { version = "0.2.2", features = [
     "block2",
     "UIAlertController",
     "UIApplication",
+    "UIOrientation",
     "UIResponder",
+    "UIScene",
     "UIScreen",
     "UIView",
     "UIViewController",
     "UIWindow",
+    "UIWindowScene",
 ] }
 
 [lints]

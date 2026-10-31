@@ -62,6 +62,18 @@ pub fn poll_alert() {
     ios::poll();
 }
 
+/// The geometry UIKit gives `window`'s view, for the log: its bounds and frame (they differ when
+/// the system rotates the view itself), its window's, the screen's and the scene's orientation.
+pub fn describe_window(window: &impl raw_window_handle::HasWindowHandle) -> String {
+    #[cfg(target_os = "ios")]
+    return ios::describe_window(window);
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = window;
+        String::new()
+    }
+}
+
 /// Opens `url` in the system's browser.
 pub fn open_url(url: &str) {
     #[cfg(target_os = "ios")]
@@ -258,6 +270,51 @@ mod ios {
             // Safety: a window of this app, on the main thread.
             unsafe { game.makeKeyWindow() };
         }
+    }
+
+    pub(super) fn describe_window(window: &impl raw_window_handle::HasWindowHandle) -> String {
+        use objc2_foundation::CGRect;
+        use objc2_ui_kit::UIView;
+        use raw_window_handle::RawWindowHandle;
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return "not on the main thread".into();
+        };
+        let Ok(handle) = window.window_handle() else {
+            return "no window handle".into();
+        };
+        let RawWindowHandle::UiKit(handle) = handle.as_raw() else {
+            return "not a UIKit window".into();
+        };
+        let rect = |r: CGRect| {
+            format!(
+                "{}x{} at {},{}",
+                r.size.width, r.size.height, r.origin.x, r.origin.y
+            )
+        };
+        // Safety: the handle's view, alive while `window` is borrowed, on the main thread.
+        let view: &UIView = unsafe { handle.ui_view.cast().as_ref() };
+        let mut text = format!(
+            "view bounds {} frame {} scale {}",
+            rect(view.bounds()),
+            rect(view.frame()),
+            view.contentScaleFactor()
+        );
+        if let Some(ui_window) = view.window() {
+            text.push_str(&format!(
+                "; window bounds {} frame {}; screen {}",
+                rect(ui_window.bounds()),
+                rect(ui_window.frame()),
+                rect(ui_window.screen().bounds())
+            ));
+            // Safety: as above.
+            if let Some(scene) = unsafe { ui_window.windowScene() } {
+                let orientation = unsafe { scene.interfaceOrientation() };
+                text.push_str(&format!("; scene orientation {}", orientation.0));
+            } else {
+                text.push_str("; no scene");
+            }
+        }
+        text
     }
 
     pub(super) fn open_url(url: &str) {
