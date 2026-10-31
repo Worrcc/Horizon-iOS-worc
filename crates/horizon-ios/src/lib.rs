@@ -74,6 +74,18 @@ pub fn describe_window(window: &impl raw_window_handle::HasWindowHandle) -> Stri
     }
 }
 
+/// Asks iOS to run the screen at up to `max` Hz (ProMotion's 120). iOS picks the screen's rate
+/// from what the app's display links prefer, so without one a ProMotion iPhone stays at 60 Hz and
+/// the game, which presents once per screen refresh, can't pass 60 FPS whatever its settings.
+/// Needs `CADisableMinimumFrameDurationOnPhone` in the app's Info.plist. Call it once, on the
+/// main thread.
+pub fn prefer_frame_rate(max: f32) {
+    #[cfg(target_os = "ios")]
+    ios::prefer_frame_rate(max);
+    #[cfg(not(target_os = "ios"))]
+    let _ = max;
+}
+
 /// Opens `url` in the system's browser.
 pub fn open_url(url: &str) {
     #[cfg(target_os = "ios")]
@@ -315,6 +327,58 @@ mod ios {
             }
         }
         text
+    }
+
+    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::{ClassType, DeclaredClass, declare_class, mutability};
+
+    declare_class!(
+        /// The target of the frame-rate display link: its ticks need nothing done.
+        struct FrameRateTarget;
+
+        unsafe impl ClassType for FrameRateTarget {
+            type Super = NSObject;
+            type Mutability = mutability::InteriorMutable;
+            const NAME: &'static str = "HorizonFrameRateTarget";
+        }
+
+        impl DeclaredClass for FrameRateTarget {}
+
+        unsafe impl FrameRateTarget {
+            #[method(tick:)]
+            fn tick(&self, _link: &AnyObject) {}
+        }
+    );
+
+    thread_local! {
+        static FRAME_RATE_LINK: RefCell<Option<Retained<objc2_quartz_core::CADisplayLink>>> =
+            const { RefCell::new(None) };
+    }
+
+    pub(super) fn prefer_frame_rate(max: f32) {
+        use objc2::{msg_send, msg_send_id, sel};
+        use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes};
+        use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
+        if MainThreadMarker::new().is_none() || FRAME_RATE_LINK.with_borrow(Option::is_some) {
+            return;
+        }
+        // Safety: a plain NSObject subclass with no ivars, initialised by NSObject's init; the
+        // display link and run loop used on the main thread, the selector the target defines.
+        unsafe {
+            let target: Retained<FrameRateTarget> = msg_send_id![FrameRateTarget::alloc(), init];
+            let link = CADisplayLink::displayLinkWithTarget_selector(&target, sel!(tick:));
+            let ranges: bool =
+                msg_send![&link, respondsToSelector: sel!(setPreferredFrameRateRange:)];
+            if ranges {
+                link.setPreferredFrameRateRange(CAFrameRateRange {
+                    minimum: 80f32.min(max),
+                    maximum: max,
+                    preferred: max,
+                });
+            }
+            link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
+            FRAME_RATE_LINK.set(Some(link));
+        }
     }
 
     pub(super) fn open_url(url: &str) {

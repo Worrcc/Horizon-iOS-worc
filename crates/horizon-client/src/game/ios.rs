@@ -43,9 +43,12 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// The window's sizes, in the log: what a wrong-sized picture comes down to.
+/// The window is up: its sizes go in the log (what a wrong-sized picture comes down to), and
+/// the screen is asked for its full frame rate.
 pub(super) fn log_window(window: &std::sync::Arc<Window>) {
     WINDOW.set(Some(window.clone()));
+    // ProMotion screens: up to 120 Hz rather than iOS's 60 (the frame limit still applies).
+    horizon_ios::prefer_frame_rate(120.0);
     let (inner, outer) = (window.inner_size(), window.outer_size());
     log::info!(
         "Horizon: iOS window {}x{} px (screen frame {}x{} px) at scale {}: {}",

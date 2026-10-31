@@ -64,6 +64,9 @@
 	<!-- A launch screen, or iOS runs the app letterboxed at an old iPhone's size. -->
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!-- ProMotion: iPhones keep apps at 60 Hz without it (prefer_frame_rate asks for 120). -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>UIRequiresFullScreen</key>
 	<true/>
 	<key>UIStatusBarHidden</key>

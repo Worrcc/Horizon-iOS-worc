@@ -126,6 +126,11 @@ If the game files are missing, the app says so (and where its crash report is), 
 Installed as its own app, Horizon runs in landscape. Under LiveContainer it follows the phone's
 orientation, so turn the phone sideways to play in landscape.
 
+On iPhones with a 120 Hz (ProMotion) screen the game asks iOS for 120 Hz; the frame limit in the
+video settings still applies. iOS only allows an iPhone app past 60 Hz when its Info.plist opts
+in (`CADisableMinimumFrameDurationOnPhone`, set in Horizon's). Under LiveContainer it is
+LiveContainer's Info.plist that counts, so the game may stay at 60 there.
+
 **Touch** (shown once you touch the screen):
 
 | Where | What |

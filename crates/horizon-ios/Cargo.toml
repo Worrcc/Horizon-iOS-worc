@@ -13,7 +13,7 @@ raw-window-handle = "0.6.2"
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.5.1"
 objc2 = "0.5.2"
-objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSDictionary", "NSGeometry", "NSString", "NSThread", "NSURL"] }
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSDictionary", "NSGeometry", "NSObjCRuntime", "NSRunLoop", "NSString", "NSThread", "NSURL"] }
 # Controllers (gilrs has no iOS backend).
 objc2-game-controller = { version = "0.2.2", default-features = false, features = [
     "std",
@@ -25,6 +25,12 @@ objc2-game-controller = { version = "0.2.2", default-features = false, features 
     "GCDevice",
     "GCExtendedGamepad",
     "GCPhysicalInputProfile",
+] }
+# ProMotion's frame rate (prefer_frame_rate): the version winit's objc2 takes.
+objc2-quartz-core = { version = "0.2.2", default-features = false, features = [
+    "std",
+    "CADisplayLink",
+    "CAFrameRateRange",
 ] }
 # The Microsoft sign-in's refresh token (keychain.rs).
 security-framework = { version = "3", default-features = false }
