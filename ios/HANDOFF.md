@@ -64,6 +64,17 @@ Each item has a fix in the latest build, but nobody has seen it working yet.
   Until then, the Sign in button explains what's missing. The flow itself is untested against
   the real services. Its unit tests cover parsing only.
 
+## The in-app launcher (in progress)
+
+Goal: manage instances, mods, shader packs and modpacks inside the app, and make controllers a
+full input path. Step 1 is done: **instances** (`src/instance_list.rs`, `game/instances.rs`,
+Options › Horizon Settings › Instances; `main.rs` starts in the picked folder). Next steps:
+a launcher screen ahead of the title that brings instances, mods, shader packs and modpack import
+together; controller-only menu navigation everywhere; hiding touch controls while a pad is
+connected; Core Haptics vibration and DualSense lights and triggers. Button remapping already
+exists (Controller Settings › Controller Binds). Code mods: the player has JIT through StikDebug,
+so the plan is wasmtime with JIT where it is allowed, not an interpreter.
+
 ## Not done yet
 
 - Controller vibration, DualSense lights and triggers (`game/pad/hardware_ios.rs` has stubs).

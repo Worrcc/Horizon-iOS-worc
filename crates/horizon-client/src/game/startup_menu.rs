@@ -323,6 +323,28 @@ impl Loading {
         self.settings.save(&Game::options_path());
     }
 
+    /// Plays in `id`'s folder from here on: its options.txt, packs and mods, as a start there.
+    pub(super) fn switch_instance(&mut self, id: &str) {
+        self.save_menu_settings();
+        let folder =
+            horizon_client::instance_list::folder(&horizon_client::logging::game_home(), id);
+        if let Err(e) =
+            std::fs::create_dir_all(&folder).and_then(|()| std::env::set_current_dir(&folder))
+        {
+            log::warn!("Horizon: can't play in {}: {e}", folder.display());
+            return;
+        }
+        log::info!("Horizon: playing instance {id} ({})", folder.display());
+        self.settings = Settings::load(&Game::options_path());
+        horizon_client::lang::set(horizon_client::lang::Language::load(
+            &[&self.menu.root],
+            &self.settings.language,
+        ));
+        self.apply_menu_settings();
+        self.menu.options.pack_selection = self.settings.resource_packs.clone();
+        self.menu.reload_packs = true;
+    }
+
     fn open_menu_options(&mut self, page: Page) {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
@@ -371,6 +393,9 @@ impl Loading {
                         horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
                 Event::ShaderPack => self.save_menu_settings(),
+                Event::ListInstances | Event::PickInstance(_) | Event::NewInstance => {
+                    self.menu_instance_event(event);
+                }
                 Event::OpenShaderPackFolder => {
                     let dir = Game::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);

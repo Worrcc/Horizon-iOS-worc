@@ -21,11 +21,19 @@ fn main() {
     } else {
         (logging::game_home(), "client", "Render thread")
     };
-    // iOS starts every app in `/`: the game folder (Documents) is its working directory, as
-    // the launcher makes it elsewhere.
+    // iOS starts every app in `/`: the picked instance's folder (Documents itself by default) is
+    // its working directory, as the launcher makes it elsewhere. Logs stay in Documents.
     #[cfg(target_os = "ios")]
-    if let Err(e) = std::fs::create_dir_all(&home).and_then(|()| std::env::set_current_dir(&home)) {
-        eprintln!("Horizon: can't use {}: {e}", home.display());
+    {
+        use horizon_client::instance_list;
+        let folder = instance_list::folder(&home, &instance_list::selected(&home));
+        for dir in [&home, &folder] {
+            if let Err(e) =
+                std::fs::create_dir_all(dir).and_then(|()| std::env::set_current_dir(dir))
+            {
+                eprintln!("Horizon: can't use {}: {e}", dir.display());
+            }
+        }
     }
     if !help {
         logging::init(&home, thread);

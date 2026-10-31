@@ -75,6 +75,7 @@ mod golems;
 mod growth;
 mod hand;
 mod initial_spawn;
+mod instances;
 mod integrated;
 #[cfg(target_os = "ios")]
 mod ios;
@@ -354,8 +355,8 @@ impl Options {
                 sibling
             } else if cfg!(target_os = "ios") {
                 // Copied in with the Files app or Finder: no launcher prepares them on iOS
-                // (ios/README.md).
-                std::path::PathBuf::from("resources")
+                // (ios/README.md). In Documents, shared by every instance.
+                horizon_client::logging::game_home().join("resources")
             } else {
                 std::path::Path::new(".local/horizon-client").join(horizon_core::VANILLA_VERSION)
             },

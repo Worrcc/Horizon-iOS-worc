@@ -836,6 +836,8 @@ pub enum Page {
     Mods,
     /// Horizon's shader packs, either kind (`shader_pack_list`).
     ShaderPacks,
+    /// Separate game folders (`instance_list`): iOS only, where no launcher has them.
+    Instances,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
     GraphicsAdvanced,
@@ -869,6 +871,9 @@ enum Act {
     /// Pick `s.shader_packs[i]`, or turn it off when it is the pick.
     PickShaderPack(usize),
     OpenShaderPackFolder,
+    /// Play `s.instances.entries[i]`.
+    PickInstance(usize),
+    NewInstance,
     /// The installed mod's own settings page (capability `ui`), shown as a
     /// screen: `Event::ModSettings` has the game open it.
     ModSettings(usize),
@@ -928,6 +933,12 @@ pub enum Event {
     /// A shader pack was picked or turned off: save and apply it.
     ShaderPack,
     OpenShaderPackFolder,
+    /// The Instances page opened: list them into `instances`.
+    ListInstances,
+    /// Play this instance: now on the title before a world, else at the next start.
+    PickInstance(String),
+    /// Make a new instance and list it.
+    NewInstance,
     /// Open the mod's own settings page (capability `ui`): the installed
     /// mod's index in `mods.installed`.
     ModSettings(usize),
@@ -1076,6 +1087,9 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::ShaderPacks => {
             "Shader packs from the shaderpacks folder: Horizon's own and those in the shaders/ format. One runs at a time."
         }
+        Page::Instances => {
+            "Separate game folders, each with its own worlds, options, packs, shader packs and mods."
+        }
         Page::Mods => {
             "Mods made for Horizon, from the horizon-mods folder. Each runs in a sandbox and stays off until you turn it on."
         }
@@ -1168,6 +1182,7 @@ impl OptionsUi {
             Page::Packs => "resourcePack.title",
             Page::Mods => "Mods",
             Page::ShaderPacks => "Shader Packs",
+            Page::Instances => "Instances",
             Page::Graphics | Page::GraphicsAdvanced => "options.videoTitle",
             Page::Controller => "Controller Settings",
             Page::PadBinds => "Controller Binds",
@@ -1306,6 +1321,10 @@ impl OptionsUi {
                     (!s.extras.no_ai).then(|| {
                         Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
                     }),
+                )
+                .chain(
+                    cfg!(target_os = "ios")
+                        .then(|| Row::Buttons(open("Instances...", Page::Instances), None)),
                 )
                 .collect()
             }
@@ -1543,6 +1562,29 @@ impl OptionsUi {
                         let label = Text::literal(format!("{}{kind}: ", pack.title))
                             .append(on_off(s.horizon.shader_pack == pack.file));
                         Row::Buttons(button(0.0, 0.0, 310.0, label, Act::PickShaderPack(i)), None)
+                    })
+                    .collect()
+            }
+            Page::Instances => {
+                let instances = &s.instances;
+                instances
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, entry)| {
+                        let state = if entry.id == instances.current {
+                            "Playing"
+                        } else if instances.next.as_deref() == Some(entry.id.as_str()) {
+                            "Next start"
+                        } else {
+                            ""
+                        };
+                        let label = if state.is_empty() {
+                            Text::literal(&entry.name)
+                        } else {
+                            Text::literal(format!("{}: {state}", entry.name))
+                        };
+                        Row::Buttons(button(0.0, 0.0, 310.0, label, Act::PickInstance(i)), None)
                     })
                     .collect()
             }
@@ -2034,6 +2076,7 @@ impl OptionsUi {
                 let folder = match page {
                     Page::Mods => Some(("Open Mod Folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("Open Pack Folder", Act::OpenShaderPackFolder)),
+                    Page::Instances => Some(("New Instance", Act::NewInstance)),
                     _ => None,
                 };
                 if let Some((label, act)) = folder {
@@ -2498,6 +2541,9 @@ impl OptionsUi {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
                             }
+                            if p == Page::Instances {
+                                events.push(Event::ListInstances);
+                            }
                             self.push(p)
                         }
                         Act::Done => events.extend(self.back(s)),
@@ -2570,6 +2616,12 @@ impl OptionsUi {
                             }
                         }
                         Act::OpenShaderPackFolder => events.push(Event::OpenShaderPackFolder),
+                        Act::PickInstance(i) => {
+                            if let Some(entry) = s.instances.entries.get(i) {
+                                events.push(Event::PickInstance(entry.id.clone()));
+                            }
+                        }
+                        Act::NewInstance => events.push(Event::NewInstance),
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::None => {}

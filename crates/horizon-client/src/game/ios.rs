@@ -204,7 +204,7 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
     }
 }
 
-/// What to tell a player whose device has no game files at `resources` (relative to the game
+/// What to tell a player whose device has no game files at `resources` (in the game
 /// folder, Documents), or `None` when they are there.
 pub(super) fn missing_resources(resources: &Path) -> Option<String> {
     if resources.join("horizon-resources.json").is_file() {

@@ -121,6 +121,16 @@ Horizon folder. That is how you back worlds up or copy them to and from a comput
 
 If the game files are missing, the app says so (and where its crash report is), then closes.
 
+### Instances
+
+**Options › Horizon Settings › Instances** keeps separate game folders, each with its own
+worlds, settings, resource packs, shader packs (**Shader Packs...**) and mods (**Mods...**).
+The Horizon folder itself is the first instance. **New Instance** makes another one in
+`Horizon/instances/`; you can also copy a folder in there with the Files app. Tap an instance to
+play it. On the title screen, before you open a world, the game switches at once. From a world
+it switches at the next start. Every instance uses the same `resources` folder, and logs stay in
+`Horizon/logs`.
+
 ## Controls
 
 Installed as its own app, Horizon runs in landscape. Under LiveContainer it follows the phone's
