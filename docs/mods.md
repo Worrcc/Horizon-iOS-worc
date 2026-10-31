@@ -481,7 +481,7 @@ its component targets the WIT world `horizon-server-mod` instead of
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
 | `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
-| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, animation), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below) |
+| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
 
 | Hook (export `server-events`) | When |
 |---|---|
@@ -553,13 +553,17 @@ gone by then are dropped):
 | `animate(option<string>)` | plays an animation of its own model's file (docs/modpacks.md) from its start, once, looping or held at its end as the file says; none goes back to idle, walk and attack. Players' games are told on the `horizon:entity_animation` channel, with how long it has played, so one that comes into view joins in where it is |
 | `hurt-area(area)` | every living thing but the mob within a radius (up to 16) of a point takes up to 1024 hit points as the mob's attack (`mob_attack`) and burns up to 30 s: a breath, a stomp. Players too, LAN guests included |
 | `discard` | removes it, with no death and no drops |
+| `target(target)` | whom it attacks with its template's own attacks: `none`, `mob(id)` or `nearest-player` (the player it sees) |
+| `scale(f32)` | its `minecraft:scale`, 0.0625 to 16: growth. Its box and model follow on every player's game, and it is kept in its save |
+| `set-data(entries)` | strings kept on it and in its save: a key (1 to 64 characters) to a value (up to 1024), none removes it; 32 keys at most. `mobs()` reads them back, and a mod tells its spawns apart by them |
 
 Walk and look orders are a goal of the highest priority on every content
 mod's mob (`mobs/orders.rs`): while one stands, the mob's own goals that move
-or look wait. A mob whose template runs a brain instead of goals (villagers,
-piglins, axolotls, ...) moves by its brain and doesn't follow walk and look
-orders yet. Spawning mobs, choosing their targets and riding are not orders
-yet.
+or look wait, and so does a brain (villagers, axolotls, frogs, breezes,
+wardens, ...), which would steer the mob after the goals: it picks up again
+when the order ends. Piglins' and hoglins' brains still steer them. The
+animation an order plays and the data are kept in the mob's save
+(`horizon:animation`, `horizon:data`). Taming and riding are not orders yet.
 
 **Where they run.** The game that simulates the world starts the server mods
 that are on, and only that one:

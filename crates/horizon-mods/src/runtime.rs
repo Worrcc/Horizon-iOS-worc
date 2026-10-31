@@ -57,7 +57,7 @@ pub use server_bindings::{
     },
     horizon::mods::entities::{
         Area as EntityArea, Entity as ModEntity, Order as EntityOrder, Point as EntityPoint,
-        Walk as EntityWalk,
+        Target as EntityTarget, Walk as EntityWalk,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
     horizon::mods::world::BlockChange,
@@ -123,6 +123,12 @@ const OWN_ENTITIES: usize = 1024;
 const NEAR_ENTITIES: usize = 256;
 const NEAR_RADIUS: f64 = 64.0;
 const AREA_RADIUS: f64 = 16.0;
+/// `entities.spawn` calls one hook call may make.
+const SPAWNS_PER_CALL: usize = 64;
+/// `set-data`'s bounds: keys a mob keeps, a key's and a value's length.
+const DATA_KEYS: usize = 32;
+const DATA_KEY_CHARS: usize = 64;
+const DATA_VALUE_CHARS: usize = 1024;
 /// Chat lines a mod may show per call, HUD lines and their length.
 const CHAT_PER_CALL: usize = 8;
 /// `command.run-quiet` lines one call of a mod may queue (a quiet payload's
@@ -168,6 +174,8 @@ pub struct Snapshot {
     /// The loaded mobs, for capability `entities`; the game fills it only
     /// while a running mod has it ([`Mods::wants_entities`]).
     pub entities: Arc<[ModEntity]>,
+    /// The content mods' mob types, for `entities.spawn`; filled with [`Snapshot::entities`].
+    pub mob_kinds: Arc<[String]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
@@ -250,6 +258,15 @@ pub enum Output {
     Orders {
         name: String,
         orders: Vec<(u32, EntityOrder)>,
+    },
+    /// `entities.spawn`: a content mod's mob to spawn, persistent, with data stored on it.
+    Spawn {
+        name: String,
+        kind: String,
+        dimension: String,
+        at: [f64; 3],
+        yaw: f32,
+        data: Vec<(String, String)>,
     },
     /// `ui.open-screen`: the mod's entry in `entries()`; what it shows is
     /// [`Mods::screen`].
@@ -1643,9 +1660,32 @@ fn own_kind(kind: &str) -> bool {
 fn finite(p: &EntityPoint) -> bool {
     p.x.is_finite() && p.y.is_finite() && p.z.is_finite()
 }
+/// Why `set-data` (or `spawn`'s data) refuses its entries, if it does.
+fn check_data<'a>(
+    entries: impl ExactSizeIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Result<(), String> {
+    if entries.len() > DATA_KEYS {
+        return Err(format!("at most {DATA_KEYS} data keys"));
+    }
+    for (key, value) in entries {
+        if key.is_empty() || key.chars().count() > DATA_KEY_CHARS {
+            return Err(format!("a data key is 1 to {DATA_KEY_CHARS} characters"));
+        }
+        if value.is_some_and(|v| v.chars().count() > DATA_VALUE_CHARS) {
+            return Err(format!("data {key}: at most {DATA_VALUE_CHARS} characters"));
+        }
+    }
+    Ok(())
+}
 /// Why `entities.give-orders` refuses an order, if it does.
 fn check_order(order: &EntityOrder) -> Result<(), String> {
     match order {
+        EntityOrder::Scale(s) if !(0.0625..=16.0).contains(s) => {
+            Err("scale is 0.0625 to 16".into())
+        }
+        EntityOrder::SetData(entries) => {
+            check_data(entries.iter().map(|(k, v)| (k.as_str(), v.as_deref())))
+        }
         EntityOrder::WalkTo(w) if !finite(&w.to) || !(0.0..=4.0).contains(&w.speed) => {
             Err("walk-to needs a point and a speed of 0 to 4".into())
         }
@@ -1717,6 +1757,38 @@ impl entities::Host for State {
                 orders,
             });
         }
+        Ok(())
+    }
+    fn spawn(
+        &mut self,
+        kind: String,
+        dimension: String,
+        at: EntityPoint,
+        yaw: f32,
+        data: Vec<(String, String)>,
+    ) -> Result<(), String> {
+        let spawned = self
+            .out
+            .iter()
+            .filter(|o| matches!(o, Output::Spawn { .. }));
+        if spawned.count() >= SPAWNS_PER_CALL {
+            return Err(format!("at most {SPAWNS_PER_CALL} spawns per call"));
+        }
+        if !own_kind(&kind) || !self.snapshot.mob_kinds.contains(&kind) {
+            return Err(format!("{kind} is not a content mod's mob"));
+        }
+        if !finite(&at) || !yaw.is_finite() {
+            return Err("spawn needs a point and a yaw".into());
+        }
+        check_data(data.iter().map(|(k, v)| (k.as_str(), Some(v.as_str()))))?;
+        self.out.push(Output::Spawn {
+            name: self.name.clone(),
+            kind,
+            dimension,
+            at: [at.x, at.y, at.z],
+            yaw,
+            data,
+        });
         Ok(())
     }
 }
@@ -2137,5 +2209,16 @@ mod entity_order_tests {
         assert!(check_order(&area(2.0, 2000.0, 0)).is_err());
         assert!(check_order(&area(2.0, 1.0, 31)).is_err());
         assert!(own_kind("ruby:golem") && !own_kind("minecraft:zombie"));
+        assert!(check_order(&EntityOrder::Scale(2.0)).is_ok());
+        assert!(check_order(&EntityOrder::Scale(20.0)).is_err());
+        assert!(check_order(&EntityOrder::Target(EntityTarget::NearestPlayer)).is_ok());
+        let data =
+            |k: &str, v: Option<&str>| EntityOrder::SetData(vec![(k.into(), v.map(Into::into))]);
+        assert!(check_order(&data("stage", Some("3"))).is_ok());
+        assert!(check_order(&data("stage", None)).is_ok());
+        assert!(check_order(&data("", Some("x"))).is_err());
+        assert!(check_order(&data("k", Some(&"x".repeat(1025)))).is_err());
+        let many: Vec<(String, Option<String>)> = (0..33).map(|i| (i.to_string(), None)).collect();
+        assert!(check_order(&EntityOrder::SetData(many)).is_err());
     }
 }

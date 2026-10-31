@@ -52,9 +52,10 @@ impl Game<'_> {
 }
 
 #[cfg(feature = "mods")]
-mod run {
+pub(super) mod run {
     use super::{Game, LanHost, ModEvent, Who};
     use horizon_client::chunk_map::ChunkMap;
+    use horizon_client::mobs::orders::DATA_ENTRIES;
     use horizon_client::mobs::{Damage, DamageKind, Mob, Who as MobWho};
     use horizon_client::{
         command::args::GameMode as Mode,
@@ -63,7 +64,7 @@ mod run {
     };
     use horizon_core::geometry::Vec3;
     use horizon_mods::{
-        ArgumentKind, BlockPos, EntityArea, EntityOrder, GameMode, ModEntity, Output,
+        ArgumentKind, BlockPos, EntityArea, EntityOrder, EntityTarget, GameMode, ModEntity, Output,
         ServerCommand, ServerPlayer, Snapshot, WorldView,
     };
     use horizon_protocol::packets::play::{self, Clientbound as C};
@@ -75,6 +76,17 @@ mod run {
     const MAX_QUEUED_WRITES: usize = 1 << 16;
     /// Orders to mobs in levels that don't tick are kept up to this many, as blocks are.
     const MAX_QUEUED_ORDERS: usize = 1 << 14;
+    /// Spawns waiting for their level, at most.
+    const MAX_QUEUED_SPAWNS: usize = 1024;
+
+    /// A server mod's `entities.spawn`, waiting for its dimension's level.
+    pub(in crate::game) struct ModSpawn {
+        dimension: String,
+        kind: String,
+        at: [f64; 3],
+        yaw: f32,
+        data: Vec<(String, String)>,
+    }
 
     /// A mob as capability `entities` reads it.
     fn mod_entity(m: &Mob, dimension: &str) -> ModEntity {
@@ -93,6 +105,11 @@ mod run {
                 Some(MobWho::Mob(id)) => Some(id),
                 _ => None,
             },
+            target_player: m.ai.target == Some(MobWho::Player),
+            scale: horizon_client::mobs::finalize::scale(m) as f32,
+            data: (m.orders.data.iter())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             age: m.age,
             animation: m
                 .orders
@@ -416,6 +433,9 @@ mod run {
                     all.extend(alive.map(|m| mod_entity(m, dim.id())));
                 }
                 snapshot.entities = all.into();
+                let kinds = self.res.mob_types().keys();
+                let kinds = kinds.filter(|k| !k.starts_with("minecraft:")).cloned();
+                snapshot.mob_kinds = kinds.collect::<Vec<_>>().into();
             }
             snapshot
         }
@@ -423,6 +443,7 @@ mod run {
         /// Carries out server mods' orders to the mobs of the level in place, in order;
         /// those to mobs of another level wait for it, and those to mobs gone are dropped.
         pub(in crate::game) fn apply_mod_orders(&mut self) {
+            self.apply_mod_spawns();
             if self.mods.mob_orders.is_empty() {
                 return;
             }
@@ -435,6 +456,32 @@ mod run {
                     Some(i) => self.apply_mod_order(i, order),
                     None if parked.contains(&id) => self.mods.mob_orders.push((id, order)),
                     None => {}
+                }
+            }
+        }
+
+        /// Spawns server mods asked for in the level in place; those of a level that isn't
+        /// in place wait for it, those of a dimension the server hasn't are dropped.
+        fn apply_mod_spawns(&mut self) {
+            if self.mods.mob_spawns.is_empty() {
+                return;
+            }
+            let here = self.dim.id();
+            let parked: Vec<&str> = self.levels.parked_dims().iter().map(|d| d.id()).collect();
+            for s in std::mem::take(&mut self.mods.mob_spawns) {
+                if s.dimension != here {
+                    if parked.contains(&s.dimension.as_str()) {
+                        self.mods.mob_spawns.push(s);
+                    }
+                    continue;
+                }
+                let Some(id) = self.spawn_mob(&s.kind, s.at, true) else {
+                    log::debug!("Horizon: a server mod's {} did not spawn", s.kind);
+                    continue;
+                };
+                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    (m.yaw, m.body_yaw, m.head_yaw) = (s.yaw, s.yaw, s.yaw);
+                    m.orders.data.extend(s.data);
                 }
             }
         }
@@ -460,6 +507,32 @@ mod run {
                 }
                 // Entity.discard: gone, no death, no drops.
                 EntityOrder::Discard => m.removed = true,
+                EntityOrder::Target(t) => {
+                    m.ai.target = match t {
+                        EntityTarget::None => None,
+                        EntityTarget::Mob(id) => Some(MobWho::Mob(id)),
+                        EntityTarget::NearestPlayer => Some(MobWho::Player),
+                    };
+                }
+                EntityOrder::Scale(s) => {
+                    use horizon_client::mobs::finalize::{Attr, set_base};
+                    set_base(m, Attr::Scale, f64::from(s));
+                }
+                EntityOrder::SetData(entries) => {
+                    for (key, value) in entries {
+                        match value {
+                            Some(v) => {
+                                let full = m.orders.data.len() >= DATA_ENTRIES;
+                                if !full || m.orders.data.contains_key(&key) {
+                                    m.orders.data.insert(key, v);
+                                }
+                            }
+                            None => {
+                                m.orders.data.remove(&key);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -731,6 +804,27 @@ mod run {
                             "Horizon: mod {name} set more blocks than wait for their level: {over} dropped"
                         );
                     }
+                }
+                Output::Spawn {
+                    name,
+                    kind,
+                    dimension,
+                    at,
+                    yaw,
+                    data,
+                } => {
+                    if self.mods.mob_spawns.len() >= MAX_QUEUED_SPAWNS {
+                        log::warn!("Horizon: mod {name} spawned more than wait for their level");
+                        return;
+                    }
+                    let spawn = ModSpawn {
+                        dimension,
+                        kind,
+                        at,
+                        yaw,
+                        data,
+                    };
+                    self.mods.mob_spawns.push(spawn);
                 }
                 Output::Orders { name, orders } => {
                     let queued = &mut self.mods.mob_orders;

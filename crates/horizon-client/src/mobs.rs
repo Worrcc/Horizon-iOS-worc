@@ -590,11 +590,6 @@ fn mod_types(
         t.knockback_resistance = attr("knockback_resistance").unwrap_or(t.knockback_resistance);
         t.follow_range = attr("follow_range").unwrap_or(t.follow_range);
         t.step_height = attr("step_height").unwrap_or(t.step_height);
-        // Entity.getDimensions: the type's size times its scale (the renderer scales the
-        // model to match).
-        let scale = attr("scale").unwrap_or(1.0);
-        (t.width, t.height, t.eye_height) =
-            (t.width * scale, t.height * scale, t.eye_height * scale);
         t.attributes = Arc::new(attributes);
         if let Some(texture) = horizon["texture"].as_str() {
             t.texture = texture.to_owned();
@@ -3291,7 +3286,8 @@ mod mod_type_tests {
         let t = &out["ruby:ruby_cow"];
         assert_eq!(t.id, "ruby:ruby_cow");
         assert_eq!(t.species, template.species);
-        assert_eq!((t.width, t.height), (3.6, template.height * 2.0));
+        // The type keeps its size; its scale multiplies it (Mob::dims).
+        assert_eq!((t.width, t.height), (1.8, template.height));
         assert_eq!(t.category, "monster");
         assert!(t.flags.fire_immune);
         assert_eq!((t.max_health, t.attack_damage), (60.0, 7.0));

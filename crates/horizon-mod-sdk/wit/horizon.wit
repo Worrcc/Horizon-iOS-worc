@@ -714,6 +714,12 @@ interface entities {
         on-ground: bool,
         /// The mob it attacks, by id; none for no mob (a player, or none).
         target: option<u32>,
+        /// It attacks a player: the nearest it sees.
+        target-player: bool,
+        /// Its `minecraft:scale`: 1 is its type's size.
+        scale: f32,
+        /// What mods stored on it (`set-data`, `spawn`), kept in its save.
+        data: list<tuple<string, string>>,
         /// Ticks it has lived since it was loaded.
         age: u32,
         /// The animation an `animate` order plays on it now.
@@ -740,6 +746,14 @@ interface entities {
         /// Seconds those not immune to fire burn after, at most 30.
         fire: u32,
     }
+    /// Whom a mob attacks.
+    variant target {
+        none,
+        /// A mob, by id.
+        mob(u32),
+        /// The nearest player it sees.
+        nearest-player,
+    }
     variant order {
         /// Walk to a point by its path navigation, ahead of its own goals,
         /// until it arrives or gets another order to walk or `halt`.
@@ -761,6 +775,15 @@ interface entities {
         hurt-area(area),
         /// Remove it, with no drops (`Entity.discard`).
         discard,
+        /// Have it attack, as its own goals do: its template's attacks
+        /// (melee, arrows, ...) on that target.
+        target(target),
+        /// Its `minecraft:scale`, 0.0625 to 16: growth. Its size and model
+        /// follow, on every player's game.
+        scale(f32),
+        /// Store strings on it, kept in its save: a key (1 to 64 characters)
+        /// to a value (up to 1024), none removes the key. At most 32 keys.
+        set-data(list<tuple<string, option<string>>>),
     }
     /// The loaded mobs of content mods' kinds (any namespace but
     /// `minecraft`), as at the start of the tick, at most 1024.
@@ -774,6 +797,12 @@ interface entities {
     /// tick; an order to a mob gone by then is dropped. At most 1024 per
     /// call.
     give-orders: func(orders: list<tuple<u32, order>>) -> result<_, string>;
+    /// Spawns a content mod's mob (any namespace but `minecraft`) at a
+    /// point of a dimension, facing `yaw`, persistent, with `data` stored on
+    /// it (as `set-data`), before that dimension's next tick: `mobs` lists
+    /// it from the tick after, where `data` tells it apart. At most 64 spawns
+    /// per hook call; an unknown kind is an error.
+    spawn: func(kind: string, dimension: string, at: point, yaw: f32, data: list<tuple<string, string>>) -> result<_, string>;
 }
 
 /// What the server calls in a server mod (manifest `api = "0.3"`,

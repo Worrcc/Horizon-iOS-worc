@@ -8,3 +8,8 @@ expect.error = "No content mod's mob within 32 blocks"
 [[step]]
 command = "heel"
 expect.feedback = "0 mobs ordered"
+
+# A kind no content mod declares is refused.
+[[step]]
+command = "raise minecraft:zombie"
+expect.error = "minecraft:zombie is not a content mod's mob"

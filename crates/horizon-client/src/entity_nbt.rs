@@ -778,6 +778,10 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             map.insert("equipment".into(), Tag::Compound(equipment));
         }
     }
+    // Server mods' data and ordered animation (capability `entities`).
+    if let Tag::Compound(map) = &mut tag {
+        crate::mobs::orders::write_nbt(m, map);
+    }
     tag
 }
 /// `AttributeMap.pack` for the attributes with a base or permanent modifier
@@ -902,6 +906,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     m.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     // LivingEntity.readAdditionalSaveData: the saved attribute bases, then
     // the health, the max health when there is none.
+    use crate::mobs::finalize::Attr;
     if let Some(Tag::List(attrs)) = tag.get("attributes") {
         for a in attrs {
             let (Some(id), Some(Tag::Double(bits))) = (text(a.get("id")), a.get("base")) else {
@@ -912,12 +917,18 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
                 "minecraft:max_health" => m.attrs.max_health = v as f32,
                 "minecraft:movement_speed" => m.attrs.speed = v,
                 "minecraft:attack_damage" => m.attrs.attack_damage = v as f32,
+                // A scale of its own (`/attribute`, a server mod's growth): sizes follow it.
+                "minecraft:scale"
+                    if Some(v) != crate::mobs::finalize::default_value(&m, Attr::Scale) =>
+                {
+                    crate::mobs::finalize::set_base(&mut m, Attr::Scale, v);
+                }
                 _ => {}
             }
         }
     }
     if let Some(bonus) = spawn_bonus(tag) {
-        use crate::mobs::finalize::{Attr, Op, add_modifier};
+        use crate::mobs::finalize::{Op, add_modifier};
         let id = "minecraft:random_spawn_bonus";
         add_modifier(&mut m, Attr::FollowRange, id, bonus, Op::AddMultipliedBase);
     }
@@ -1313,6 +1324,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
+    crate::mobs::orders::read_nbt(&mut m, tag);
     // A mob saved mid-death finishes dying; one saved dead is dropped.
     if m.health <= 0.0 && m.death_time == 0 {
         return None;
@@ -2823,6 +2835,52 @@ mod sheep_nbt_tests {
             .collect();
         let back = mob_from_nbt(&tag, &types, 2).unwrap();
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
+    }
+
+    /// A scale of its own (growth), server mods' data and the animation an order plays are in
+    /// the save and come back, the animation as far along as it was.
+    #[test]
+    fn a_mob_keeps_its_scale_data_and_ordered_animation() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            types["minecraft:sheep"].clone(),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        use crate::mobs::finalize::{Attr, scale, set_base};
+        set_base(&mut m, Attr::Scale, 2.5);
+        m.orders.data.insert("stage".into(), "3".into());
+        m.age = 100;
+        m.orders.animation = Some((Arc::from("animation.roar"), 60));
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None);
+        let mut back = mob_from_nbt(&tag, &types, 2).unwrap();
+        assert_eq!(scale(&back), 2.5);
+        assert_eq!(back.dims().1, m.dims().1);
+        assert_eq!(back.orders.data["stage"], "3");
+        back.age = 500;
+        let tag = mob_to_nbt(&back, [1, 2, 3, 4], None);
+        let again = mob_from_nbt(&tag, &types, 3).unwrap();
+        let (name, start) = again.orders.animation.clone().unwrap();
+        assert_eq!(&*name, "animation.roar");
+        // 40 ticks along when saved first; loaded at age 0, 500 ticks more by the second save.
+        assert_eq!(again.age.wrapping_sub(start), 540);
+        // A mob with none of it saves none of Horizon's keys.
+        let plain = Mob::new(4, types["minecraft:sheep"].clone(), Vec3::ZERO, 0.0);
+        let tag = mob_to_nbt(&plain, [1, 2, 3, 4], None);
+        assert!(tag.get("horizon:data").is_none() && tag.get("horizon:animation").is_none());
+        assert_eq!(scale(&mob_from_nbt(&tag, &types, 5).unwrap()), 1.0);
     }
 
     #[test]

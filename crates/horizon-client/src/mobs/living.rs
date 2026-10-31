@@ -424,6 +424,11 @@ impl Mob {
             let s = self.extra.size as f32;
             (w, h, e) = (w * s, h * s, e * s);
         }
+        // Entity.getDimensions: EntityDimensions.scale(getScale()).
+        let s = super::finalize::scale(self) as f32;
+        if s != 1.0 {
+            (w, h, e) = (w * s, h * s, e * s);
+        }
         (f64::from(w), f64::from(h), f64::from(e))
     }
     pub fn eye_height(&self) -> f64 {

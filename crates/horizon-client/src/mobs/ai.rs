@@ -1172,25 +1172,29 @@ fn server_ai_step(
     if !frozen && !super::bee::pollinating(m) {
         m.nav_tick(w);
     }
-    if super::monster_brain::has_brain(m.species()) {
+    // A server mod's walk or look order holds a mob with a brain too (mobs/orders.rs): the
+    // brain, which would steer it after the goals, waits until the order ends.
+    let obeying = m.orders.walk.is_some() || m.orders.look.is_some();
+    if !obeying && super::monster_brain::has_brain(m.species()) {
         // Breeze/Creaking.customServerAiStep: the brain, then updateActivity.
         super::monster_brain::tick(m, w, level_random, events);
     }
-    if m.species() == Species::Villager {
+    if !obeying && m.species() == Species::Villager {
         // Villager.customServerAiStep: the brain, then the raid sound roll.
         super::villager_brain::tick(m, w, level_random, events);
         let _ = m.random.next_int_bound(100);
     }
-    if m.species() == Species::Warden {
+    if !obeying && m.species() == Species::Warden {
         // Warden.customServerAiStep: the brain and its bookkeeping.
         super::warden::server_ai_step(m, w, level_random, events);
     }
     // Sniffer and HappyGhast.customServerAiStep: the brain (a happy ghast's
     // only while it is a ghastling), then updateActivity.
-    if m.species() == Species::Sniffer
-        || m.species() == Species::HappyGhast && m.is_baby()
-        || m.species() == Species::CopperGolem
-        || m.species() == Species::Axolotl
+    if !obeying
+        && (m.species() == Species::Sniffer
+            || m.species() == Species::HappyGhast && m.is_baby()
+            || m.species() == Species::CopperGolem
+            || m.species() == Species::Axolotl)
     {
         super::animal_brain::tick(m, w, level_random, events);
     }
@@ -1233,10 +1237,12 @@ fn armadillo_server_ai_step(m: &mut Mob, mob_drops: bool, events: &mut Vec<MobEv
     }
 }
 fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
+    // Brains wait while a server mod's walk or look order stands (mobs/orders.rs).
+    let obeying = m.orders.walk.is_some() || m.orders.look.is_some();
     match m.species() {
         Species::Rabbit => super::rabbit::server_ai_step(m),
         // Armadillo.customServerAiStep: the brain and its activity, then the scute.
-        Species::Armadillo => {
+        Species::Armadillo if !obeying => {
             super::armadillo::server_ai_step(m, cx);
             armadillo_server_ai_step(m, cx.w.mob_drops, cx.events);
         }
@@ -1260,7 +1266,7 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         Species::Evoker if m.extra.counter > 0 => m.extra.counter -= 1,
         Species::Bat => super::bat::server_ai_step(m, cx.w, cx.events),
         Species::Bee => super::bee::server_ai_step(m, cx),
-        Species::Frog => super::frog::server_ai_step(m, cx.w),
+        Species::Frog if !obeying => super::frog::server_ai_step(m, cx.w),
         _ => {}
     }
 }

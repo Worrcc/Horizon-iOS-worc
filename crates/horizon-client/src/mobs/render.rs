@@ -901,13 +901,8 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
         None => super::aquatic::rotations(m, alpha, body)
             .unwrap_or_else(|| glam::Mat4::from_rotation_y((180.0 - body).to_radians())),
     };
-    // LivingEntityRenderer.submit: the entity's scale before setupRotations. Only content
-    // mod types set a base scale other than 1.
-    let scale = m
-        .kind
-        .attributes
-        .get("minecraft:scale")
-        .map_or(1.0, |&s| s as f32);
+    // LivingEntityRenderer.submit: the entity's scale before setupRotations.
+    let scale = super::finalize::scale(m) as f32;
     let mut base = origin * glam::Mat4::from_scale(glam::Vec3::splat(scale)) * rotation;
     if m.death_time > 0 && !super::creaking::tearing_down(m) {
         let f = ((m.death_time as f32 + alpha - 1.0) / 20.0 * 1.6)

@@ -272,6 +272,7 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("set {} block(s) in {dimension}", blocks.len())
             }
             Output::Orders { orders, .. } => format!("gave {} mob order(s)", orders.len()),
+            Output::Spawn { kind, .. } => format!("spawned {kind}"),
             Output::OpenScreen { .. } => "opened a screen".to_string(),
             Output::CloseScreen { .. } => "closed its screen".to_string(),
             Output::PlaceRecipe { book_id, all } => {

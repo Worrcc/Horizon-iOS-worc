@@ -109,7 +109,10 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
      hurt-area, discard). Animations reach players' games on `horizon:entity_animation`. The
      example `crates/horizon-mod-sdk/examples/mob-orders` (`/heel`, `/animate`, `/breathe`,
      `/hover`) was checked in the game with the converted dragon, in-frame and on the server
-     thread. Still to come: spawning, targets, taming, riding, growth, saved mob data.
+     thread. Since then: `spawn` (with data), orders `target`, `scale` (growth, through
+     `minecraft:scale`, which now sizes every mob as vanilla's does) and `set-data`, kept in the
+     save with the playing animation; brain-driven templates follow walk and look orders.
+     Still to come: taming, riding, piglin brains.
      `horizon-ctl command` runs a command in the window, so it never reaches server mods:
      drive them with `horizon-ctl chat "/heel"`.
   3. Spawn rules and structures with their mobs.

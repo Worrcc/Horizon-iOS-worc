@@ -4,7 +4,14 @@ use super::{
     Mob,
     goals::{Cx, Goal, LOOK, MOVE},
 };
-use std::sync::Arc;
+use horizon_world::nbt::{Compound, Tag};
+use std::{collections::BTreeMap, sync::Arc};
+
+/// The most `set-data` entries a mob keeps.
+pub const DATA_ENTRIES: usize = 32;
+/// The save's keys: Horizon's own, beside vanilla's.
+const DATA: &str = "horizon:data";
+const ANIMATION: &str = "horizon:animation";
 
 /// A mob's standing orders.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -13,8 +20,52 @@ pub struct Orders {
     pub walk: Option<([f64; 3], f64)>,
     /// Keep its head turned to this point.
     pub look: Option<[f64; 3]>,
-    /// The animation an order plays (mobs/geo.rs `animate`), and the age (ticks) it started at.
+    /// The animation an order plays (mobs/geo.rs `animate`), and the age (ticks) it started at:
+    /// elapsed ticks are `age.wrapping_sub(start)`, so a start before the age a loaded mob
+    /// begins at (0) still counts right.
     pub animation: Option<(Arc<str>, u32)>,
+    /// What server mods stored on the mob (`set-data`, `spawn`): kept in its save.
+    pub data: BTreeMap<String, String>,
+}
+
+/// Writes the mob's data and ordered animation into its save, or takes them out.
+pub fn write_nbt(m: &Mob, map: &mut Compound) {
+    map.remove(&DATA.into());
+    map.remove(&ANIMATION.into());
+    if !m.orders.data.is_empty() {
+        let data = m.orders.data.iter();
+        let data = data.map(|(k, v)| (k.as_str(), Tag::String(v.as_str().into())));
+        map.insert(DATA.into(), Tag::compound(data));
+    }
+    if let Some((name, start)) = &m.orders.animation {
+        let ticks = m.age.wrapping_sub(*start).min(i32::MAX as u32) as i32;
+        let animation = [
+            ("name", Tag::String((&**name).into())),
+            ("ticks", Tag::Int(ticks)),
+        ];
+        map.insert(ANIMATION.into(), Tag::compound(animation));
+    }
+}
+
+/// Reads what [`write_nbt`] saved: the animation goes on where it was.
+pub fn read_nbt(m: &mut Mob, tag: &Tag) {
+    if let Some(Tag::Compound(data)) = tag.get(DATA) {
+        let strings = data.iter().filter_map(|(k, v)| match v {
+            Tag::String(s) => Some((k.to_string_lossy(), s.to_string_lossy())),
+            _ => None,
+        });
+        m.orders.data = strings.take(DATA_ENTRIES).collect();
+    }
+    if let Some(a) = tag.get(ANIMATION)
+        && let Some(Tag::String(name)) = a.get("name")
+    {
+        let ticks = match a.get("ticks") {
+            Some(Tag::Int(t)) => (*t).max(0) as u32,
+            _ => 0,
+        };
+        let start = m.age.wrapping_sub(ticks);
+        m.orders.animation = Some((Arc::from(name.to_string_lossy()), start));
+    }
 }
 
 /// The priority of [`Obey`]: ahead of every vanilla goal (0 is the first vanilla uses).

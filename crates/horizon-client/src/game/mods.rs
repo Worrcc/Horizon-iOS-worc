@@ -79,6 +79,10 @@ pub(super) struct ModsState {
     /// level's next tick.
     #[cfg(feature = "mods")]
     pub(super) mob_orders: Vec<(u32, horizon_mods::EntityOrder)>,
+    /// Server mods' spawns: dimension, kind, position, yaw and data, made before that
+    /// dimension's next tick.
+    #[cfg(feature = "mods")]
+    pub(super) mob_spawns: Vec<super::server_mods::run::ModSpawn>,
     /// `command.run` lines for this window's own world, run on the next tick:
     /// run at once, their chat lines would reach the mods while their output
     /// is still being shown, and a mod answering its own lines would recurse.
@@ -521,6 +525,7 @@ impl Game<'_> {
             font_widths: self.mods.font_widths.clone(),
             players,
             entities: Default::default(),
+            mob_kinds: Default::default(),
             view_hit: self.mod_view_hit(),
             recipes,
             known_recipes,
@@ -752,7 +757,8 @@ impl Game<'_> {
                 | Output::Broadcast { .. }
                 | Output::Reply { .. }
                 | Output::SetBlocks { .. }
-                | Output::Orders { .. }) => {
+                | Output::Orders { .. }
+                | Output::Spawn { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
                     continue;
                 }

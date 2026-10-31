@@ -709,6 +709,9 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `max-health` | `f32` |  |
 | `on-ground` | `bool` |  |
 | `target` | `option<u32>` | The mob it attacks, by id; none for no mob (a player, or none). |
+| `target-player` | `bool` | It attacks a player: the nearest it sees. |
+| `scale` | `f32` | Its `minecraft:scale`: 1 is its type's size. |
+| `data` | `list<tuple<string, string>>` | What mods stored on it (`set-data`, `spawn`), kept in its save. |
 | `age` | `u32` | Ticks it has lived since it was loaded. |
 | `animation` | `option<string>` | The animation an `animate` order plays on it now. |
 
@@ -736,6 +739,16 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `amount` | `f32` | Hit points every living thing in it but the mob loses (vanilla's `mob_attack` damage from the mob), at most 1024. |
 | `fire` | `u32` | Seconds those not immune to fire burn after, at most 30. |
 
+### variant `target`
+
+Whom a mob attacks.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `none` |  |  |
+| `mob` | `u32` | A mob, by id. |
+| `nearest-player` |  | The nearest player it sees. |
+
 ### variant `order`
 
 | Case | Payload | |
@@ -748,12 +761,16 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `animate` | `option<string>` | Play one of the animations of its own model's animation file, from its start (a looping one loops); none: back to its states' (idle, walk, attack). Players' games see it too. |
 | `hurt-area` | `area` | Hurt and burn what is in an area: a breath, a stomp. |
 | `discard` |  | Remove it, with no drops (`Entity.discard`). |
+| `target` | `target` | Have it attack, as its own goals do: its template's attacks (melee, arrows, ...) on that target. |
+| `scale` | `f32` | Its `minecraft:scale`, 0.0625 to 16: growth. Its size and model follow, on every player's game. |
+| `set-data` | `list<tuple<string, option<string>>>` | Store strings on it, kept in its save: a key (1 to 64 characters) to a value (up to 1024), none removes the key. At most 32 keys. |
 
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `mobs` | `func() -> list<entity>` | The loaded mobs of content mods' kinds (any namespace but `minecraft`), as at the start of the tick, at most 1024. |
 | `near` | `func(dimension: string, at: point, radius: f64) -> list<entity>` | Every loaded mob within `radius` (at most 64) blocks of a point in a dimension, nearest first, at most 256. Players are `players.online`'s. |
 | `give-orders` | `func(orders: list<tuple<u32, order>>) -> result<_, string>` | Orders, by mob id, to content mods' mobs: checked now (an error queues none) and carried out in order before their dimension's next tick; an order to a mob gone by then is dropped. At most 1024 per call. |
+| `spawn` | `func(kind: string, dimension: string, at: point, yaw: f32, data: list<tuple<string, string>>) -> result<_, string>` | Spawns a content mod's mob (any namespace but `minecraft`) at a point of a dimension, facing `yaw`, persistent, with `data` stored on it (as `set-data`), before that dimension's next tick: `mobs` lists it from the tick after, where `data` tells it apart. At most 64 spawns per hook call; an unknown kind is an error. |
 
 ## `server-events`
 

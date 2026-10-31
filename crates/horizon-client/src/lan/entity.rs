@@ -33,7 +33,7 @@ pub fn animation_payload(entity: i32, animation: Option<&Animation>) -> play::Cl
     let mut w = Writer::new();
     w.varint(entity);
     w.string(animation.map_or("", |a| &a.0));
-    w.varint(animation.map_or(0, |a| a.2.saturating_sub(a.1)) as i32);
+    w.varint(animation.map_or(0, |a| a.2.wrapping_sub(a.1)) as i32);
     play::Clientbound::CustomPayload(CustomPayload {
         channel: ANIMATION_CHANNEL.into(),
         data: w.data,

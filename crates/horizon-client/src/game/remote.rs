@@ -1875,7 +1875,7 @@ impl Game<'_> {
                 {
                     // Begun that long ago on the server: a mob coming into view mid-way joins in.
                     let elapsed = r.varint().unwrap_or(0).max(0) as u32;
-                    let start = m.age.saturating_sub(elapsed);
+                    let start = m.age.wrapping_sub(elapsed);
                     m.orders.animation =
                         (!name.is_empty()).then(|| (std::sync::Arc::from(name), start));
                 }

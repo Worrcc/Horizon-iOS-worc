@@ -346,8 +346,8 @@ What deep-tier mods such as Ice and Fire also need, in this order:
 1. **Behaviour in mod code:** started. A server mod with capability `entities`
    ([mods.md](mods.md), server mods) reads the mobs and orders the content mods' own: walk to,
    look at, push (flight), gravity, play an animation (players' games see it), hurt and burn an
-   area (breath), discard. Still to come: spawning from mod code, choosing targets, taming,
-   riding, growth stages, and data a mob keeps in its save.
+   area (breath), discard, target (a mob or the nearest player), scale (growth), data kept in
+   its save, and spawning. Still to come: taming and riding, and piglin-brained templates.
 2. **Spawning and worldgen:** natural spawn rules per biome, and structures with their mobs (the
    carried-over worldgen covers the structure files).
 3. **Block entities and screens:** for machines like forges (API 0.4).

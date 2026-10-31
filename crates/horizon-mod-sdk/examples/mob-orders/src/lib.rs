@@ -3,9 +3,12 @@
 //! the player, `/halt` lets their own goals back, `/animate <name>` plays one of the nearest
 //! one's own animations, `/breathe [amount]` turns the nearest one to the player and hurts
 //! and burns what is around the player, `/hover` lifts it with gravity off, and `/land`
-//! lets gravity back.
+//! lets gravity back. `/raise <kind>` spawns one beside the player, `/grow <scale>` sizes the
+//! nearest, `/attack` sets it on the nearest player, `/label <key> <value>` stores a string on it
+//! (kept in its save) and `/info` says what it is.
 use horizon_mod_sdk::server::{
-    Area, Args, Argument, Entity, Order, Player, Point, Registration, ServerMod, Walk, entities,
+    Area, Args, Argument, Entity, Order, Player, Point, Registration, ServerMod, Target, Walk,
+    entities,
 };
 
 /// How far the orders reach, in blocks.
@@ -49,7 +52,12 @@ impl ServerMod for MobOrders {
                     [Argument::integer("amount", Some(0), Some(100)).optional()],
                 )
                 .command("hover")
-                .command("land"),
+                .command("land")
+                .command_with("raise", [Argument::text("kind")])
+                .command_with("grow", [Argument::number("scale")])
+                .command("attack")
+                .command_with("label", [Argument::word("key"), Argument::word("value")])
+                .command("info"),
         ))
     }
 
@@ -113,6 +121,47 @@ impl ServerMod for MobOrders {
                 };
                 entities::give_orders(&orders)?;
                 Ok(None)
+            }
+            "raise" => {
+                let kind = args.string("kind").unwrap_or_default().to_string();
+                let at = Point {
+                    x: player.x + 3.0,
+                    ..at(player)
+                };
+                let by = vec![("raised_by".to_string(), player.name.clone())];
+                entities::spawn(&kind, &player.dimension, at, 0.0, &by)?;
+                Ok(Some(format!("{kind} raised")))
+            }
+            "grow" => {
+                let mob = nearest(player)?;
+                let scale = args.number("scale").unwrap_or(1.0) as f32;
+                entities::give_orders(&[(mob.id, Order::Scale(scale))])?;
+                Ok(Some(format!("{} grows to {scale}", mob.kind)))
+            }
+            "attack" => {
+                let mob = nearest(player)?;
+                entities::give_orders(&[(mob.id, Order::Target(Target::NearestPlayer))])?;
+                Ok(Some(format!("{} attacks", mob.kind)))
+            }
+            "label" => {
+                let mob = nearest(player)?;
+                let key = args.string("key").unwrap_or_default().to_string();
+                let value = args.string("value").map(str::to_string);
+                entities::give_orders(&[(mob.id, Order::SetData(vec![(key, value)]))])?;
+                Ok(None)
+            }
+            "info" => {
+                let mob = nearest(player)?;
+                let data: Vec<String> = mob.data.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                Ok(Some(format!(
+                    "{} #{}: scale {}, health {}/{}, data [{}]",
+                    mob.kind,
+                    mob.id,
+                    mob.scale,
+                    mob.health,
+                    mob.max_health,
+                    data.join(", ")
+                )))
             }
             _ => Err("Unknown command".into()),
         }

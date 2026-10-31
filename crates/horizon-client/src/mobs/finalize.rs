@@ -405,9 +405,11 @@ pub enum Attr {
     JumpStrength,
     Armor,
     BurningTime,
+    /// `minecraft:scale`: the size the mob is drawn and collides at.
+    Scale,
 }
 impl Attr {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::MaxHealth,
         Self::MovementSpeed,
         Self::FollowRange,
@@ -417,6 +419,7 @@ impl Attr {
         Self::JumpStrength,
         Self::Armor,
         Self::BurningTime,
+        Self::Scale,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -429,6 +432,7 @@ impl Attr {
             Self::JumpStrength => "jump_strength",
             Self::Armor => "armor",
             Self::BurningTime => "burning_time",
+            Self::Scale => "scale",
         }
     }
     /// `RangedAttribute` bounds.
@@ -442,6 +446,7 @@ impl Attr {
             Self::JumpStrength => (0.0, 32.0),
             Self::Armor => (0.0, 30.0),
             Self::BurningTime => (0.0, 1024.0),
+            Self::Scale => (0.0625, 16.0),
         }
     }
 }
@@ -572,13 +577,30 @@ fn refresh(m: &mut Mob, a: Attr) {
         Attr::KnockbackResistance => m.attrs.knockback_resistance = value(m, a),
         Attr::SpawnReinforcements => m.attrs.spawn_reinforcements = value(m, a),
         Attr::JumpStrength => m.attrs.jump_strength = value(m, a),
-        Attr::Armor | Attr::BurningTime => {}
+        Attr::Armor | Attr::BurningTime | Attr::Scale => {}
     }
 }
 /// The value without the transient baby modifier (`speed_bonus` applies
 /// that one to movement speed).
 fn base_with_modifiers(m: &Mob, a: Attr) -> f64 {
     compute(m, a, false, &[])
+}
+/// `LivingEntity.getScale`: its `minecraft:scale` (1 for vanilla's types), read without the
+/// modifier pass while the mob has no scale of its own (a size is read many times a tick).
+pub fn scale(m: &Mob) -> f64 {
+    let own = m.extra.attributes.as_ref().is_some_and(|s| {
+        s.bases.iter().any(|(a, _)| *a == Attr::Scale)
+            || s.modifiers.iter().any(|x| x.attr == Attr::Scale)
+    });
+    if own {
+        value(m, Attr::Scale)
+    } else {
+        m.kind
+            .attributes
+            .get("minecraft:scale")
+            .copied()
+            .unwrap_or(1.0)
+    }
 }
 /// `AttributeInstance.setBaseValue`.
 pub fn set_base(m: &mut Mob, a: Attr, v: f64) {

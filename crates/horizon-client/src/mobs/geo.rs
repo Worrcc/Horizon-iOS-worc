@@ -92,7 +92,7 @@ pub fn animate(m: &Mob, s: &State, p: &mut Poses, a: &Animations) {
         && let Some(ordered) = a.all.get(&**name)
     {
         // Whole ticks since it began, then the frame's part of the next.
-        let elapsed = m.age.saturating_sub(*start) as f32 + s.partial;
+        let elapsed = m.age.wrapping_sub(*start) as f32 + s.partial;
         let millis = (elapsed * 50.0) as i64;
         let end = (ordered.length * 1000.0) as i64;
         if ordered.looping || millis <= end {
