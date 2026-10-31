@@ -26,7 +26,10 @@ use winit::{
 /// does). Forcing landscape fought hosts that run apps in their own orientation (LiveContainer):
 /// iOS then rotated the view itself, and the picture no longer filled the screen. The app's
 /// Info.plist still makes an installed app landscape-only.
-pub(super) fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+pub(super) fn window_attributes(mut attributes: WindowAttributes) -> WindowAttributes {
+    // No size: winit makes an iOS window exactly the size asked for, so the desktop's 1280 x 720
+    // gave a window larger than a phone's screen, partly off it. Without one it is the screen.
+    attributes.inner_size = None;
     attributes
         .with_valid_orientations(ValidOrientations::LandscapeAndPortrait)
         .with_prefers_status_bar_hidden(true)

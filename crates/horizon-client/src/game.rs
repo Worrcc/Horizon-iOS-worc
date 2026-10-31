@@ -12569,18 +12569,16 @@ impl ApplicationHandler for Game<'_> {
         let attributes = Window::default_attributes()
             .with_title("Horizon")
             .with_window_icon(horizon_client::window::icon());
-        #[cfg(target_os = "ios")]
-        let attributes = ios::window_attributes(attributes);
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
-        let window = match event_loop.create_window(
+        let window = match event_loop.create_window(platform_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None))),
-        ) {
+        )) {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 self.error = Some(e.into());
@@ -14991,6 +14989,15 @@ fn run_event_loop(game: Game<'_>) -> Result<()> {
     })
 }
 
+/// The window's attributes as this system takes them: iOS has its own
+/// (`ios::window_attributes`), applied last so they win.
+fn platform_window(attributes: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    #[cfg(target_os = "ios")]
+    return ios::window_attributes(attributes);
+    #[cfg(not(target_os = "ios"))]
+    attributes
+}
+
 /// Set by [`quit`]: the event loop is to end.
 static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -15056,18 +15063,16 @@ impl Loading {
         let attributes = Window::default_attributes()
             .with_title("Horizon")
             .with_window_icon(horizon_client::window::icon());
-        #[cfg(target_os = "ios")]
-        let attributes = ios::window_attributes(attributes);
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
             attributes, "horizon", "horizon",
         );
-        let window = match event_loop.create_window(
+        let window = match event_loop.create_window(platform_window(
             attributes
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None))),
-        ) {
+        )) {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 self.error = Some(e.into());
