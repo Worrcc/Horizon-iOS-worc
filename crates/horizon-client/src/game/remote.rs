@@ -1873,8 +1873,11 @@ impl Game<'_> {
                 if let (Ok(id), Ok(name)) = (r.varint(), r.string(256))
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32)
                 {
+                    // Begun that long ago on the server: a mob coming into view mid-way joins in.
+                    let elapsed = r.varint().unwrap_or(0).max(0) as u32;
+                    let start = m.age.saturating_sub(elapsed);
                     m.orders.animation =
-                        (!name.is_empty()).then(|| (std::sync::Arc::from(name), m.age as f32));
+                        (!name.is_empty()).then(|| (std::sync::Arc::from(name), start));
                 }
             }
             C::StopSound(p) => self

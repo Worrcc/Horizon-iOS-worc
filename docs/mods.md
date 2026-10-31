@@ -550,13 +550,15 @@ gone by then are dropped):
 | `look-at(point)` | keeps its head turned to a point |
 | `push(point)` | sets its motion, -4 to 4 blocks per tick on each axis: flight, leaps |
 | `gravity(bool)` | whether gravity pulls it |
-| `animate(option<string>)` | plays an animation of its own model's file (docs/modpacks.md) from its start, once, looping or held at its end as the file says; none goes back to idle, walk and attack. Players' games are told on the `horizon:entity_animation` channel |
+| `animate(option<string>)` | plays an animation of its own model's file (docs/modpacks.md) from its start, once, looping or held at its end as the file says; none goes back to idle, walk and attack. Players' games are told on the `horizon:entity_animation` channel, with how long it has played, so one that comes into view joins in where it is |
 | `hurt-area(area)` | every living thing but the mob within a radius (up to 16) of a point takes up to 1024 hit points as the mob's attack (`mob_attack`) and burns up to 30 s: a breath, a stomp. Players too, LAN guests included |
 | `discard` | removes it, with no death and no drops |
 
 Walk and look orders are a goal of the highest priority on every content
 mod's mob (`mobs/orders.rs`): while one stands, the mob's own goals that move
-or look wait. Spawning mobs, choosing their targets and riding are not orders
+or look wait. A mob whose template runs a brain instead of goals (villagers,
+piglins, axolotls, ...) moves by its brain and doesn't follow walk and look
+orders yet. Spawning mobs, choosing their targets and riding are not orders
 yet.
 
 **Where they run.** The game that simulates the world starts the server mods

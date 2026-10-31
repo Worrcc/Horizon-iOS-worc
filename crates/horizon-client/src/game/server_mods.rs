@@ -451,7 +451,7 @@ mod run {
                 }
                 EntityOrder::Gravity(on) => m.no_gravity = !on,
                 EntityOrder::Animate(name) => {
-                    let age = m.age as f32;
+                    let age = m.age;
                     m.orders.animation = name.map(|n| (std::sync::Arc::from(n), age));
                 }
                 EntityOrder::HurtArea(area) => {
@@ -481,8 +481,8 @@ mod run {
             let (amount, fire) = (area.amount, area.fire as i32 * 20);
             let mut mobs = std::mem::take(&mut self.mobs);
             for m in mobs.iter_mut().filter(|m| m.alive() && m.id != source) {
-                let (w, h) = (m.kind.width / 2.0, m.kind.height);
-                if !reaches([m.position.x, m.position.y, m.position.z], w, h) {
+                let (w, h, _) = m.dims();
+                if !reaches([m.position.x, m.position.y, m.position.z], w / 2.0, h) {
                     continue;
                 }
                 if amount > 0.0 {
@@ -636,7 +636,8 @@ mod run {
             }
             self.route_mod_output(Some(host));
             self.apply_mod_block_writes();
-            self.apply_mod_orders();
+            // Orders wait for the level's next tick: an area's hurt reaches the players through
+            // the hub, which is out of `self.lan` until this returns.
             true
         }
 

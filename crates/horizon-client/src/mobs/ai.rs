@@ -220,11 +220,6 @@ pub fn family(s: Species) -> Family {
     }
 }
 pub fn register(m: &mut Mob) {
-    // Server mods' orders come first for content mods' mobs (mobs/orders.rs).
-    if !m.kind.id.starts_with("minecraft:") {
-        m.ai.goals
-            .add(super::orders::PRIORITY, super::orders::Obey::default());
-    }
     // Raider subclasses call super.registerGoals() first.
     super::raider::register(m);
     match family(m.species()) {
@@ -317,6 +312,12 @@ pub fn register(m: &mut Mob) {
         )
     {
         m.ai.nav.can_float = true;
+    }
+    // Server mods' orders come first for content mods' mobs (mobs/orders.rs), added last:
+    // some species' goals start from an empty list.
+    if !m.kind.id.starts_with("minecraft:") {
+        m.ai.goals
+            .add(super::orders::PRIORITY, super::orders::Obey::default());
     }
 }
 /// Mob.tick additions that run before the entity tick (creeper fuse, puffing).

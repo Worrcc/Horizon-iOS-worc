@@ -19,16 +19,21 @@ use horizon_protocol::{
 };
 use std::sync::Arc;
 
+/// An animation a server mod's order plays: its name, the mob's age when it began and the
+/// mob's age now, in ticks.
+pub type Animation = (Arc<str>, u32, u32);
+
 /// The channel a Horizon server tells its players' games which animation a server mod's order
-/// plays on a content mod's mob (capability `entities`): the mob's id (a varint), then the
-/// animation's name, empty for none.
+/// plays on a content mod's mob (capability `entities`): the mob's id (a varint), the
+/// animation's name (empty for none), then the ticks since it began (a varint).
 pub const ANIMATION_CHANNEL: &str = "horizon:entity_animation";
 
-/// The payload telling clients the animation `entity` plays now.
-pub fn animation_payload(entity: i32, animation: Option<&str>) -> play::Clientbound {
+/// The payload telling clients the animation a mob plays now, and for how long it has.
+pub fn animation_payload(entity: i32, animation: Option<&Animation>) -> play::Clientbound {
     let mut w = Writer::new();
     w.varint(entity);
-    w.string(animation.unwrap_or(""));
+    w.string(animation.map_or("", |a| &a.0));
+    w.varint(animation.map_or(0, |a| a.2.saturating_sub(a.1)) as i32);
     play::Clientbound::CustomPayload(CustomPayload {
         channel: ANIMATION_CHANNEL.into(),
         data: w.data,
@@ -85,9 +90,8 @@ pub struct EntityState {
     pub needs_sync: bool,
     /// `Leashable.getLeashHolder`: the entity holding its lead.
     pub leash: Option<i32>,
-    /// A content mod's mob: the animation a server mod's order plays and the tick it began
-    /// ([`ANIMATION_CHANNEL`]).
-    pub animation: Option<(Arc<str>, u32)>,
+    /// A content mod's mob: the animation a server mod's order plays ([`ANIMATION_CHANNEL`]).
+    pub animation: Option<Animation>,
 }
 
 impl EntityState {
@@ -247,7 +251,7 @@ struct ServerEntity {
     /// The lead's holder the clients were told of.
     leash: Option<i32>,
     /// The animation the clients were told of.
-    animation: Option<(Arc<str>, u32)>,
+    animation: Option<Animation>,
     /// The level tick it was last seen in, its place in that tick's list, and
     /// whether it was added in it (its first update is the next tick's).
     seen: u32,
@@ -352,8 +356,8 @@ impl ServerEntity {
                 dest,
             }));
         }
-        if let Some((name, _)) = &e.animation {
-            out.push(animation_payload(e.id, Some(name)));
+        if e.animation.is_some() {
+            out.push(animation_payload(e.id, e.animation.as_ref()));
         }
     }
 
@@ -368,8 +372,10 @@ impl ServerEntity {
             self.passengers.clear();
             self.passengers.extend_from_slice(passengers);
         }
-        if e.animation != self.animation {
-            out.push(animation_payload(e.id, e.animation.as_ref().map(|a| &*a.0)));
+        // A new animation, or the same begun again; its age moving on is no change.
+        let begun = |a: &Option<Animation>| a.as_ref().map(|a| (a.0.clone(), a.1));
+        if begun(&e.animation) != begun(&self.animation) {
+            out.push(animation_payload(e.id, e.animation.as_ref()));
             self.animation.clone_from(&e.animation);
         }
         // Leashable.setLeashedTo / dropLeash: sendToTrackingPlayers at once.

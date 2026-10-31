@@ -13,8 +13,8 @@ pub struct Orders {
     pub walk: Option<([f64; 3], f64)>,
     /// Keep its head turned to this point.
     pub look: Option<[f64; 3]>,
-    /// The animation an order plays (mobs/geo.rs `animate`), and the age it started at.
-    pub animation: Option<(Arc<str>, f32)>,
+    /// The animation an order plays (mobs/geo.rs `animate`), and the age (ticks) it started at.
+    pub animation: Option<(Arc<str>, u32)>,
 }
 
 /// The priority of [`Obey`]: ahead of every vanilla goal (0 is the first vanilla uses).
@@ -24,8 +24,8 @@ pub const PRIORITY: i32 = -1;
 /// look wait meanwhile. Registered on every content mod's mob (`ai::register`).
 #[derive(Clone, Debug, Default)]
 pub struct Obey {
-    /// The point its path leads to now.
-    heading: Option<[f64; 3]>,
+    /// The point its path leads to now, and the speed it was ordered at.
+    heading: Option<([f64; 3], f64)>,
 }
 impl Goal for Obey {
     fn flags(&self) -> u8 {
@@ -47,8 +47,9 @@ impl Goal for Obey {
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         match m.orders.walk {
-            Some((to, speed)) if self.heading != Some(to) => {
-                self.heading = Some(to);
+            Some(walk) if self.heading != Some(walk) => {
+                self.heading = Some(walk);
+                let (to, speed) = walk;
                 if !m.nav_move_to(cx.w, to, speed) {
                     // No path: the order is spent.
                     m.orders.walk = None;
@@ -64,7 +65,7 @@ impl Goal for Obey {
         }
         if let Some(at) = m.orders.look {
             m.look_at(at);
-        } else if let Some(to) = self.heading {
+        } else if let Some((to, _)) = self.heading {
             m.look_at([to[0], m.position.y + m.eye_height(), to[2]]);
         }
     }
