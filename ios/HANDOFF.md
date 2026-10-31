@@ -2,6 +2,8 @@
 
 Where the iOS port stands, what was verified on a real device, and what to do next. Written for
 whoever picks this up next, person or agent. [README.md](README.md) is the player-facing guide.
+**The next big piece of work, porting Ice and Fire's AI, has its own plan:
+[ICE-AND-FIRE-AI-PLAN.md](ICE-AND-FIRE-AI-PLAN.md).**
 
 ## The state of things
 
@@ -10,11 +12,13 @@ whoever picks this up next, person or agent. [README.md](README.md) is the playe
   - `claude/launcher-mods-shaders-controller-xfv3kk`: **the current work**. It starts from the
     port and adds the launcher, instances, controller work, code mods on iOS, Block Info and the
     first part of mod entities (the second table). Continue from here.
-- **Latest build:** commit `5f03c66a`, CI run
-  [41178462779](https://github.com/Worrcc/Horizon-iOS-worc/actions/runs/41178462779), succeeded.
-  Its artifact `Horizon-ios-5f03c66a…` holds the unsigned `Horizon.ipa` and `block_info.hmod`
-  (no game files, kept 30 days). `b9f6f05e` (mod entities) was pushed after it and starts a new
-  run. The `ios` workflow's `push` trigger builds every branch.
+- **Latest build:** commit `5f072f03d`, CI run
+  [41207777202](https://github.com/Worrcc/Horizon-iOS-worc/actions/runs/41207777202), succeeded.
+  Its artifact `Horizon-ios-5f072f03…` holds the unsigned `Horizon.ipa` and `block_info.hmod`
+  (no game files, kept 30 days). The `ios` workflow's `push` trigger builds every branch.
+- **Pushing from the player's Linux machine** works through a repository-local credential
+  helper reading a fine-grained token from `~/.config/horizon-gh-token` (never print it);
+  commits there need `git -c user.name=Claude -c user.email=noreply@anthropic.com`.
 - **Test device:** an iPhone with an A16 GPU (430×932 pt screen, ProMotion), running Horizon
   **inside LiveContainer**. The player also has StikDebug (JIT).
 
@@ -49,6 +53,13 @@ Upstream is Horizon `launcher@0.2.20` (`b6c936f82`) with its full history.
 | `fdd6591c` | **Block Info** (`mods/official/block-info`, id `block_info`): a Jade-style box showing the block under the crosshair, written for Horizon's API with no code or art from Jade. Listed in `docs/mods.md` |
 | `5f03c66a` | **Code mods on iOS** on wasmtime's Pulley interpreter (no JIT): `horizon-mods/src/runtime.rs`, `ios/build.sh --features mods`. The ios workflow also builds `block_info.hmod` |
 | `b9f6f05e` | **Mod entities, part 1**: mobs declared from a vanilla template (`data/<id>/horizon/entity/*.json`, see `docs/modpacks.md`). `horizon-port-pack` names ports "<name> (unofficial port)" and credits the original authors |
+| `f04d0200` | Mod mobs' own texture, `scale` and loot; `mobs::vanilla_id` for vanilla's tables by template |
+| `a67e4696` | **Mod entities, part 2**: models of their own (GeckoLib / Bedrock geometry, `mobs/geo.rs`) and animations (`mobs/bedrock_anim.rs`) |
+| `871e7ef8` | **Tabula models** carried over by `horizon-port-pack` (`tabula.rs`), pose folders as animations; box UV fix in geo.rs |
+| `1e2cddac`, `fd87a760` | **Capability `entities`** for server mods (API level 8): `mobs`, `near`, `give-orders`; animations synced on `horizon:entity_animation`; example `mob-orders`; review fixes |
+| `bafffa15` | iOS launcher: the Mods page lists mods on disk; switching instances reloads packs only when they differ |
+| `0c1978a9` | Entities: `spawn`, `target`, `scale` (`Attr::Scale` for every mob), `set-data`, data and animation in the save, brains wait for orders |
+| `5f072f03` | Entities: `interactions` (players' right clicks on content mobs) |
 
 ## Verified on the device
 
@@ -58,6 +69,10 @@ Upstream is Horizon `launcher@0.2.20` (`b6c936f82`) with its full history.
 - Resource loading takes about 12 s on the A16 (`latest.log`: "resources loaded in 12.7s").
 - **Block Info works on the device** (build `5f03c66a`, reported by the player): a code mod
   running on the Pulley interpreter, turned on from the launcher's Mods page.
+- **A converted Ice and Fire fire dragon runs on the device** (build `5f072f03d`, player's
+  `latest.log` 12:37: content from 1 mod, "Summoned new Fire Dragon"); the launcher's Mods page
+  lists it, and switching instances is "much better" (player). With that content mod on,
+  resources load in **20.6 s** instead of 12.7 s: see the plan's "Performance to watch".
 
 ## Waiting on the player's test
 
@@ -92,7 +107,9 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
 ("build the API to allow it to run; give all credits; call it unofficial").
 
 - **Ice and Fire** cannot be copied into the repository: its code and art belong to its authors,
-  and credit doesn't change that. Horizon's route is `horizon-port-pack`, which runs on the
+  and credit doesn't change that. The player's jar is **Ice and Fire Community Edition 2.0,
+  LGPL-3.0**: its AI may be ported closely, in its own LGPL project outside Horizon's MIT tree
+  ([ICE-AND-FIRE-AI-PLAN.md](ICE-AND-FIRE-AI-PLAN.md)). Horizon's route is `horizon-port-pack`, which runs on the
   player's computer from their own jar, keeps the result local, and now labels it "(unofficial
   port)" with the authors credited. A port today carries blocks, items, recipes, tags,
   language files, worldgen and textures. Its creatures need the rest of API 0.5
