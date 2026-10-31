@@ -1703,11 +1703,8 @@ impl Game<'_> {
             Some(if on { inside } else { middle })
         };
         let centre = match self.mobs.iter().find(|m| m.id as i32 == id) {
-            Some(m) => [
-                m.position.x,
-                m.position.y + m.kind.height * 0.5,
-                m.position.z,
-            ],
+            // Its size now, `minecraft:scale` and age included: a small mob's middle is low.
+            Some(m) => [m.position.x, m.position.y + m.dims().1 * 0.5, m.position.z],
             None if self.object_target(id).is_some() => object()?,
             // A dragon part or an end crystal (game/dragon.rs).
             None => {
