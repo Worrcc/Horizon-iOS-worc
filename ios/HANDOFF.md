@@ -5,16 +5,22 @@ whoever picks this up next, person or agent. [README.md](README.md) is the playe
 
 ## The state of things
 
-- **Branch:** `claude/minecraft-ios-port-w46z3k` in `Worrcc/Horizon-iOS-worc` (public). Upstream
-  is Horizon `launcher@0.2.20` (`b6c936f82`) with its full history, plus the commits below. No
-  pull request has been opened.
-- **Latest build:** commit `22e327920`, CI run
-  [41156361406](https://github.com/Worrcc/Horizon-iOS-worc/actions/runs/41156361406), succeeded.
-  Artifact `Horizon-ios-22e3279…` (unsigned `Horizon.ipa`, no game files, kept 30 days).
+- **Branches** in `Worrcc/Horizon-iOS-worc` (public). No pull requests have been opened.
+  - `claude/minecraft-ios-port-w46z3k`: the port itself (the first table below).
+  - `claude/launcher-mods-shaders-controller-xfv3kk`: **the current work**. It starts from the
+    port and adds the launcher, instances, controller work, code mods on iOS, Block Info and the
+    first part of mod entities (the second table). Continue from here.
+- **Latest build:** commit `5f03c66a`, CI run
+  [41178462779](https://github.com/Worrcc/Horizon-iOS-worc/actions/runs/41178462779), succeeded.
+  Its artifact `Horizon-ios-5f03c66a…` holds the unsigned `Horizon.ipa` and `block_info.hmod`
+  (no game files, kept 30 days). `b9f6f05e` (mod entities) was pushed after it and starts a new
+  run. The `ios` workflow's `push` trigger builds every branch.
 - **Test device:** an iPhone with an A16 GPU (430×932 pt screen, ProMotion), running Horizon
-  **inside LiveContainer**. Most open questions are about LiveContainer, not iOS itself.
+  **inside LiveContainer**. The player also has StikDebug (JIT).
 
-### Commits on top of upstream
+### The port: commits on top of upstream
+
+Upstream is Horizon `launcher@0.2.20` (`b6c936f82`) with its full history.
 
 | Commit | What |
 |---|---|
@@ -28,6 +34,21 @@ whoever picks this up next, person or agent. [README.md](README.md) is the playe
 | `bb9f7edb2` | Window accepts every orientation; every resize logs UIKit's geometry |
 | `b2a931271` | iOS window no longer gets the desktop's 1280×720 size (it was larger than the screen, off-screen) |
 | `22e327920` | ProMotion: `CADisableMinimumFrameDurationOnPhone` and a display link preferring 120 Hz |
+| `bb59430b` | This handoff file |
+
+### The launcher, controllers and mods: `claude/launcher-mods-shaders-controller-xfv3kk`
+
+| Commit | What |
+|---|---|
+| `0deb09fc` | **Instances**: `src/instance_list.rs` (Documents is the default, others in `instances/<id>/`, the pick in `instances/instances.json`), `game/instances.rs`; `main.rs` starts in the picked folder; `resources/` is shared from Documents |
+| `d859ac76` | Touch controls hide while a controller is used, and come back at the next touch (`game/touch.rs` `touch_hide`) |
+| `6409bfd3` | Controller **vibration** through Core Haptics (`horizon-ios/src/controllers.rs` `vibrate`: a `CHHapticEngine` per pad through raw `msg_send`) |
+| `ac0c8a68` | DualSense **lightbar and adaptive triggers** (`GCDeviceLight`, `GCDualSenseAdaptiveTrigger`). The desktop effects are read back with `horizon_dualsense::trigger::decode`, and the trigger feel logic moved to `pad.rs` so both backends share it |
+| `89b6e862` | Controllers on the **startup title** while resources load (`pad.rs` `StartupPad`: the stick or D-pad moves a pointer, A clicks, B goes back). Its pads go on in the game |
+| `7af8507e` | The **launcher page** the app opens on (`Page::Launcher` in `options_ui.rs`, opened by `Loading::open_launcher`): instances, Mods, Shader Packs, Controller Settings, Options, New Instance. Switching instances rebuilds the title's world list, and switches at once on `Game`'s title with no world open too |
+| `fdd6591c` | **Block Info** (`mods/official/block-info`, id `block_info`): a Jade-style box showing the block under the crosshair, written for Horizon's API with no code or art from Jade. Listed in `docs/mods.md` |
+| `5f03c66a` | **Code mods on iOS** on wasmtime's Pulley interpreter (no JIT): `horizon-mods/src/runtime.rs`, `ios/build.sh --features mods`. The ios workflow also builds `block_info.hmod` |
+| `b9f6f05e` | **Mod entities, part 1**: mobs declared from a vanilla template (`data/<id>/horizon/entity/*.json`, see `docs/modpacks.md`). `horizon-port-pack` names ports "<name> (unofficial port)" and credits the original authors |
 
 ## Verified on the device
 
@@ -35,25 +56,25 @@ whoever picks this up next, person or agent. [README.md](README.md) is the playe
 - Metal renderer works (A16): the title screen and a world render with the real textures.
 - The missing-files alert and fatal-error alerts show (they used to leave a black screen).
 - Resource loading takes about 12 s on the A16 (`latest.log`: "resources loaded in 12.7s").
+- **Block Info works on the device** (build `5f03c66a`, reported by the player): a code mod
+  running on the Pulley interpreter, turned on from the launcher's Mods page.
 
-## Waiting on the player's test of the latest build
+## Waiting on the player's test
 
-Each item has a fix in the latest build, but nobody has seen it working yet.
+Each item is in a build, but nobody has reported on it yet.
 
-1. **Picture fills the screen.** The last log before `b2a931271` showed the cause:
-   `window bounds 720x1280 frame 720x1280 at 0,-850; screen 430x932; scene orientation 1`.
-   The UIWindow got the desktop 1280×720 size. `b2a931271` removes the size on iOS. If it's
-   still wrong, `latest.log` now logs `view bounds / frame / window / screen / scene orientation`
-   at startup and at every resize. Read it before changing anything.
-2. **Title-screen buttons respond to touch** (`f44ba77ff`). The first bug report was "can't
-   press any buttons". At that point the window was also off-screen, so the two may have been
-   the same bug.
-3. **120 FPS** (`22e327920`). Under LiveContainer, iOS reads `CADisableMinimumFrameDurationOnPhone`
-   from **LiveContainer's** Info.plist, not Horizon's, so it may stay at 60 there. A standalone
-   install (SideStore, AltStore, Sideloadly) is the real test.
-4. **Orientation.** The scene was portrait (`orientation 1`). The game now follows the host's
-   orientation (`LandscapeAndPortrait`). Landscape needs Rotation Lock off. A standalone install
-   is landscape-only through its Info.plist.
+1. **Launcher and instances:** the app opens on the launcher. New Instance, then switching
+   (before and after the ~12 s load) should give that instance's own worlds and settings.
+   Mid-session switches reload settings and packs. Keybinds and language may need the next
+   start: check.
+2. **Controllers:** the arrow on the first title screen; touch controls hiding; vibration on
+   damage and block breaking. On a DualSense: lightbar colour, bow-draw resistance, crossbow
+   click. Apple's trigger vibration frequency is 0..1; the desktop's Hz are divided by 255, which
+   may feel weak.
+3. **From the port's first build:** whether the picture fills the screen, title-screen touch,
+   120 Hz (under LiveContainer it's LiveContainer's Info.plist that counts) and orientation.
+   `latest.log` logs `view bounds / frame / window / screen / scene orientation` at startup and at
+   every resize. Read it before changing anything.
 
 ## Blocked on the owner (not code)
 
@@ -64,24 +85,35 @@ Each item has a fix in the latest build, but nobody has seen it working yet.
   Until then, the Sign in button explains what's missing. The flow itself is untested against
   the real services. Its unit tests cover parsing only.
 
-## The in-app launcher (in progress)
+## What the player asked for, and what's next
 
-Goal: manage instances, mods, shader packs and modpacks inside the app, and make controllers a
-full input path. Step 1 is done: **instances** (`src/instance_list.rs`, `game/instances.rs`,
-Options › Horizon Settings › Instances; `main.rs` starts in the picked folder). The launcher
-page (`Page::Launcher` in `options_ui.rs`, opened by `Loading::open_launcher` once the title's
-artwork is in) brings instances, mods, shader packs, controller and options together. Not yet:
-modpack import (left out for now, by the player's choice). Done as well: controller-only menu navigation everywhere (the startup title has a pad pointer:
-`pad.rs` `StartupPad`; every screen after it has `pad_menu.rs`); hiding touch controls while a pad is
-connected (done); Core Haptics vibration, DualSense lights and triggers (done, not yet seen on a
-pad: `horizon-ios/src/controllers.rs` `vibrate` and `show`). Button remapping already
-exists (Controller Settings › Controller Binds). Code mods run on iOS on wasmtime's Pulley
-interpreter (`horizon-mods/src/runtime.rs`, `ios/build.sh --features mods`): no JIT needed. The
-runtime's suite passes with Pulley forced on Linux in release; a debug build interprets too
-slowly for the sandbox test's 5 s endless-loop cutoff. Native cranelift when a JIT is there
-(StikDebug) would be faster: not done. The Block Info mod (`mods/official/block-info`, Jade-style
-block tooltip) is built by the ios workflow next to the `.ipa`; entities need the planned
-`target` interface.
+The player's goals: a launcher inside the app (instances, mods, shader packs; modpacks set aside
+for now), controllers as a full input path, Jade (done as Block Info), and Ice and Fire
+("build the API to allow it to run; give all credits; call it unofficial").
+
+- **Ice and Fire** cannot be copied into the repository: its code and art belong to its authors,
+  and credit doesn't change that. Horizon's route is `horizon-port-pack`, which runs on the
+  player's computer from their own jar, keeps the result local, and now labels it "(unofficial
+  port)" with the authors credited. A port today carries blocks, items, recipes, tags,
+  language files, worldgen and textures. Its creatures need the rest of API 0.5, in this order
+  (`docs/modpacks.md`, "Entities 0.5, part 1"):
+  1. **Models of their own:** Bedrock geometry and animations (GeckoLib's format) read from a
+     mod's `assets/`, in place of the template's model. The next step; the player hasn't
+     confirmed it yet.
+  2. An `entity` interface for mod code to steer its mobs (flight, breath attacks, growth,
+     taming, riding).
+  3. Spawn rules and structures with their mobs.
+  4. Block entities and screens (API 0.4), for machines such as forges.
+- **Mod entities, part 1 has never run in the game**: unit tests only, since the cloud session
+  has no `.local/` game data. The first check is a small content mod declaring a template mob
+  with its own texture, then `/summon <mod>:<name>`, on both single-player paths and on a LAN
+  guest.
+- **Block Info:** entities (mobs and their health) need the planned `target` interface
+  (`docs/mods.md`, "Planned interfaces").
+- **Faster mods with a JIT:** with StikDebug attached, native cranelift would beat Pulley. Not
+  done: it needs a check for whether JIT is allowed now, and on iOS 26 (TXM) likely
+  wasmtime's `CustomCodeMemory`.
+- **Modpack import in the launcher:** set aside by the player.
 
 ## Not done yet
 
@@ -104,7 +136,10 @@ block tooltip) is built by the ios workflow next to the `.ipa`; entities need th
 - **Build the app:** push to the branch. The `ios` workflow (`.github/workflows/ios.yml`,
   `macos-15`) runs `ios/build.sh`, checks the bundle, and uploads the `.ipa`. About 9 minutes,
   plus queue time for Apple Silicon runners. On a Mac: `ios/build.sh` (see `--help`).
-- **Watch a run:** `gh run list -R Worrcc/Horizon-iOS-worc -w ios` works from the cloud session.
+- **Watch a run:** `gh run list -R Worrcc/Horizon-iOS-worc -w ios -b <branch>` and
+  `gh run watch <id>` work from the cloud session. A newer push cancels the running build.
+- **Mods:** `cargo build -p cargo-horizon-mod`, then `cargo-horizon-mod horizon-mod build` and
+  `... test` inside a mod's folder (needs the `wasm32-unknown-unknown` target).
 - **Cloud-session limits found so far:** the proxy refuses `workflow_dispatch`, re-runs and
   repository-settings changes (403). A push is the only way to start a build. Artifact and log
   downloads from GitHub's blob storage are refused too, so the player downloads the `.ipa`
@@ -118,7 +153,13 @@ block tooltip) is built by the ios workflow next to the `.ipa`; entities need th
 | `crates/horizon-client/src/touch_controls.rs` | Touch logic, unit tested |
 | `crates/horizon-client/src/game/touch.rs` | Applying and drawing touch controls; `MenuTouch` for the startup menu |
 | `crates/horizon-client/src/game/account.rs`, `src/msa.rs` | Microsoft sign-in |
-| `crates/horizon-client/src/game/pad/hardware_ios.rs` | Controllers |
+| `crates/horizon-client/src/game/pad/hardware_ios.rs` | Controllers: input, vibration, lightbar, adaptive triggers |
+| `crates/horizon-client/src/instance_list.rs`, `game/instances.rs` | Instances |
+| `crates/horizon-client/src/options_ui.rs` (`Page::Launcher`, `Page::Instances`), `game/startup_menu.rs` (`open_launcher`, `switch_instance`) | The launcher page |
+| `crates/horizon-client/src/game/pad.rs` (`StartupPad`, `trigger_feels`) | Controllers on the startup title; trigger feel shared by both backends |
+| `crates/horizon-mods/src/runtime.rs` (`engine`) | Pulley on iOS |
+| `mods/official/block-info/` | The Block Info mod (`cargo horizon-mod build` / `test` in its folder) |
+| `crates/horizon-mods/src/content.rs`, `src/mod_content.rs`, `src/mobs.rs` (`mod_types`), `src/hud.rs` (`sprite_name`) | Mod entities, part 1 |
 | `crates/horizon-ios/` | Every UIKit, GameController, Keychain and Core Animation call (`unsafe` lives here; the game keeps `forbid(unsafe_code)`) |
 | `third_party/winit/` | winit 0.30.13 patched for iOS (search "Horizon" in `src/platform_impl/ios/`): keyboard presses and characters, full-view sizes, iOS 16 orientation request |
 | `ios/` | `build.sh`, `App/Info.plist`, icons, `scripts/check-ios.sh`, docs |
@@ -137,6 +178,14 @@ block tooltip) is built by the ios workflow next to the `.ipa`; entities need th
   pattern when merging new upstream code (`gfx.rs` `backend_order` was one).
 - LiveContainer runs apps in its own scene and orientation, and its Info.plist is the one iOS
   reads.
+- The game reads its folder from the working directory (`options.txt`, `saves/`, packs, mods),
+  so an instance is a `set_current_dir`. Anything built once at start from the old folder, like
+  the title's world list, has to be rebuilt on a switch.
+- Pulley in a debug build is too slow for the sandbox test's 5 s endless-loop cutoff. Test the
+  runtime on Pulley in release: force it on Linux by widening the two `target_os = "ios"`
+  cfgs in `horizon-mods` (Cargo.toml and `runtime.rs`), then put them back.
+- The iOS stub SDK in `check-ios.sh` needed `stdlib.h` for wasmtime's C helpers.
+- Linux builds with audio and controllers need `libasound2-dev libudev-dev`.
 
 ### Merging a newer Horizon release
 
