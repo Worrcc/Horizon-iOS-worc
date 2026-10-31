@@ -7,10 +7,11 @@
 //! nearest, `/attack` sets it on the nearest player, `/label <key> <value>` stores a string on it
 //! (kept in its save) and `/info` says what it is. Right clicks tell the player what they
 //! held; a bone stores their UUID as the mob's `owner`. `/paint <texture|none>` changes
-//! its texture, `/roar` sends a sound and flame particles, and `/info` reports mobGriefing.
+//! its texture, `/roar` sends sound and flame particles, `/attr <name> <value>` changes
+//! base attributes, `/heal <n>` heals, and `/info` reports mobGriefing, time and sky visibility.
 use horizon_mod_sdk::server::{
-    Area, Args, Argument, Entity, Order, Particles, Player, Point, Registration, ServerMod, Sound,
-    Target, Walk, entities, players, world,
+    Area, Args, Argument, AttributeChange, Entity, Order, Particles, Player, Point, Registration,
+    ServerMod, Sound, Target, Walk, entities, players, world,
 };
 
 /// How far the orders reach, in blocks.
@@ -62,6 +63,8 @@ impl ServerMod for MobOrders {
                 .command_with("label", [Argument::word("key"), Argument::word("value")])
                 .command_with("paint", [Argument::text("texture")])
                 .command("roar")
+                .command_with("attr", [Argument::word("name"), Argument::number("value")])
+                .command_with("heal", [Argument::number("amount")])
                 .command("info"),
         ))
     }
@@ -211,18 +214,47 @@ impl ServerMod for MobOrders {
                 entities::give_orders(&[(mob.id, Order::Texture(texture))])?;
                 Ok(Some(format!("{} painted", mob.kind)))
             }
+            "attr" => {
+                let mob = nearest(player)?;
+                let name = args.string("name").unwrap_or_default().to_owned();
+                let value = args.number("value").unwrap_or_default();
+                entities::give_orders(&[(
+                    mob.id,
+                    Order::Attribute(AttributeChange { name, value }),
+                )])?;
+                Ok(None)
+            }
+            "heal" => {
+                let mob = nearest(player)?;
+                let amount = args.number("amount").unwrap_or_default() as f32;
+                entities::give_orders(&[(mob.id, Order::Heal(amount))])?;
+                Ok(None)
+            }
             "info" => {
                 let mob = nearest(player)?;
+                let time = world::time(&mob.dimension);
+                let sky = world::can_see_sky(
+                    &mob.dimension,
+                    mob.x.floor() as i32,
+                    mob.y.floor() as i32,
+                    mob.z.floor() as i32,
+                );
                 let data: Vec<String> = mob.data.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 Ok(Some(format!(
-                    "{} #{}: scale {}, health {}/{}, data [{}], mobGriefing {}",
+                    "{} #{}: scale {}, health {}/{}, data [{}], mobGriefing {}, time {}/{}, day {}, rain {}, thunder {}, sky {}",
                     mob.kind,
                     mob.id,
                     mob.scale,
                     mob.health,
                     mob.max_health,
                     data.join(", "),
-                    world::game_rule("mobGriefing").unwrap_or_else(|| "unknown".into())
+                    world::game_rule("mobGriefing").unwrap_or_else(|| "unknown".into()),
+                    time.day_time,
+                    time.game_time,
+                    time.is_day,
+                    time.raining,
+                    time.thundering,
+                    sky
                 )))
             }
             _ => Err("Unknown command".into()),

@@ -573,7 +573,7 @@ fn throw_target(m: &mut Mob, who: Who, cx: &mut Cx) {
         Who::Mob(id) => cx.w.seen(id).map_or(0.0, |s| s.knockback_resistance),
         Who::Player => 0.0,
     };
-    let power = m.kind.attack_knockback - resistance;
+    let power = super::finalize::value(m, super::finalize::Attr::AttackKnockback) - resistance;
     let Some(t) = cx.w.target_info(who) else {
         return;
     };

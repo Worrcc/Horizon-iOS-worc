@@ -124,7 +124,7 @@ impl Mob {
             height: self.height(),
             on_ground: self.on_ground,
             in_water: self.fluids.in_water,
-            max_up_step: self.kind.step_height as f32,
+            max_up_step: super::finalize::value(self, super::finalize::Attr::StepHeight) as f32,
             max_fall_distance: self.max_fall_distance(),
             malus: self.ai.malus,
             can_float: self.ai.nav.can_float,

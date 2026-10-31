@@ -2083,6 +2083,12 @@ impl Mob {
     pub fn alive(&self) -> bool {
         self.health > 0.0
     }
+    /// `LivingEntity.heal`: a dead mob stays dead; setHealth clamps the sum.
+    pub fn heal(&mut self, amount: f32) {
+        if self.health > 0.0 {
+            self.health = (self.health + amount).clamp(0.0, finalize::max_health(self));
+        }
+    }
     pub fn hostile(&self) -> bool {
         self.kind.category == "monster"
     }
@@ -2184,10 +2190,12 @@ impl Mob {
         } else {
             0.0
         };
-        if !source.bypasses_armor() && self.kind.armor + worn + covered > 0.0 {
+        let base_armor = finalize::value(self, finalize::Attr::Armor) as f32;
+        let base_toughness = finalize::value(self, finalize::Attr::ArmorToughness) as f32;
+        if !source.bypasses_armor() && base_armor + worn + covered > 0.0 {
             // CombatRules.getDamageAfterAbsorb
-            let armor = self.kind.armor + worn + covered;
-            let toughness = 2.0 + (self.kind.armor_toughness + worn_toughness) / 4.0;
+            let armor = base_armor + worn + covered;
+            let toughness = 2.0 + (base_toughness + worn_toughness) / 4.0;
             let effective = (armor - amount / toughness).clamp(armor * 0.2, 20.0);
             let mut fraction = effective / 25.0;
             if let Some(modify) = armor_effectiveness {

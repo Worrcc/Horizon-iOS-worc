@@ -407,9 +407,13 @@ pub enum Attr {
     BurningTime,
     /// `minecraft:scale`: the size the mob is drawn and collides at.
     Scale,
+    FlyingSpeed,
+    AttackKnockback,
+    ArmorToughness,
+    StepHeight,
 }
 impl Attr {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 14] = [
         Self::MaxHealth,
         Self::MovementSpeed,
         Self::FollowRange,
@@ -420,6 +424,10 @@ impl Attr {
         Self::Armor,
         Self::BurningTime,
         Self::Scale,
+        Self::FlyingSpeed,
+        Self::AttackKnockback,
+        Self::ArmorToughness,
+        Self::StepHeight,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -433,7 +441,14 @@ impl Attr {
             Self::Armor => "armor",
             Self::BurningTime => "burning_time",
             Self::Scale => "scale",
+            Self::FlyingSpeed => "flying_speed",
+            Self::AttackKnockback => "attack_knockback",
+            Self::ArmorToughness => "armor_toughness",
+            Self::StepHeight => "step_height",
         }
+    }
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.name() == name)
     }
     /// `RangedAttribute` bounds.
     fn range(self) -> (f64, f64) {
@@ -447,6 +462,10 @@ impl Attr {
             Self::Armor => (0.0, 30.0),
             Self::BurningTime => (0.0, 1024.0),
             Self::Scale => (0.0625, 16.0),
+            Self::FlyingSpeed => (0.0, 1024.0),
+            Self::AttackKnockback => (0.0, 5.0),
+            Self::ArmorToughness => (0.0, 20.0),
+            Self::StepHeight => (0.0, 10.0),
         }
     }
 }
@@ -485,7 +504,15 @@ pub fn base_value(m: &Mob, a: Attr) -> f64 {
         .as_ref()
         .and_then(|s| s.bases.iter().find(|(x, _)| *x == a).map(|(_, v)| *v))
         .or_else(|| default_value(m, a))
-        .unwrap_or(if a == Attr::BurningTime { 1.0 } else { 0.0 })
+        .unwrap_or_else(|| match a {
+            Attr::BurningTime => 1.0,
+            Attr::FlyingSpeed => m.kind.flying_speed,
+            Attr::AttackKnockback => m.kind.attack_knockback,
+            Attr::Armor => f64::from(m.kind.armor),
+            Attr::ArmorToughness => f64::from(m.kind.armor_toughness),
+            Attr::StepHeight => m.kind.step_height,
+            _ => 0.0,
+        })
 }
 /// The transient modifiers of the mob's state (`SPEED_MODIFIER_BABY`).
 pub fn transient(m: &Mob, a: Attr) -> Option<(f64, Op)> {
@@ -577,7 +604,13 @@ fn refresh(m: &mut Mob, a: Attr) {
         Attr::KnockbackResistance => m.attrs.knockback_resistance = value(m, a),
         Attr::SpawnReinforcements => m.attrs.spawn_reinforcements = value(m, a),
         Attr::JumpStrength => m.attrs.jump_strength = value(m, a),
-        Attr::Armor | Attr::BurningTime | Attr::Scale => {}
+        Attr::Armor
+        | Attr::BurningTime
+        | Attr::Scale
+        | Attr::FlyingSpeed
+        | Attr::AttackKnockback
+        | Attr::ArmorToughness
+        | Attr::StepHeight => {}
     }
 }
 /// The value without the transient baby modifier (`speed_bonus` applies

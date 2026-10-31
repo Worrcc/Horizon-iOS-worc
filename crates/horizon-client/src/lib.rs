@@ -107,6 +107,8 @@ pub mod mipmap;
 pub mod mobs;
 pub mod mod_content;
 pub mod mod_list;
+#[cfg(feature = "mods")]
+pub mod mod_world;
 mod model_library;
 pub mod models;
 pub mod motion;

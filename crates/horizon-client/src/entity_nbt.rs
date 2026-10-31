@@ -1324,6 +1324,17 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
+    // Saved base values override species defaults, as AttributeMap.load does.
+    if let Some(Tag::List(attrs)) = tag.get("attributes") {
+        for a in attrs {
+            let (Some(id), Some(Tag::Double(bits))) = (text(a.get("id")), a.get("base")) else {
+                continue;
+            };
+            if let Some(attr) = id.strip_prefix("minecraft:").and_then(Attr::from_name) {
+                crate::mobs::finalize::set_base(&mut m, attr, f64::from_bits(*bits));
+            }
+        }
+    }
     crate::mobs::orders::read_nbt(&mut m, tag);
     // A mob saved mid-death finishes dying; one saved dead is dropped.
     if m.health <= 0.0 && m.death_time == 0 {
@@ -2894,6 +2905,96 @@ mod sheep_nbt_tests {
         let tag = mob_to_nbt(&plain, [1, 2, 3, 4], None);
         assert!(tag.get("horizon:data").is_none() && tag.get("horizon:animation").is_none());
         assert_eq!(scale(&mob_from_nbt(&tag, &types, 5).unwrap()), 1.0);
+    }
+
+    #[test]
+    fn mod_attribute_bases_and_health_round_trip_in_vanilla_nbt() {
+        use crate::mobs::{
+            finalize::{self, Attr},
+            orders::attribute,
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        if !root.join("entity-models.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let mut kind = data.types["minecraft:cow"].clone();
+        kind.id = "ruby:dragon".into();
+        let kind = Arc::new(kind);
+        let types = [(kind.id.clone(), kind.clone())].into();
+        let mut mob = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        mob.health = 20.0;
+        let bases = [
+            ("max_health", 500.0),
+            ("movement_speed", 0.5),
+            ("flying_speed", 0.75),
+            ("attack_damage", 18.0),
+            ("attack_knockback", 2.0),
+            ("armor", 12.0),
+            ("armor_toughness", 7.0),
+            ("knockback_resistance", 0.5),
+            ("follow_range", 96.0),
+            ("step_height", 1.5),
+        ];
+        for (name, base) in bases {
+            attribute(&mut mob, name, base);
+        }
+        assert_eq!((mob.health, finalize::max_health(&mob)), (20.0, 500.0));
+        mob.heal(64.0);
+        assert_eq!(mob.health, 84.0);
+        mob.heal(1000.0);
+        assert_eq!(mob.health, 500.0);
+        attribute(&mut mob, "max_health", 100.0);
+        assert_eq!(mob.health, 100.0);
+        attribute(&mut mob, "max_health", 500.0);
+        assert_eq!(mob.health, 100.0);
+        mob.heal(-10.0);
+        assert_eq!(mob.health, 90.0);
+        mob.health = 0.0;
+        mob.heal(500.0);
+        assert_eq!(mob.health, 0.0);
+        mob.health = 50.0;
+        let tag = mob_to_nbt(&mob, [1, 2, 3, 4], None);
+        let mut back = mob_from_nbt(&tag, &types, 2).unwrap();
+        assert_eq!(back.health, 50.0);
+        for (name, base) in bases {
+            let a = Attr::from_name(name).unwrap();
+            assert_eq!(finalize::base_value(&back, a), base, "{name}");
+            let saved = tag.get("attributes").unwrap();
+            let Tag::List(saved) = saved else {
+                panic!("vanilla attributes list");
+            };
+            let entry = saved
+                .iter()
+                .find(|a| {
+                    text(a.get("id")).as_deref() == Some(format!("minecraft:{name}").as_str())
+                })
+                .unwrap();
+            assert_eq!(entry.get("base"), Some(&Tag::Double(base.to_bits())));
+        }
+        assert_eq!(
+            (back.attrs.max_health, back.attrs.attack_damage),
+            (500.0, 18.0)
+        );
+        assert_eq!(
+            (
+                back.attrs.speed,
+                back.attrs.follow_range,
+                back.attrs.knockback_resistance
+            ),
+            (0.5, 96.0, 0.5)
+        );
+        // The ordered armor and toughness affect damage, not only the saved record.
+        back.damage(10.0, crate::mobs::Damage::mob(999, [1.0, 0.0, 0.0]));
+        let expected = 50.0 - 10.0 * (1.0 - (12.0 - 10.0 / 3.75) / 25.0);
+        assert!((back.health - expected).abs() < 0.0001);
+        // Raw bases keep the requested value; vanilla bounds limit the effective value.
+        attribute(&mut back, "armor", 1024.0);
+        assert_eq!(finalize::base_value(&back, Attr::Armor), 1024.0);
+        assert_eq!(finalize::value(&back, Attr::Armor), 30.0);
+        attribute(&mut back, "max_health", 0.0);
+        assert_eq!((back.health, finalize::max_health(&back)), (1.0, 1.0));
     }
 
     #[test]

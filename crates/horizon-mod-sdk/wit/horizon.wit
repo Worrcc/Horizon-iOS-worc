@@ -676,6 +676,21 @@ interface %world {
         /// defaults, `minecraft:stone` alone is the default state.
         state: string,
     }
+    record world-time {
+        /// The server's shared Overworld dayTime (not reduced modulo 24000).
+        day-time: u64,
+        game-time: u64,
+        /// Level.isBrightOutside: not a fixed-time dimension, sky darkening < 4.
+        is-day: bool,
+        raining: bool,
+        thundering: bool,
+    }
+    /// Time and weather in a dimension. Unknown dimensions return zero times
+    /// and false flags; known dimensions need not have loaded chunks.
+    time: func(dimension: string) -> world-time;
+    /// Level.canSeeSky: sky light 15, independent of time, sky darkening or
+    /// block light. False for unknown/unloaded chunks and dimensions without skylight.
+    can-see-sky: func(dimension: string, x: s32, y: s32, z: s32) -> bool;
     /// The block state at a position in a dimension (`minecraft:overworld`,
     /// ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the
     /// server has no chunk loaded there.
@@ -753,6 +768,14 @@ interface entities {
         /// Seconds those not immune to fire burn after, at most 30.
         fire: u32,
     }
+    record attribute-change {
+        /// max_health, movement_speed, flying_speed, attack_damage,
+        /// attack_knockback, armor, armor_toughness, knockback_resistance,
+        /// follow_range or step_height (as in entity JSON).
+        name: string,
+        /// Base value, 0 to 1024; vanilla's attribute bounds limit its effective value.
+        value: f64,
+    }
     record sound {
         /// A vanilla sound event id or a loaded mod's sounds.json event.
         name: string,
@@ -820,6 +843,12 @@ interface entities {
         /// Its `minecraft:scale`, 0.0625 to 16: growth. Its size and model
         /// follow, on every player's game.
         scale(f32),
+        /// Set a base attribute, kept in vanilla's saved attributes list.
+        /// Raising max_health does not heal; lowering it clamps health.
+        attribute(attribute-change),
+        /// LivingEntity.heal: add a finite amount, clamped to 0..max health,
+        /// only while health is positive (never revives a dead mob).
+        heal(f32),
         /// Store strings on it, kept in its save: a key (1 to 64 characters)
         /// to a value (up to 1024), none removes the key. At most 32 keys.
         set-data(list<tuple<string, option<string>>>),

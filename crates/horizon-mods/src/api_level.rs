@@ -13,7 +13,7 @@ pub const LEVEL: u32 = 9;
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 53] = [
+pub const FUNCTIONS: [(&str, u32); 55] = [
     ("log.write", 0),
     ("game.get-player", 0),
     ("game.get-clock", 0),
@@ -53,6 +53,8 @@ pub const FUNCTIONS: [(&str, u32); 53] = [
     ("world.set-blocks", 4),
     ("world.game-rule", 9),
     ("world.difficulty", 9),
+    ("world.time", 9),
+    ("world.can-see-sky", 9),
     ("recipes.items", 5),
     ("recipes.all", 5),
     ("recipes.known", 5),

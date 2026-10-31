@@ -518,7 +518,7 @@ impl Mob {
             self.stuck_multiplier = Vec3::ZERO;
             self.velocity = Vec3::ZERO;
         }
-        let step = self.kind.step_height as f32;
+        let step = super::finalize::value(self, super::finalize::Attr::StepHeight) as f32;
         let mut scene = SceneCollisions {
             world: w.world,
             binding: w.collision,
@@ -925,8 +925,13 @@ impl Mob {
     /// `0.8F` in water and 0.5 in lava. A happy ghast swims as fast as it
     /// flies (`HappyGhast.travel`); the others at 0.02.
     fn travel_flying(&mut self, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) {
-        let fluid_speed = if self.species() == super::Species::HappyGhast {
+        let air_speed = if self.species() == super::Species::HappyGhast {
+            (super::finalize::value(self, super::finalize::Attr::FlyingSpeed) * 5.0 / 3.0) as f32
+        } else {
             self.kind.air_speed
+        };
+        let fluid_speed = if self.species() == super::Species::HappyGhast {
+            air_speed
         } else {
             0.02
         };
@@ -935,7 +940,7 @@ impl Mob {
         } else if self.fluids.in_lava {
             (fluid_speed, 0.5)
         } else {
-            (self.kind.air_speed, f64::from(0.91_f32))
+            (air_speed, f64::from(0.91_f32))
         };
         self.move_relative(speed, input);
         self.do_move(w, events);

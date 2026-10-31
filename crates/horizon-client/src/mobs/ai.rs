@@ -1797,8 +1797,9 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             seconds: burn,
         });
     }
-    let knock = super::gear::knockback(m);
-    if knock > 0 {
+    let knock = super::finalize::value(m, super::finalize::Attr::AttackKnockback)
+        + f64::from(super::gear::knockback(m));
+    if knock > 0.0 {
         let (dx, dz) = match who {
             Who::Player => cx.w.player.as_ref().map_or((0.0, 0.0), |p| {
                 (p.position.x - m.position.x, p.position.z - m.position.z)
@@ -1808,7 +1809,7 @@ pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
             }),
         };
         let len = (dx * dx + dz * dz).sqrt().max(1e-5);
-        let k = f64::from(knock) * 0.5;
+        let k = knock * 0.5;
         cx.events.push(MobEvent::Push {
             target: who,
             velocity: [dx / len * k, 0.1, dz / len * k],

@@ -141,6 +141,14 @@ pub(super) mod run {
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
             Some(self.biomes.get(chunk.biome(x, y, z)).name.clone())
         }
+        fn can_see_sky(&self, dimension: &str, x: i32, y: i32, z: i32) -> bool {
+            self.dims
+                .iter()
+                .find(|(d, _)| *d == dimension)
+                .is_some_and(|(_, chunks)| {
+                    horizon_client::mod_world::can_see_sky(chunks, dimension, x, y, z)
+                })
+        }
         fn has_dimension(&self, dimension: &str) -> bool {
             matches!(
                 dimension,
@@ -593,6 +601,10 @@ pub(super) mod run {
                         EntityTarget::NearestPlayer => Some(MobWho::Player),
                     };
                 }
+                EntityOrder::Attribute(a) => {
+                    horizon_client::mobs::orders::attribute(m, &a.name, a.value)
+                }
+                EntityOrder::Heal(amount) => m.heal(amount),
                 EntityOrder::Scale(s) => {
                     use horizon_client::mobs::finalize::{Attr, set_base};
                     set_base(m, Attr::Scale, f64::from(s));

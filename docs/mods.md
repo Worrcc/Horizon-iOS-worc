@@ -531,6 +531,18 @@ option<string>` and `difficulty() -> string`: the server's current rule values
 `minecraft:`; `mobGriefing` also reads `mob_griefing`. They are refreshed before
 each hook or command call, including rules or difficulty changed by commands.
 
+`time(dimension) -> world-time` reads the shared Overworld `day-time` (not
+modulo 24000), `game-time`, and the dimension's `is-day`, `raining`, and
+`thundering`. `is-day` follows `Level.isBrightOutside`: sky darkening below 4,
+with weather taken into account, and false in fixed-time dimensions (Nether
+and End). Weather flags use vanilla's rain and thunder level thresholds;
+the Nether never reports thunder. Unknown dimensions return zero times and
+false flags; known dimensions need no loaded chunks.
+`can-see-sky(dimension, x, y, z) -> bool` reads raw sky light 15, independent
+of time of day and block light. It respects dimension build heights and is
+false for unknown/unloaded chunks and dimensions without skylight. Neither
+query loads chunks or changes the world.
+
 Reads are of the server's loaded chunks as they are
 during the call: the game lends a server mod's call the levels' chunk maps
 (moved, not copied, and only while a running mod has `world`), so a read
@@ -543,10 +555,10 @@ that code. Changes for a dimension whose level isn't ticking wait for it
 change in a chunk that isn't loaded when it is made is skipped, as `/setblock`
 refuses one.
 
-API level 9 adds the texture, sound and particles orders and the entity record's
+API level 9 adds the texture, sound, particles, attribute and heal orders and the entity record's
 `texture: option<string>`. The `mob-orders` example demonstrates `/paint
 <texture|none>`, `/roar` (sound and flame particles), and `/info` (including
-`mobGriefing`). This experimental interface's changed entity and order types
+`mobGriefing`, time and sky visibility), `/attr <name> <value>`, and `/heal <n>`. This experimental interface's changed entity and order types
 require rebuilding server mods against this SDK.
 
 **Capability `entities`.** The behaviour of content mods' mobs
@@ -571,6 +583,8 @@ gone by then are dropped):
 | `discard` | removes it, with no death and no drops |
 | `target(target)` | whom it attacks with its template's own attacks: `none`, `mob(id)` or `nearest-player` (the player it sees) |
 | `scale(f32)` | its `minecraft:scale`, 0.0625 to 16: growth. Its box and model follow on every player's game, and it is kept in its save |
+| `attribute(attribute-change)` | sets a base value (`name`, `value`, finite 0..1024): `max_health`, `movement_speed`, `flying_speed`, `attack_damage`, `attack_knockback`, `armor`, `armor_toughness`, `knockback_resistance`, `follow_range`, or `step_height`. Vanilla bounds still limit effective values (e.g. armor at most 30). Stored in vanilla's `attributes` save list and synced where vanilla syncs the attribute. Raising max health does not heal; lowering it clamps health |
+| `heal(f32)` | `LivingEntity.heal`: adds a finite amount to positive health and clamps to 0..max health; never revives dead mobs. Negative amounts follow vanilla and reduce health |
 | `set-data(entries)` | strings kept on it and in its save: a key (1 to 64 characters) to a value (up to 1024), none removes it; 32 keys at most. `mobs()` reads them back, and a mod tells its spawns apart by them |
 
 Walk and look orders are a goal of the highest priority on every content

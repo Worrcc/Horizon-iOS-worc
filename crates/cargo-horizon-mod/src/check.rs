@@ -231,6 +231,25 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
         players: vec![steve.clone()],
         game_rules: [("mob_griefing".into(), "true".into())].into(),
         difficulty: "normal".into(),
+        world_times: [
+            "minecraft:overworld",
+            "minecraft:the_nether",
+            "minecraft:the_end",
+        ]
+        .into_iter()
+        .map(|dimension| {
+            (
+                dimension.into(),
+                horizon_mods::WorldTime {
+                    day_time: 1000 + t,
+                    game_time: t,
+                    is_day: dimension == "minecraft:overworld",
+                    raining: false,
+                    thundering: false,
+                },
+            )
+        })
+        .collect(),
         // The GUI of a 1280 x 720 window at scale 3.
         gui_size: (427.0, 240.0),
         ..Snapshot::default()

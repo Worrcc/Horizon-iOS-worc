@@ -544,6 +544,23 @@ impl Game<'_> {
             },
             difficulty: horizon_client::title::DIFFICULTIES[usize::from(self.ui.difficulty) & 3]
                 .into(),
+            world_times: if self.mods.world {
+                [
+                    "minecraft:overworld",
+                    "minecraft:the_nether",
+                    "minecraft:the_end",
+                ]
+                .into_iter()
+                .map(|dim| {
+                    (
+                        dim.to_owned(),
+                        horizon_client::mod_world::time(&self.world, self.res.environment(), dim),
+                    )
+                })
+                .collect()
+            } else {
+                Default::default()
+            },
             entities: Default::default(),
             mob_kinds: Default::default(),
             entity_resources: Default::default(),

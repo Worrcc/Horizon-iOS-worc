@@ -149,7 +149,7 @@ pub fn move_control(m: &mut Mob, w: &MobWorld) {
         } else {
             Vec3::new(travel.x / len, travel.y / len, travel.z / len)
         };
-        let speed = FLYING_SPEED * 5.0 / 3.0;
+        let speed = super::finalize::value(m, super::finalize::Attr::FlyingSpeed) * 5.0 / 3.0;
         m.velocity =
             m.velocity
                 .add_vector(Vec3::new(unit.x * speed, unit.y * speed, unit.z * speed));
@@ -505,7 +505,7 @@ pub fn ridden(m: &mut Mob) {
     if r.jumping {
         up += 0.5;
     }
-    let scale = 3.9 * FLYING_SPEED as f32;
+    let scale = 3.9 * super::finalize::value(m, super::finalize::Attr::FlyingSpeed) as f32;
     m.ai.xxa = r.strafe * scale;
     m.ai.yya = up * scale;
     m.ai.zza = forward * scale;

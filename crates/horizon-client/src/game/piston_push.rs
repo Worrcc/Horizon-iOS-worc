@@ -297,7 +297,10 @@ impl Game<'_> {
                     bounds: m.bounds(),
                     position: m.position,
                     on_ground: m.on_ground,
-                    step_height: m.kind.step_height as f32,
+                    step_height: horizon_client::mobs::finalize::value(
+                        m,
+                        horizon_client::mobs::finalize::Attr::StepHeight,
+                    ) as f32,
                     supported: m.supporting == Some(at),
                 })
             }

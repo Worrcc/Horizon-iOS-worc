@@ -22,3 +22,11 @@ expect.error = "No content mod's mob within 32 blocks"
 [[step]]
 command = "roar"
 expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "attr max_health 500"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "heal 20"
+expect.error = "No content mod's mob within 32 blocks"

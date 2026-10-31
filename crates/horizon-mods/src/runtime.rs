@@ -56,12 +56,12 @@ pub use server_bindings::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
     },
     horizon::mods::entities::{
-        Area as EntityArea, Entity as ModEntity, Interaction as EntityInteraction,
-        Order as EntityOrder, Particles as EntityParticles, Point as EntityPoint,
-        Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
+        Area as EntityArea, AttributeChange as EntityAttributeChange, Entity as ModEntity,
+        Interaction as EntityInteraction, Order as EntityOrder, Particles as EntityParticles,
+        Point as EntityPoint, Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
-    horizon::mods::world::BlockChange,
+    horizon::mods::world::{BlockChange, WorldTime},
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
@@ -184,6 +184,8 @@ pub struct Snapshot {
     /// Current server rules and difficulty, for read-only capability `world` queries.
     pub game_rules: std::collections::BTreeMap<String, String>,
     pub difficulty: String,
+    /// The dimension-specific daylight and weather, with the server's shared clock.
+    pub world_times: std::collections::BTreeMap<String, WorldTime>,
     /// The loaded mobs, for capability `entities`; the game fills it only
     /// while a running mod has it ([`Mods::wants_entities`]).
     pub entities: Arc<[ModEntity]>,
@@ -312,6 +314,10 @@ pub trait WorldView: std::any::Any + Send {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// Sky light 15 at the position; false when no chunk can be read.
+    fn can_see_sky(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
     /// `Err` (why) for a state string that names no block state.
@@ -1638,6 +1644,26 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn time(&mut self, dimension: String) -> WorldTime {
+        self.snapshot
+            .world_times
+            .get(&dimension)
+            .cloned()
+            .unwrap_or(WorldTime {
+                day_time: 0,
+                game_time: 0,
+                is_day: false,
+                raining: false,
+                thundering: false,
+            })
+    }
+    fn can_see_sky(&mut self, dimension: String, x: i32, y: i32, z: i32) -> bool {
+        self.world
+            .lock()
+            .ok()
+            .and_then(|v| v.as_ref().map(|v| v.can_see_sky(&dimension, x, y, z)))
+            .unwrap_or(false)
+    }
     fn game_rule(&mut self, name: String) -> Option<String> {
         let name = name.strip_prefix("minecraft:").unwrap_or(&name);
         let name = if name == "mobGriefing" {
@@ -1710,6 +1736,19 @@ fn check_data<'a>(
 /// Why `entities.give-orders` refuses an order, if it does.
 fn check_order(order: &EntityOrder) -> Result<(), String> {
     match order {
+        EntityOrder::Attribute(a)
+            if a.name == "scale"
+                || !crate::content::ENTITY_ATTRIBUTES.contains(&a.name.as_str())
+                || !(0.0..=1024.0).contains(&a.value) =>
+        {
+            Err(
+                "attribute names an entity JSON attribute (except scale), with a base of 0 to 1024"
+                    .into(),
+            )
+        }
+        EntityOrder::Heal(amount) if !amount.is_finite() => {
+            Err("heal needs a finite amount".into())
+        }
         EntityOrder::Scale(s) if !(0.0625..=16.0).contains(s) => {
             Err("scale is 0.0625 to 16".into())
         }
@@ -2396,6 +2435,15 @@ mod entity_tests {
             assert!(check_order_names(&valid, &state.snapshot).is_ok());
         }
         for bad in [
+            EntityOrder::Attribute(EntityAttributeChange {
+                name: "max_health".into(),
+                value: f64::NAN,
+            }),
+            EntityOrder::Attribute(EntityAttributeChange {
+                name: "not_an_attribute".into(),
+                value: 500.0,
+            }),
+            EntityOrder::Heal(f32::INFINITY),
             sound("ruby:missing", 1.0, 1.0),
             particles("minecraft:missing", 0.0, 1),
             particles("minecraft:dust", 0.0, 1),
@@ -2462,8 +2510,138 @@ mod entity_tests {
         }
     }
 
+    #[test]
+    fn time_is_dimension_specific_and_sky_reads_the_lent_world() {
+        let mut state = state();
+        assert!(!mod_world::Host::time(&mut state, "missing".into()).is_day);
+        assert!(!mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:overworld".into(),
+            1,
+            65,
+            -1
+        ));
+        for day in [true, false] {
+            state.snapshot = Arc::new(Snapshot {
+                world_times: [
+                    (
+                        "minecraft:overworld".into(),
+                        WorldTime {
+                            day_time: 25000,
+                            game_time: 100000,
+                            is_day: day,
+                            raining: !day,
+                            thundering: !day,
+                        },
+                    ),
+                    (
+                        "minecraft:the_nether".into(),
+                        WorldTime {
+                            day_time: 25000,
+                            game_time: 100000,
+                            is_day: false,
+                            raining: !day,
+                            thundering: false,
+                        },
+                    ),
+                ]
+                .into(),
+                ..Snapshot::default()
+            });
+            let time = mod_world::Host::time(&mut state, "minecraft:overworld".into());
+            assert_eq!(
+                (
+                    time.day_time,
+                    time.game_time,
+                    time.is_day,
+                    time.raining,
+                    time.thundering
+                ),
+                (25000, 100000, day, !day, !day)
+            );
+            assert!(!mod_world::Host::time(&mut state, "minecraft:the_nether".into()).is_day);
+            assert_eq!(
+                mod_world::Host::time(&mut state, "missing".into()).game_time,
+                0
+            );
+        }
+        struct Sky;
+        impl WorldView for Sky {
+            fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn has_dimension(&self, _: &str) -> bool {
+                true
+            }
+            fn check_state(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn can_see_sky(&self, dim: &str, x: i32, y: i32, z: i32) -> bool {
+                dim == "minecraft:overworld" && [x, y, z] == [1, 65, -1]
+            }
+        }
+        *state.world.lock().unwrap() = Some(Box::new(Sky));
+        assert!(mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:overworld".into(),
+            1,
+            65,
+            -1
+        ));
+        assert!(!mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:the_end".into(),
+            1,
+            65,
+            -1
+        ));
+        assert!(!mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:overworld".into(),
+            1,
+            64,
+            -1
+        ));
+    }
+
     fn point(x: f64, y: f64, z: f64) -> EntityPoint {
         EntityPoint { x, y, z }
+    }
+
+    #[test]
+    fn attributes_and_heal_validate_names_and_finite_values() {
+        let attribute = |name: &str, value| {
+            EntityOrder::Attribute(EntityAttributeChange {
+                name: name.into(),
+                value,
+            })
+        };
+        for name in crate::content::ENTITY_ATTRIBUTES
+            .into_iter()
+            .filter(|n| *n != "scale")
+        {
+            for value in [0.0, 500.0, 1024.0] {
+                assert!(
+                    check_order(&attribute(name, value)).is_ok(),
+                    "{name}={value}"
+                );
+            }
+        }
+        for name in ["", "scale", "minecraft:max_health", "luck", "unknown"] {
+            assert!(check_order(&attribute(name, 10.0)).is_err(), "{name}");
+        }
+        for value in [-0.1, 1024.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(check_order(&attribute("max_health", value)).is_err());
+        }
+        for value in [0.0, 1.0, -1.0, f32::MAX] {
+            assert!(check_order(&EntityOrder::Heal(value)).is_ok());
+        }
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(check_order(&EntityOrder::Heal(value)).is_err());
+        }
     }
 
     #[test]

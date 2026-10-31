@@ -199,10 +199,10 @@ pub mod server {
         ServerCommand,
     };
     pub use horizon::mods::entities::{
-        self, Area, Entity, Order, Particles, Point, Sound, Target, Walk,
+        self, Area, AttributeChange, Entity, Order, Particles, Point, Sound, Target, Walk,
     };
     pub use horizon::mods::players::{self, GameMode, Player};
-    pub use horizon::mods::world::{self, BlockChange};
+    pub use horizon::mods::world::{self, BlockChange, WorldTime};
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks
     /// for are called; the others may stay as their defaults.

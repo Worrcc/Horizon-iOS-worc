@@ -78,6 +78,18 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
     }
 }
 
+/// A checked server-mod attribute order, through the mob's normal attribute instances.
+pub fn attribute(m: &mut Mob, name: &str, value: f64) {
+    use super::finalize::{self, Attr};
+    let Some(a) = Attr::from_name(name) else {
+        return;
+    };
+    finalize::set_base(m, a, value);
+    if a == Attr::MaxHealth {
+        m.health = m.health.min(finalize::max_health(m));
+    }
+}
+
 /// The priority of [`Obey`]: ahead of every vanilla goal (0 is the first vanilla uses).
 pub const PRIORITY: i32 = -1;
 

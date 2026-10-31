@@ -682,8 +682,20 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 | `z` | `s32` |  |
 | `state` | `string` | `minecraft:oak_log[axis=y]`; properties left out take the block's defaults, `minecraft:stone` alone is the default state. |
 
+### record `world-time`
+
+| Field | Type | |
+| --- | --- | --- |
+| `day-time` | `u64` | The server's shared Overworld dayTime (not reduced modulo 24000). |
+| `game-time` | `u64` |  |
+| `is-day` | `bool` | Level.isBrightOutside: not a fixed-time dimension, sky darkening < 4. |
+| `raining` | `bool` |  |
+| `thundering` | `bool` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `time` | `func(dimension: string) -> world-time` | Time and weather in a dimension. Unknown dimensions return zero times and false flags; known dimensions need not have loaded chunks. |
+| `can-see-sky` | `func(dimension: string, x: s32, y: s32, z: s32) -> bool` | Level.canSeeSky: sky light 15, independent of time, sky darkening or block light. False for unknown/unloaded chunks and dimensions without skylight. |
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
@@ -742,6 +754,13 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `amount` | `f32` | Hit points every living thing in it but the mob loses (vanilla's `mob_attack` damage from the mob), at most 1024. |
 | `fire` | `u32` | Seconds those not immune to fire burn after, at most 30. |
 
+### record `attribute-change`
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` | max_health, movement_speed, flying_speed, attack_damage, attack_knockback, armor, armor_toughness, knockback_resistance, follow_range or step_height (as in entity JSON). |
+| `value` | `f64` | Base value, 0 to 1024; vanilla's attribute bounds limit its effective value. |
+
 ### record `sound`
 
 | Field | Type | |
@@ -798,6 +817,8 @@ Whom a mob attacks.
 | `discard` |  | Remove it, with no drops (`Entity.discard`). |
 | `target` | `target` | Have it attack, as its own goals do: its template's attacks (melee, arrows, ...) on that target. |
 | `scale` | `f32` | Its `minecraft:scale`, 0.0625 to 16: growth. Its size and model follow, on every player's game. |
+| `attribute` | `attribute-change` | Set a base attribute, kept in vanilla's saved attributes list. Raising max_health does not heal; lowering it clamps health. |
+| `heal` | `f32` | LivingEntity.heal: add a finite amount, clamped to 0..max health, only while health is positive (never revives a dead mob). |
 | `set-data` | `list<tuple<string, option<string>>>` | Store strings on it, kept in its save: a key (1 to 64 characters) to a value (up to 1024), none removes the key. At most 32 keys. |
 
 | Function | Signature | What it does |
