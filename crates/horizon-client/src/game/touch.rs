@@ -323,6 +323,17 @@ impl Game<'_> {
         }
     }
 
+    /// A controller is being used: the on-screen controls go away (letting go of every finger)
+    /// until the next touch brings them back.
+    #[cfg(target_os = "ios")]
+    pub(super) fn touch_hide(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.touch.controls.used {
+            return;
+        }
+        self.touch_release_all(event_loop);
+        self.touch.controls.used = false;
+    }
+
     fn show_keyboard(&mut self, shown: bool) {
         self.touch.keyboard = shown;
         if let Some(window) = &self.window {

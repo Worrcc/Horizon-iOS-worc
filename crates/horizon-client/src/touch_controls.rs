@@ -195,7 +195,7 @@ pub struct TouchControls {
     sneaking: bool,
     /// Whether the last touch was in the world (the controls are drawn) or on a menu.
     playing: bool,
-    /// A finger has touched the screen: the controls are drawn from then on.
+    /// A finger has touched the screen: the controls are drawn until a controller is used.
     pub used: bool,
 }
 

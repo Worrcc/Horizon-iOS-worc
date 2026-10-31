@@ -120,6 +120,8 @@ impl Game<'_> {
         if state.active(&self.settings.controller) {
             self.last_input = Instant::now();
             self.pad.in_use = true;
+            #[cfg(target_os = "ios")]
+            self.touch_hide(event_loop);
         }
         self.pad.state = state;
         self.pad_output_frame();
