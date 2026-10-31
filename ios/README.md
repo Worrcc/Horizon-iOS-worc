@@ -121,15 +121,18 @@ Horizon folder. That is how you back worlds up or copy them to and from a comput
 
 If the game files are missing, the app says so (and where its crash report is), then closes.
 
-### Instances
+### The launcher and instances
 
-**Options › Horizon Settings › Instances** keeps separate game folders, each with its own
-worlds, settings, resource packs, shader packs (**Shader Packs...**) and mods (**Mods...**).
-The Horizon folder itself is the first instance. **New Instance** makes another one in
-`Horizon/instances/`; you can also copy a folder in there with the Files app. Tap an instance to
-play it. On the title screen, before you open a world, the game switches at once. From a world
-it switches at the next start. Every instance uses the same `resources` folder, and logs stay in
-`Horizon/logs`.
+Horizon opens on its launcher: your instances, and for the one you're playing, **Mods...**,
+**Shader Packs...**, **Controller Settings...** and **Options...**. **Done** (or B on a
+controller) goes to the title screen. The same instance list is in **Options › Horizon
+Settings › Instances**.
+
+Each instance is a separate game folder with its own worlds, settings, resource packs, shader
+packs and mods. The Horizon folder itself is the first instance. **New Instance** makes another
+one in `Horizon/instances/`; you can also copy a folder in there with the Files app. Tap an
+instance to play it: with no world open the game switches at once, from a world at the next
+start. Every instance uses the same `resources` folder, and logs stay in `Horizon/logs`.
 
 ## Controls
 

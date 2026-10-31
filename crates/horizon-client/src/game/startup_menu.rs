@@ -24,6 +24,8 @@ pub(super) struct StartupMenu {
     selection: AppendSelection,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
+    /// The launcher page opened once, when the app started (iOS).
+    launcher_opened: bool,
     pub perf: horizon_client::telemetry::Session,
 }
 
@@ -336,13 +338,31 @@ impl Loading {
         }
         log::info!("Horizon: playing instance {id} ({})", folder.display());
         self.settings = Settings::load(&Game::options_path());
-        horizon_client::lang::set(horizon_client::lang::Language::load(
-            &[&self.menu.root],
-            &self.settings.language,
-        ));
+        // The title's world list and last server are the instance's own (`set_root` loads the
+        // language too).
+        if self.menu.title.take().is_some() {
+            let root = self.menu.root.clone();
+            self.menu.set_root(root, &self.settings);
+        }
         self.apply_menu_settings();
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.reload_packs = true;
+    }
+
+    /// iOS opens on the launcher page (instances, their mods, shader packs and settings) once
+    /// the title's artwork is in; Play closes it onto the title. Not when the command line asked
+    /// for a world or a server, nor over a resource error.
+    pub(super) fn open_launcher(&mut self) {
+        if !cfg!(target_os = "ios")
+            || self.menu.launcher_opened
+            || self.menu.pending.is_some()
+            || self.menu.options_open
+        {
+            return;
+        }
+        self.menu.launcher_opened = true;
+        self.settings.instances = super::instances::listing();
+        self.open_menu_options(Page::Launcher);
     }
 
     fn open_menu_options(&mut self, page: Page) {

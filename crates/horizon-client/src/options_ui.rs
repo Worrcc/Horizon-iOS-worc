@@ -838,6 +838,9 @@ pub enum Page {
     ShaderPacks,
     /// Separate game folders (`instance_list`): iOS only, where no launcher has them.
     Instances,
+    /// What the app opens on (iOS): the instances, then their mods, shader packs, controller
+    /// and options, and Play, which closes it onto the title.
+    Launcher,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
     GraphicsAdvanced,
@@ -1087,6 +1090,9 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::ShaderPacks => {
             "Shader packs from the shaderpacks folder: Horizon's own and those in the shaders/ format. One runs at a time."
         }
+        Page::Launcher => {
+            "Pick an instance, then its mods, shader packs and settings. Play opens the title screen."
+        }
         Page::Instances => {
             "Separate game folders, each with its own worlds, options, packs, shader packs and mods."
         }
@@ -1183,6 +1189,7 @@ impl OptionsUi {
             Page::Mods => "Mods",
             Page::ShaderPacks => "Shader Packs",
             Page::Instances => "Instances",
+            Page::Launcher => "Horizon",
             Page::Graphics | Page::GraphicsAdvanced => "options.videoTitle",
             Page::Controller => "Controller Settings",
             Page::PadBinds => "Controller Binds",
@@ -1565,28 +1572,23 @@ impl OptionsUi {
                     })
                     .collect()
             }
-            Page::Instances => {
-                let instances = &s.instances;
-                instances
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, entry)| {
-                        let state = if entry.id == instances.current {
-                            "Playing"
-                        } else if instances.next.as_deref() == Some(entry.id.as_str()) {
-                            "Next start"
-                        } else {
-                            ""
-                        };
-                        let label = if state.is_empty() {
-                            Text::literal(&entry.name)
-                        } else {
-                            Text::literal(format!("{}: {state}", entry.name))
-                        };
-                        Row::Buttons(button(0.0, 0.0, 310.0, label, Act::PickInstance(i)), None)
-                    })
-                    .collect()
+            Page::Instances => instance_rows(s),
+            Page::Launcher => {
+                let open = |label: &str, page: Page| {
+                    button(0.0, 0.0, 150.0, Text::literal(label), Act::Push(page))
+                };
+                let mut rows = vec![Row::Header("Instances")];
+                rows.extend(instance_rows(s));
+                rows.push(Row::Header("This instance"));
+                rows.push(Row::Buttons(
+                    open("Mods...", Page::Mods),
+                    Some(open("Shader Packs...", Page::ShaderPacks)),
+                ));
+                rows.push(Row::Buttons(
+                    open("Controller Settings...", Page::Controller),
+                    Some(open("Options...", Page::Main)),
+                ));
+                rows
             }
             _ => {
                 let _ = s;
@@ -2077,6 +2079,7 @@ impl OptionsUi {
                     Page::Mods => Some(("Open Mod Folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("Open Pack Folder", Act::OpenShaderPackFolder)),
                     Page::Instances => Some(("New Instance", Act::NewInstance)),
+                    Page::Launcher => Some(("New Instance", Act::NewInstance)),
                     _ => None,
                 };
                 if let Some((label, act)) = folder {
@@ -2541,7 +2544,7 @@ impl OptionsUi {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
                             }
-                            if p == Page::Instances {
+                            if matches!(p, Page::Instances | Page::Launcher) {
                                 events.push(Event::ListInstances);
                             }
                             self.push(p)
@@ -2897,6 +2900,31 @@ impl OptionsUi {
         }
         Vec::new()
     }
+}
+
+/// The instances, one button each: the one playing and the one picked for the next start say so.
+fn instance_rows(s: &Settings) -> Vec<Row> {
+    let instances = &s.instances;
+    instances
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let state = if entry.id == instances.current {
+                "Playing"
+            } else if instances.next.as_deref() == Some(entry.id.as_str()) {
+                "Next start"
+            } else {
+                ""
+            };
+            let label = if state.is_empty() {
+                Text::literal(&entry.name)
+            } else {
+                Text::literal(format!("{}: {state}", entry.name))
+            };
+            Row::Buttons(button(0.0, 0.0, 310.0, label, Act::PickInstance(i)), None)
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -68,9 +68,10 @@ Each item has a fix in the latest build, but nobody has seen it working yet.
 
 Goal: manage instances, mods, shader packs and modpacks inside the app, and make controllers a
 full input path. Step 1 is done: **instances** (`src/instance_list.rs`, `game/instances.rs`,
-Options › Horizon Settings › Instances; `main.rs` starts in the picked folder). Next steps:
-a launcher screen ahead of the title that brings instances, mods, shader packs and modpack import
-together; controller-only menu navigation everywhere (the startup title has a pad pointer:
+Options › Horizon Settings › Instances; `main.rs` starts in the picked folder). The launcher
+page (`Page::Launcher` in `options_ui.rs`, opened by `Loading::open_launcher` once the title's
+artwork is in) brings instances, mods, shader packs, controller and options together. Not yet:
+modpack import (left out for now, by the player's choice). Done as well: controller-only menu navigation everywhere (the startup title has a pad pointer:
 `pad.rs` `StartupPad`; every screen after it has `pad_menu.rs`); hiding touch controls while a pad is
 connected (done); Core Haptics vibration, DualSense lights and triggers (done, not yet seen on a
 pad: `horizon-ios/src/controllers.rs` `vibrate` and `show`). Button remapping already
