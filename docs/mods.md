@@ -481,7 +481,7 @@ its component targets the WIT world `horizon-server-mod` instead of
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
 | `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
-| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
+| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `interactions()`: the last tick's right clicks on content mods' mobs (player UUID, mob id, kind, held item), in order, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
 
 | Hook (export `server-events`) | When |
 |---|---|
@@ -564,6 +564,9 @@ wardens, ...), which would steer the mob after the goals: it picks up again
 when the order ends. Piglins' and hoglins' brains still steer them. The
 animation an order plays and the data are kept in the mob's save
 (`horizon:animation`, `horizon:data`). Taming and riding are not orders yet.
+`interactions()` lets a mod build taming with `set-data` (`owner` = player UUID)
+and `walk-to`: the game's own use of the click still happens, and reading
+the interaction consumes no items.
 
 **Where they run.** The game that simulates the world starts the server mods
 that are on, and only that one:

@@ -739,6 +739,17 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `amount` | `f32` | Hit points every living thing in it but the mob loses (vanilla's `mob_attack` damage from the mob), at most 1024. |
 | `fire` | `u32` | Seconds those not immune to fire burn after, at most 30. |
 
+### record `interaction`
+
+A player's right click on a content mod's mob.
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` | The player's UUID, as `players.online` has it. |
+| `mob` | `u32` |  |
+| `kind` | `string` |  |
+| `item` | `option<string>` | What the player held in the hand they used, `minecraft:beef`, ... |
+
 ### variant `target`
 
 Whom a mob attacks.
@@ -769,6 +780,7 @@ Whom a mob attacks.
 | --- | --- | --- |
 | `mobs` | `func() -> list<entity>` | The loaded mobs of content mods' kinds (any namespace but `minecraft`), as at the start of the tick, at most 1024. |
 | `near` | `func(dimension: string, at: point, radius: f64) -> list<entity>` | Every loaded mob within `radius` (at most 64) blocks of a point in a dimension, nearest first, at most 256. Players are `players.online`'s. |
+| `interactions` | `func() -> list<interaction>` | The right clicks players made on content mods' mobs during the last tick, in order, at most 256: feeding, taming, mounting are the mod's to decide. The game's own use of the click (a lead, a name tag) still happens. |
 | `give-orders` | `func(orders: list<tuple<u32, order>>) -> result<_, string>` | Orders, by mob id, to content mods' mobs: checked now (an error queues none) and carried out in order before their dimension's next tick; an order to a mob gone by then is dropped. At most 1024 per call. |
 | `spawn` | `func(kind: string, dimension: string, at: point, yaw: f32, data: list<tuple<string, string>>) -> result<_, string>` | Spawns a content mod's mob (any namespace but `minecraft`) at a point of a dimension, facing `yaw`, persistent, with `data` stored on it (as `set-data`), before that dimension's next tick: `mobs` lists it from the tick after, where `data` tells it apart. At most 64 spawns per hook call; an unknown kind is an error. |
 

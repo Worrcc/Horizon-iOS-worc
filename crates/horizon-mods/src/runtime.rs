@@ -56,8 +56,8 @@ pub use server_bindings::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
     },
     horizon::mods::entities::{
-        Area as EntityArea, Entity as ModEntity, Order as EntityOrder, Point as EntityPoint,
-        Target as EntityTarget, Walk as EntityWalk,
+        Area as EntityArea, Entity as ModEntity, Interaction as EntityInteraction,
+        Order as EntityOrder, Point as EntityPoint, Target as EntityTarget, Walk as EntityWalk,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
     horizon::mods::world::BlockChange,
@@ -176,6 +176,9 @@ pub struct Snapshot {
     pub entities: Arc<[ModEntity]>,
     /// The content mods' mob types, for `entities.spawn`; filled with [`Snapshot::entities`].
     pub mob_kinds: Arc<[String]>,
+    /// Players' right clicks on content mods' mobs during the last tick, for
+    /// `entities.interactions`.
+    pub interactions: Arc<[EntityInteraction]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
@@ -1712,6 +1715,14 @@ impl entities::Host for State {
         let own = self.snapshot.entities.iter().filter(|e| own_kind(&e.kind));
         own.take(OWN_ENTITIES).cloned().collect()
     }
+    fn interactions(&mut self) -> Vec<EntityInteraction> {
+        self.snapshot
+            .interactions
+            .iter()
+            .take(NEAR_ENTITIES)
+            .cloned()
+            .collect()
+    }
     fn near(&mut self, dimension: String, at: EntityPoint, radius: f64) -> Vec<ModEntity> {
         if !finite(&at) || !radius.is_finite() {
             return Vec::new();
@@ -2170,8 +2181,56 @@ fn storage_key_ok(key: &str) -> bool {
 }
 
 #[cfg(test)]
-mod entity_order_tests {
+mod entity_tests {
     use super::*;
+
+    #[test]
+    fn interactions_read_the_snapshot_in_order_up_to_256() {
+        let mut state = State {
+            name: "Mob Orders".into(),
+            id: "mob_orders".into(),
+            snapshot: Arc::new(Snapshot::default()),
+            out: Vec::new(),
+            panel: None,
+            ui: UiState::default(),
+            shapes: Vec::new(),
+            corner: None,
+            zoom: None,
+            minimap: None,
+            far_terrain: None,
+            input: InputState::default(),
+            browser: BrowserState::default(),
+            data_dir: PathBuf::new(),
+            storage_budget: STORAGE_WRITE_BUDGET,
+            limits: StoreLimitsBuilder::new().build(),
+            world: WorldSlot::default(),
+        };
+        for count in [0, 2, 256, 300] {
+            let clicks: Vec<_> = (0..count)
+                .map(|mob| EntityInteraction {
+                    player: "01234567-89ab-cdef-0123-456789abcdef".into(),
+                    mob,
+                    kind: "ruby:golem".into(),
+                    item: (mob % 2 == 0).then(|| "minecraft:bone".into()),
+                })
+                .collect();
+            state.snapshot = Arc::new(Snapshot {
+                interactions: clicks.into(),
+                ..Snapshot::default()
+            });
+            // Every reader sees the same tick; reading does not consume the clicks.
+            for _ in 0..2 {
+                let got = entities::Host::interactions(&mut state);
+                assert_eq!(got.len(), (count as usize).min(256));
+                for (click, expected) in got.iter().zip(state.snapshot.interactions.iter()) {
+                    assert_eq!(click.player, expected.player);
+                    assert_eq!(click.mob, expected.mob);
+                    assert_eq!(click.kind, expected.kind);
+                    assert_eq!(click.item, expected.item);
+                }
+            }
+        }
+    }
 
     fn point(x: f64, y: f64, z: f64) -> EntityPoint {
         EntityPoint { x, y, z }

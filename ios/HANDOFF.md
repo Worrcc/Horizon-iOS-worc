@@ -112,7 +112,9 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
      thread. Since then: `spawn` (with data), orders `target`, `scale` (growth, through
      `minecraft:scale`, which now sizes every mob as vanilla's does) and `set-data`, kept in the
      save with the playing animation; brain-driven templates follow walk and look orders.
-     Still to come: taming, riding, piglin brains.
+     `interactions()` reads players' right clicks and held items; the example stores an
+     `owner` UUID when clicked with a bone, without consuming it. Still to come: taming,
+     riding, piglin brains.
      `horizon-ctl command` runs a command in the window, so it never reaches server mods:
      drive them with `horizon-ctl chat "/heel"`.
   3. Spawn rules and structures with their mobs.

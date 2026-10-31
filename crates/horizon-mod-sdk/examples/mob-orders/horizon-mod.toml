@@ -1,7 +1,7 @@
 id = "mob_orders"
 name = "Mob Orders"
 version = "0.1.0"
-description = "Orders to content mods' mobs near you: /heel, /halt, /animate <name>, /breathe [amount], /hover, /land, /raise <kind>, /grow <scale>, /attack, /label <key> <value>, /info."
+description = "Orders to content mods' mobs near you: /heel, /halt, /animate <name>, /breathe [amount], /hover, /land, /raise <kind>, /grow <scale>, /attack, /label <key> <value>, /info. Right clicks report your held item; a bone sets owner data."
 authors = ["Horizon"]
 api = "0.3"
 side = "server"

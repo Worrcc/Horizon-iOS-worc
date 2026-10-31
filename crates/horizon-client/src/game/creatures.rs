@@ -3260,6 +3260,9 @@ impl Game<'_> {
                 return Ok(false);
             }
         }
+        // A server mod with capability `entities` hears the click on a content mod's mob.
+        let held = self.held().map(|h| h.item.to_string());
+        self.mod_mob_interacted(index, held);
         if self.name_mob(index) {
             return Ok(true);
         }

@@ -49,6 +49,7 @@ impl Game<'_> {
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
     pub(super) fn apply_mod_orders(&mut self) {}
+    pub(super) fn mod_mob_interacted(&mut self, _index: usize, _item: Option<String>) {}
 }
 
 #[cfg(feature = "mods")]
@@ -78,6 +79,8 @@ pub(super) mod run {
     const MAX_QUEUED_ORDERS: usize = 1 << 14;
     /// Spawns waiting for their level, at most.
     const MAX_QUEUED_SPAWNS: usize = 1024;
+    /// Right clicks on content mods' mobs kept for one tick, at most.
+    const MAX_INTERACTIONS: usize = 256;
 
     /// A server mod's `entities.spawn`, waiting for its dimension's level.
     pub(in crate::game) struct ModSpawn {
@@ -299,10 +302,12 @@ pub(super) mod run {
             }
             self.send_server_mod_commands();
             if !self.mods.server {
+                self.mods.interactions.clear();
                 return;
             }
             let players = self.server_players(None);
-            let snapshot = self.server_snapshot(players.clone());
+            let mut snapshot = self.server_snapshot(players.clone());
+            snapshot.interactions = self.take_mod_interactions();
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             let before = std::mem::take(&mut self.mods.players);
@@ -630,6 +635,43 @@ pub(super) mod run {
                     );
                 }
             }
+        }
+
+        /// A player's right click on a mob: a content mod's, for capability `entities`.
+        pub(in crate::game) fn mod_mob_interacted(&mut self, index: usize, item: Option<String>) {
+            let m = &self.mobs[index];
+            if !self.hears_players()
+                || !self.mods.entities
+                || m.kind.id.starts_with("minecraft:")
+                || self.mods.interactions.len() >= MAX_INTERACTIONS
+            {
+                return;
+            }
+            let who = self.lan_acting_uuid.map_or(Who::Local, Who::Uuid);
+            let interaction = (who, m.id, m.kind.id.clone(), item);
+            self.mods.interactions.push(interaction);
+        }
+
+        /// This tick's clicks on content mods' mobs, by player UUID, for the snapshot.
+        fn take_mod_interactions(&mut self) -> std::sync::Arc<[horizon_mods::EntityInteraction]> {
+            let pending = std::mem::take(&mut self.mods.interactions);
+            let pending = pending.into_iter().filter_map(|(who, mob, kind, item)| {
+                let player = match who {
+                    Who::Local => self.player_uuid_string(),
+                    Who::Uuid(u) => uuid_string(u),
+                    Who::Conn(c) => {
+                        let guests = self.lan.iter().flat_map(|h| &h.hub.guests);
+                        uuid_string(guests.into_iter().find(|g| g.conn == c)?.uuid)
+                    }
+                };
+                Some(horizon_mods::EntityInteraction {
+                    player,
+                    mob,
+                    kind,
+                    item,
+                })
+            });
+            pending.collect::<Vec<_>>().into()
         }
 
         /// A player broke (or placed) `state` at `pos`: the player acting now.

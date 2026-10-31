@@ -5,10 +5,11 @@
 //! and burns what is around the player, `/hover` lifts it with gravity off, and `/land`
 //! lets gravity back. `/raise <kind>` spawns one beside the player, `/grow <scale>` sizes the
 //! nearest, `/attack` sets it on the nearest player, `/label <key> <value>` stores a string on it
-//! (kept in its save) and `/info` says what it is.
+//! (kept in its save) and `/info` says what it is. Right clicks tell the player what they
+//! held; a bone stores their UUID as the mob's `owner`.
 use horizon_mod_sdk::server::{
     Area, Args, Argument, Entity, Order, Player, Point, Registration, ServerMod, Target, Walk,
-    entities,
+    entities, players,
 };
 
 /// How far the orders reach, in blocks.
@@ -44,6 +45,7 @@ impl ServerMod for MobOrders {
         Ok((
             MobOrders,
             Registration::new()
+                .on_tick()
                 .command("heel")
                 .command("halt")
                 .command_with("animate", [Argument::word("name")])
@@ -59,6 +61,22 @@ impl ServerMod for MobOrders {
                 .command_with("label", [Argument::word("key"), Argument::word("value")])
                 .command("info"),
         ))
+    }
+
+    fn tick(&mut self, _tick: u64) {
+        for click in entities::interactions() {
+            let item = click.item.as_deref().unwrap_or("nothing");
+            players::tell(
+                &click.player,
+                &format!("{} #{} noticed you (holding {item})", click.kind, click.mob),
+            );
+            if item == "minecraft:bone" {
+                let _ = entities::give_orders(&[(
+                    click.mob,
+                    Order::SetData(vec![("owner".into(), Some(click.player))]),
+                )]);
+            }
+        }
     }
 
     fn command(

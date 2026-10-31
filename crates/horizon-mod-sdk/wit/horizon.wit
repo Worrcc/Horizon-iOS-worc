@@ -746,6 +746,15 @@ interface entities {
         /// Seconds those not immune to fire burn after, at most 30.
         fire: u32,
     }
+    /// A player's right click on a content mod's mob.
+    record interaction {
+        /// The player's UUID, as `players.online` has it.
+        player: string,
+        mob: u32,
+        kind: string,
+        /// What the player held in the hand they used, `minecraft:beef`, ...
+        item: option<string>,
+    }
     /// Whom a mob attacks.
     variant target {
         none,
@@ -792,6 +801,11 @@ interface entities {
     /// dimension, nearest first, at most 256. Players are
     /// `players.online`'s.
     near: func(dimension: string, at: point, radius: f64) -> list<entity>;
+    /// The right clicks players made on content mods' mobs during the last
+    /// tick, in order, at most 256: feeding, taming, mounting are the mod's
+    /// to decide. The game's own use of the click (a lead, a name tag) still
+    /// happens.
+    interactions: func() -> list<interaction>;
     /// Orders, by mob id, to content mods' mobs: checked now (an error
     /// queues none) and carried out in order before their dimension's next
     /// tick; an order to a mob gone by then is dropped. At most 1024 per

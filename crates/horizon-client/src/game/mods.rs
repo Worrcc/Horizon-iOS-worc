@@ -83,6 +83,10 @@ pub(super) struct ModsState {
     /// dimension's next tick.
     #[cfg(feature = "mods")]
     pub(super) mob_spawns: Vec<super::server_mods::run::ModSpawn>,
+    /// Players' right clicks on content mods' mobs this tick: who, the mob, its kind and the
+    /// item held, for capability `entities` at the tick's end.
+    #[cfg(feature = "mods")]
+    pub(super) interactions: Vec<(super::server_mods::Who, u32, String, Option<String>)>,
     /// `command.run` lines for this window's own world, run on the next tick:
     /// run at once, their chat lines would reach the mods while their output
     /// is still being shown, and a mod answering its own lines would recurse.
@@ -355,6 +359,7 @@ impl Game<'_> {
         let on = |id: &str| enabled.contains(id) || dev_ids.iter().any(|d| d == id);
         let mods = Mods::load_for(self.mod_runs(), &paths, on, vanilla_command);
         self.mods.mods = mods;
+        self.mods.interactions.clear();
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));
         // Entries were replaced wholesale: a screen's owner index is stale.
@@ -526,6 +531,7 @@ impl Game<'_> {
             players,
             entities: Default::default(),
             mob_kinds: Default::default(),
+            interactions: Default::default(),
             view_hit: self.mod_view_hit(),
             recipes,
             known_recipes,
