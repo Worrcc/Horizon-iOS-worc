@@ -30,6 +30,7 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         precise: false,
         needs_sync: false,
         leash: None,
+        animation: None,
     }
 }
 

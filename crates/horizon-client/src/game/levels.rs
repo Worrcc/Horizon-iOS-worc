@@ -122,6 +122,12 @@ impl Levels {
             .iter_mut()
             .map(|(d, p)| (*d, &mut p.world.chunks))
     }
+    /// The mobs of each level not in place (capability `entities` reads
+    /// them, and keeps orders to them for their level's next tick).
+    #[cfg_attr(not(feature = "mods"), allow(dead_code))]
+    pub(super) fn parked_mobs(&self) -> impl Iterator<Item = (Dim, &[Mob])> {
+        self.parked.iter().map(|(d, p)| (*d, p.mobs.as_slice()))
+    }
     /// The levels that are not in place, by dimension.
     pub(super) fn parked_dims(&self) -> Vec<Dim> {
         self.parked.keys().copied().collect()
@@ -338,6 +344,7 @@ impl Game<'_> {
             self.update_world();
             // What server mods set in this level since its last tick.
             self.apply_mod_block_writes();
+            self.apply_mod_orders();
             result = if paused {
                 self.tick_lan(true);
                 Ok(())

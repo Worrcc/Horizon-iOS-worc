@@ -220,6 +220,11 @@ pub fn family(s: Species) -> Family {
     }
 }
 pub fn register(m: &mut Mob) {
+    // Server mods' orders come first for content mods' mobs (mobs/orders.rs).
+    if !m.kind.id.starts_with("minecraft:") {
+        m.ai.goals
+            .add(super::orders::PRIORITY, super::orders::Obey::default());
+    }
     // Raider subclasses call super.registerGoals() first.
     super::raider::register(m);
     match family(m.species()) {

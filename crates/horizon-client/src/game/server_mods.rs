@@ -48,19 +48,23 @@ impl Game<'_> {
         false
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
+    pub(super) fn apply_mod_orders(&mut self) {}
 }
 
 #[cfg(feature = "mods")]
 mod run {
     use super::{Game, LanHost, ModEvent, Who};
     use horizon_client::chunk_map::ChunkMap;
+    use horizon_client::mobs::{Damage, DamageKind, Mob, Who as MobWho};
     use horizon_client::{
         command::args::GameMode as Mode,
         lan::data::component_nbt,
         text::{self, Text},
     };
+    use horizon_core::geometry::Vec3;
     use horizon_mods::{
-        ArgumentKind, BlockPos, GameMode, Output, ServerCommand, ServerPlayer, WorldView,
+        ArgumentKind, BlockPos, EntityArea, EntityOrder, GameMode, ModEntity, Output,
+        ServerCommand, ServerPlayer, Snapshot, WorldView,
     };
     use horizon_protocol::packets::play::{self, Clientbound as C};
     use horizon_world::registry::{BlockRegistry, BlockStateId};
@@ -69,6 +73,34 @@ mod run {
     /// Blocks queued for levels that don't tick (another dimension, in-frame)
     /// are kept up to this many; the oldest go first.
     const MAX_QUEUED_WRITES: usize = 1 << 16;
+    /// Orders to mobs in levels that don't tick are kept up to this many, as blocks are.
+    const MAX_QUEUED_ORDERS: usize = 1 << 14;
+
+    /// A mob as capability `entities` reads it.
+    fn mod_entity(m: &Mob, dimension: &str) -> ModEntity {
+        ModEntity {
+            id: m.id,
+            kind: m.kind.id.clone(),
+            dimension: dimension.to_owned(),
+            x: m.position.x,
+            y: m.position.y,
+            z: m.position.z,
+            yaw: m.body_yaw,
+            health: m.health,
+            max_health: horizon_client::mobs::finalize::max_health(m),
+            on_ground: m.on_ground,
+            target: match m.ai.target {
+                Some(MobWho::Mob(id)) => Some(id),
+                _ => None,
+            },
+            age: m.age,
+            animation: m
+                .orders
+                .animation
+                .as_ref()
+                .map(|(name, _)| name.to_string()),
+        }
+    }
 
     /// Capability `world`'s view during a call: the levels' chunks, moved out
     /// of the game for the call and back after it (no copy).
@@ -253,7 +285,7 @@ mod run {
                 return;
             }
             let players = self.server_players(None);
-            let snapshot = self.mod_snapshot_with(players.clone());
+            let snapshot = self.server_snapshot(players.clone());
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             let before = std::mem::take(&mut self.mods.players);
@@ -313,6 +345,7 @@ mod run {
             self.mods.players = players;
             self.show_mod_output();
             self.apply_mod_block_writes();
+            self.apply_mod_orders();
         }
 
         /// Players' command trees list the running server mods' commands
@@ -366,6 +399,133 @@ mod run {
                     *chunks = dims.swap_remove(i).1;
                 }
             }
+        }
+
+        /// The snapshot server mods read: the game's, the players, and the loaded mobs when a
+        /// running mod has capability `entities`.
+        fn server_snapshot(&mut self, players: Vec<ServerPlayer>) -> Snapshot {
+            let mut snapshot = self.mod_snapshot_with(players);
+            if self.mods.entities {
+                let here = self.dim.id();
+                let mut all: Vec<ModEntity> = (self.mobs.iter())
+                    .filter(|m| m.alive() && !m.removed)
+                    .map(|m| mod_entity(m, here))
+                    .collect();
+                for (dim, mobs) in self.levels.parked_mobs() {
+                    let alive = mobs.iter().filter(|m| m.alive() && !m.removed);
+                    all.extend(alive.map(|m| mod_entity(m, dim.id())));
+                }
+                snapshot.entities = all.into();
+            }
+            snapshot
+        }
+
+        /// Carries out server mods' orders to the mobs of the level in place, in order;
+        /// those to mobs of another level wait for it, and those to mobs gone are dropped.
+        pub(in crate::game) fn apply_mod_orders(&mut self) {
+            if self.mods.mob_orders.is_empty() {
+                return;
+            }
+            let orders = std::mem::take(&mut self.mods.mob_orders);
+            let parked: std::collections::HashSet<u32> = (self.levels.parked_mobs())
+                .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
+                .collect();
+            for (id, order) in orders {
+                match self.mobs.iter().position(|m| m.id == id && !m.removed) {
+                    Some(i) => self.apply_mod_order(i, order),
+                    None if parked.contains(&id) => self.mods.mob_orders.push((id, order)),
+                    None => {}
+                }
+            }
+        }
+
+        fn apply_mod_order(&mut self, i: usize, order: EntityOrder) {
+            let m = &mut self.mobs[i];
+            match order {
+                EntityOrder::WalkTo(w) => m.orders.walk = Some(([w.to.x, w.to.y, w.to.z], w.speed)),
+                EntityOrder::Halt => (m.orders.walk, m.orders.look) = (None, None),
+                EntityOrder::LookAt(p) => m.orders.look = Some([p.x, p.y, p.z]),
+                EntityOrder::Push(p) => {
+                    m.velocity = Vec3::new(p.x, p.y, p.z);
+                    m.needs_sync = true;
+                }
+                EntityOrder::Gravity(on) => m.no_gravity = !on,
+                EntityOrder::Animate(name) => {
+                    let age = m.age as f32;
+                    m.orders.animation = name.map(|n| (std::sync::Arc::from(n), age));
+                }
+                EntityOrder::HurtArea(area) => {
+                    let id = m.id;
+                    self.mod_hurt_area(id, &area);
+                }
+                // Entity.discard: gone, no death, no drops.
+                EntityOrder::Discard => m.removed = true,
+            }
+        }
+
+        /// `hurt-area`: every living thing in the ball but the mob takes the amount as the
+        /// mob's attack (`mob_attack`), then burns: mobs of the level, the player and the
+        /// level's other players.
+        fn mod_hurt_area(&mut self, source: u32, area: &EntityArea) {
+            let center = [area.center.x, area.center.y, area.center.z];
+            let r2 = area.radius * area.radius;
+            // The nearest point of a box to the centre is within the radius.
+            let reaches = move |feet: [f64; 3], half: f64, height: f64| {
+                let lo = [feet[0] - half, feet[1], feet[2] - half];
+                let hi = [feet[0] + half, feet[1] + height, feet[2] + half];
+                let d2: f64 = (0..3)
+                    .map(|i| (center[i].clamp(lo[i], hi[i]) - center[i]).powi(2))
+                    .sum();
+                d2 <= r2
+            };
+            let (amount, fire) = (area.amount, area.fire as i32 * 20);
+            let mut mobs = std::mem::take(&mut self.mobs);
+            for m in mobs.iter_mut().filter(|m| m.alive() && m.id != source) {
+                let (w, h) = (m.kind.width / 2.0, m.kind.height);
+                if !reaches([m.position.x, m.position.y, m.position.z], w, h) {
+                    continue;
+                }
+                if amount > 0.0 {
+                    m.damage(
+                        amount,
+                        Damage {
+                            kind: DamageKind::MobAttack,
+                            attacker: Some(MobWho::Mob(source)),
+                            from: Some(center),
+                        },
+                    );
+                }
+                if fire > 0 {
+                    m.ignite_for_ticks(fire);
+                }
+            }
+            self.mobs = mobs;
+            let hurt = move |g: &mut Self| {
+                let Some(p) = g.player.as_ref().map(|p| p.position) else {
+                    return;
+                };
+                if !reaches([p.x, p.y, p.z], 0.3, 1.8) {
+                    return;
+                }
+                if amount > 0.0 {
+                    g.hurt_player_from(
+                        amount,
+                        Some(center),
+                        "minecraft:mob_attack",
+                        Some(Some(source)),
+                    );
+                }
+                if fire > 0
+                    && let Some(p) = g.player.as_mut()
+                    && let Err(e) = p.ignite_for_ticks(fire)
+                {
+                    log::debug!("Horizon: a server mod's fire: {e}");
+                }
+            };
+            if self.options.execution_role.is_client() && self.remote.is_none() {
+                hurt(self);
+            }
+            self.each_guest_hit(hurt);
         }
 
         /// Makes the blocks server mods set in the level in place, in order,
@@ -436,13 +596,14 @@ mod run {
             let Some(me) = players.first().cloned() else {
                 return false;
             };
-            let snapshot = self.mod_snapshot_with(players);
+            let snapshot = self.server_snapshot(players);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             let owned = self.mods.mods.server_command(&me, line);
             self.return_world();
             self.show_mod_output();
             self.apply_mod_block_writes();
+            self.apply_mod_orders();
             owned
         }
 
@@ -465,7 +626,7 @@ mod run {
             let Some(me) = players.iter().find(|p| p.id == id).cloned() else {
                 return false;
             };
-            let snapshot = self.mod_snapshot_with(players);
+            let snapshot = self.server_snapshot(players);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             let owned = self.mods.mods.server_command(&me, line);
@@ -475,6 +636,7 @@ mod run {
             }
             self.route_mod_output(Some(host));
             self.apply_mod_block_writes();
+            self.apply_mod_orders();
             true
         }
 
@@ -566,6 +728,17 @@ mod run {
                         queued.drain(..over);
                         log::warn!(
                             "Horizon: mod {name} set more blocks than wait for their level: {over} dropped"
+                        );
+                    }
+                }
+                Output::Orders { name, orders } => {
+                    let queued = &mut self.mods.mob_orders;
+                    queued.extend(orders);
+                    if queued.len() > MAX_QUEUED_ORDERS {
+                        let over = queued.len() - MAX_QUEUED_ORDERS;
+                        queued.drain(..over);
+                        log::warn!(
+                            "Horizon: mod {name} gave more orders than wait for their level: {over} dropped"
                         );
                     }
                 }

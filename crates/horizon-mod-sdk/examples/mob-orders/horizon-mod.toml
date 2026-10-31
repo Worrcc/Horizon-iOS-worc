@@ -1,0 +1,9 @@
+id = "mob_orders"
+name = "Mob Orders"
+version = "0.1.0"
+description = "Orders to content mods' mobs near you: /heel, /halt, /animate <name>, /breathe [amount], /hover."
+authors = ["Horizon"]
+api = "0.3"
+side = "server"
+capabilities = ["players", "entities"]
+experimental = ["entities"]

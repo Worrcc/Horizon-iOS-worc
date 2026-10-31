@@ -71,6 +71,14 @@ pub(super) struct ModsState {
     /// tick.
     #[cfg(feature = "mods")]
     pub(super) block_writes: Vec<(String, horizon_mods::BlockChange)>,
+    /// A running server mod has capability `entities`: its calls get the
+    /// loaded mobs to read.
+    #[cfg(feature = "mods")]
+    pub(super) entities: bool,
+    /// Server mods' orders to mobs, by mob id, carried out before their
+    /// level's next tick.
+    #[cfg(feature = "mods")]
+    pub(super) mob_orders: Vec<(u32, horizon_mods::EntityOrder)>,
     /// `command.run` lines for this window's own world, run on the next tick:
     /// run at once, their chat lines would reach the mods while their output
     /// is still being shown, and a mod answering its own lines would recurse.
@@ -329,6 +337,7 @@ impl Game<'_> {
     fn list_mods(&mut self) {
         self.mods.server = self.mods.mods.runs_server();
         self.mods.world = self.mods.mods.wants_world();
+        self.mods.entities = self.mods.mods.wants_entities();
         let dev = &self.mods.dev;
         self.settings.mods.installed = self
             .mods
@@ -474,6 +483,7 @@ impl Game<'_> {
             cps,
             font_widths: self.mods.font_widths.clone(),
             players,
+            entities: Default::default(),
             view_hit: self.mod_view_hit(),
             recipes,
             known_recipes,
@@ -704,7 +714,8 @@ impl Game<'_> {
                 server @ (Output::Tell { .. }
                 | Output::Broadcast { .. }
                 | Output::Reply { .. }
-                | Output::SetBlocks { .. }) => {
+                | Output::SetBlocks { .. }
+                | Output::Orders { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
                     continue;
                 }

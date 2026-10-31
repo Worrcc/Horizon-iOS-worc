@@ -2909,6 +2909,7 @@ impl Game<'_> {
             precise: false,
             needs_sync: false,
             leash: None,
+            animation: None,
         })
     }
 }

@@ -343,9 +343,11 @@ A mob can bring its own model and animations in GeckoLib's format, as Blockbench
 
 What deep-tier mods such as Ice and Fire also need, in this order:
 
-1. **Behaviour in mod code:** an `entity` interface for a mod's WASM to steer its mobs (goals,
-   targets, attacks, flight, breath attacks, growth stages, taming, riding), budgeted like the
-   other hooks, with vanilla's goals reusable, and to choose which animation plays.
+1. **Behaviour in mod code:** started. A server mod with capability `entities`
+   ([mods.md](mods.md), server mods) reads the mobs and orders the content mods' own: walk to,
+   look at, push (flight), gravity, play an animation (players' games see it), hurt and burn an
+   area (breath), discard. Still to come: spawning from mod code, choosing targets, taming,
+   riding, growth stages, and data a mob keeps in its save.
 2. **Spawning and worldgen:** natural spawn rules per biome, and structures with their mobs (the
    carried-over worldgen covers the structure files).
 3. **Block entities and screens:** for machines like forges (API 0.4).

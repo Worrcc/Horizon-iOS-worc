@@ -7,15 +7,33 @@
 //! `Tracker` is the set of entities it has been paired with.
 use super::tracking;
 use horizon_protocol::{
-    buf::pack_degrees,
+    buf::{Writer, pack_degrees},
     entity_data::{Value, serializer},
     item::Stack,
+    packets::configuration::CustomPayload,
     packets::play::{
         self, AddEntity, AttributeSnapshot, EntityPositionSync, MoveEntity, MoveEntityPos,
         MoveEntityPosRot, MoveEntityRot, PositionPath, RotateHead, SetEntityData, SetEntityLink,
         SetEntityMotion, SetEquipment, SetPassengers, UpdateAttributes, VecDelta,
     },
 };
+use std::sync::Arc;
+
+/// The channel a Horizon server tells its players' games which animation a server mod's order
+/// plays on a content mod's mob (capability `entities`): the mob's id (a varint), then the
+/// animation's name, empty for none.
+pub const ANIMATION_CHANNEL: &str = "horizon:entity_animation";
+
+/// The payload telling clients the animation `entity` plays now.
+pub fn animation_payload(entity: i32, animation: Option<&str>) -> play::Clientbound {
+    let mut w = Writer::new();
+    w.varint(entity);
+    w.string(animation.unwrap_or(""));
+    play::Clientbound::CustomPayload(CustomPayload {
+        channel: ANIMATION_CHANNEL.into(),
+        data: w.data,
+    })
+}
 
 /// The attribute instances of `now` that differ from what `sent` held (an
 /// instance is never removed: one that disappears is left as it was sent).
@@ -67,6 +85,9 @@ pub struct EntityState {
     pub needs_sync: bool,
     /// `Leashable.getLeashHolder`: the entity holding its lead.
     pub leash: Option<i32>,
+    /// A content mod's mob: the animation a server mod's order plays and the tick it began
+    /// ([`ANIMATION_CHANNEL`]).
+    pub animation: Option<(Arc<str>, u32)>,
 }
 
 impl EntityState {
@@ -90,6 +111,7 @@ impl EntityState {
         self.precise = false;
         self.needs_sync = false;
         self.leash = None;
+        self.animation = None;
     }
 }
 
@@ -224,6 +246,8 @@ struct ServerEntity {
     was_riding: bool,
     /// The lead's holder the clients were told of.
     leash: Option<i32>,
+    /// The animation the clients were told of.
+    animation: Option<(Arc<str>, u32)>,
     /// The level tick it was last seen in, its place in that tick's list, and
     /// whether it was added in it (its first update is the next tick's).
     seen: u32,
@@ -268,6 +292,7 @@ impl ServerEntity {
             passengers: riding.passengers(e.id).to_vec(),
             was_riding: false,
             leash: e.leash,
+            animation: e.animation.clone(),
             seen: 0,
             index: 0,
             added: true,
@@ -327,6 +352,9 @@ impl ServerEntity {
                 dest,
             }));
         }
+        if let Some((name, _)) = &e.animation {
+            out.push(animation_payload(e.id, Some(name)));
+        }
     }
 
     /// Changes since the last update (ServerEntity.sendChanges): movement and
@@ -339,6 +367,10 @@ impl ServerEntity {
             out.push(riding.set_passengers(e.id));
             self.passengers.clear();
             self.passengers.extend_from_slice(passengers);
+        }
+        if e.animation != self.animation {
+            out.push(animation_payload(e.id, e.animation.as_ref().map(|a| &*a.0)));
+            self.animation.clone_from(&e.animation);
         }
         // Leashable.setLeashedTo / dropLeash: sendToTrackingPlayers at once.
         if e.leash != self.leash {
@@ -918,6 +950,7 @@ mod tests {
             precise: false,
             needs_sync: false,
             leash: None,
+            animation: None,
         }
     }
 

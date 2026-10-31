@@ -7,22 +7,30 @@
 //! `KeyframeAnimations.degreeVec` does for animations made in the same tools.
 use super::{Mob, Part, Polygon, anim::Poses, anim::State, keyframes::Animation};
 use serde_json::Value;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 /// The layer key of a content mod entity's own model in its type's layers.
 pub const MODEL_LAYER: &str = "horizon#model";
 
 /// What a mod entity's own animations play: one of the moving or standing loops, and the
-/// attack over them while it swings (as GeckoLib mods commonly wire their controllers).
+/// attack over them while it swings (as GeckoLib mods commonly wire their controllers), or
+/// what a server mod's `animate` order names (mobs/orders.rs).
 #[derive(Clone, Debug, Default)]
 pub struct Animations {
     pub idle: Option<Animation>,
     pub walk: Option<Animation>,
     pub attack: Option<Animation>,
+    /// Every animation of the model's file, by name.
+    pub all: HashMap<String, Animation>,
+    /// Those that hold their last frame when they end (`"loop": "hold_on_last_frame"`).
+    pub holds: HashSet<String>,
 }
 
-/// A mod entity's model and animations from the content root: the geometry, and the states'
-/// animations from the model's animation file.
+/// A mod entity's model and animations from the content root: the geometry, and when the
+/// model has an animation file, its animations and the states' choice of them.
 pub fn load(
     root: &Path,
     model: &str,
@@ -31,22 +39,32 @@ pub fn load(
     let (ns, path) = model
         .split_once(':')
         .ok_or("a model is <namespace>:<path>")?;
-    let read = |file: String| -> Result<Value, String> {
-        let bytes = std::fs::read(root.join(&file)).map_err(|e| format!("{file}: {e}"))?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))
+    let read = |file: &Path| -> Result<Value, String> {
+        let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", file.display()))
     };
-    let part = parse(&read(format!("assets/{ns}/geo/{path}.geo.json"))?)?;
-    if states.is_empty() {
+    let part = parse(&read(
+        &root.join(format!("assets/{ns}/geo/{path}.geo.json")),
+    )?)?;
+    let file = root.join(format!("assets/{ns}/animations/{path}.animation.json"));
+    if states.is_empty() && !file.is_file() {
         return Ok((part, None));
     }
-    let mut all: HashMap<String, Animation> = super::bedrock_anim::parse(&read(format!(
-        "assets/{ns}/animations/{path}.animation.json"
-    ))?)?;
-    let mut take = |state: &str| -> Result<Option<Animation>, String> {
+    let json = read(&file)?;
+    let all = super::bedrock_anim::parse(&json)?;
+    let holds = json["animations"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, a)| a["loop"] == "hold_on_last_frame")
+        .map(|(name, _)| name.clone())
+        .collect();
+    let take = |state: &str| -> Result<Option<Animation>, String> {
         let Some(name) = states.get(state).and_then(Value::as_str) else {
             return Ok(None);
         };
-        all.remove(name)
+        all.get(name)
+            .cloned()
             .map(Some)
             .ok_or_else(|| format!("no animation {name} for {state}"))
     };
@@ -54,18 +72,33 @@ pub fn load(
         idle: take("idle")?,
         walk: take("walk")?,
         attack: take("attack")?,
+        all,
+        holds,
     };
     Ok((part, Some(animations)))
 }
 
-/// A mod entity's pose for the frame: its head turned to where it looks, the walk loop while
-/// its limbs swing (GeckoLib's `isMoving`, beyond 0.15) or else the idle one, both in real
-/// time, and the attack through its swing.
+/// A mod entity's pose for the frame: its head turned to where it looks, then the animation
+/// an order plays (once, or looping, or held at its end as its file says), or else the walk
+/// loop while its limbs swing (GeckoLib's `isMoving`, beyond 0.15) or the idle one, both in
+/// real time, and the attack through its swing.
 pub fn animate(m: &Mob, s: &State, p: &mut Poses, a: &Animations) {
     if p.has("head") {
         let head = p.get("head");
         head[3] += s.x_rot.to_radians();
         head[4] += s.y_rot.to_radians();
+    }
+    if let Some((name, start)) = &m.orders.animation
+        && let Some(ordered) = a.all.get(&**name)
+    {
+        let millis = ((s.age - start).max(0.0) * 50.0) as i64;
+        let end = (ordered.length * 1000.0) as i64;
+        if ordered.looping || millis <= end {
+            return ordered.apply(millis, 1.0, p);
+        }
+        if a.holds.contains(&**name) {
+            return ordered.apply(end, 1.0, p);
+        }
     }
     let millis = (s.age * 50.0) as i64;
     let moving = s.speed > 0.15;

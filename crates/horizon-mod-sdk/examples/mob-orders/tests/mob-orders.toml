@@ -1,0 +1,10 @@
+# With no content mod's mob near the player, every order says so.
+
+[[step]]
+join = "Alex"
+command = "animate walk"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "heel"
+expect.feedback = "0 mobs ordered"

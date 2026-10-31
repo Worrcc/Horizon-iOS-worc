@@ -54,6 +54,7 @@ pub mod monster_brain;
 pub mod nautilus;
 pub mod nav;
 pub mod nether;
+pub mod orders;
 pub mod panda;
 pub mod parrot;
 pub mod path;
@@ -1019,6 +1020,8 @@ pub struct Mob {
     /// `Entity.firstTick`: no splash for a mob that appears in water.
     pub first_tick: bool,
     pub no_gravity: bool,
+    /// Server mods' orders (capability `entities`): content mods' mobs only.
+    pub orders: orders::Orders,
     /// `Entity.mainSupportingBlockPos`: the block it stood on after its last
     /// move.
     pub supporting: Option<[i32; 3]>,
@@ -2003,6 +2006,7 @@ impl Mob {
             was_eye_in_water: false,
             first_tick: true,
             no_gravity: false,
+            orders: orders::Orders::default(),
             supporting: None,
             no_ai: false,
             silent: false,

@@ -481,6 +481,7 @@ its component targets the WIT world `horizon-server-mod` instead of
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
 | `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
+| `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, animation), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below) |
 
 | Hook (export `server-events`) | When |
 |---|---|
@@ -495,7 +496,8 @@ Capabilities that act on a local player (`game-read`, `chat`, `hud`) are for
 client mods; `players` is for server mods. In Rust: `impl
 horizon_mod_sdk::server::ServerMod` and `export_server_mod!`; the example is
 [`welcome`](../crates/horizon-mod-sdk/examples/welcome/src/lib.rs), and with
-`world`, [`beacons`](../crates/horizon-mod-sdk/examples/beacons/src/lib.rs).
+`world`, [`beacons`](../crates/horizon-mod-sdk/examples/beacons/src/lib.rs), and with
+`entities`, [`mob-orders`](../crates/horizon-mod-sdk/examples/mob-orders/src/lib.rs).
 
 **Typed commands.** Each command in `registration.commands` lists its
 arguments, in order: a name and a kind, required or optional (optional ones
@@ -533,6 +535,29 @@ that code. Changes for a dimension whose level isn't ticking wait for it
 (in-frame single player ticks only the player's), up to 65,536 blocks; a
 change in a chunk that isn't loaded when it is made is skipped, as `/setblock`
 refuses one.
+
+**Capability `entities`.** The behaviour of content mods' mobs
+([modpacks.md](modpacks.md), entities): a server mod reads the mobs as they
+were at the start of the tick and gives the content mods' own orders, which
+the game carries out in order before that mob's level ticks again (orders to
+a mob in another dimension wait for its level, up to 16,384; those to a mob
+gone by then are dropped):
+
+| Order | Does |
+|---|---|
+| `walk-to(walk)` | walks to a point at a multiple of its speed (0 to 4) by its path navigation, ahead of its own goals, until it arrives or has no path |
+| `halt` | ends walking and looking orders: its own goals take over |
+| `look-at(point)` | keeps its head turned to a point |
+| `push(point)` | sets its motion, -4 to 4 blocks per tick on each axis: flight, leaps |
+| `gravity(bool)` | whether gravity pulls it |
+| `animate(option<string>)` | plays an animation of its own model's file (docs/modpacks.md) from its start, once, looping or held at its end as the file says; none goes back to idle, walk and attack. Players' games are told on the `horizon:entity_animation` channel |
+| `hurt-area(area)` | every living thing but the mob within a radius (up to 16) of a point takes up to 1024 hit points as the mob's attack (`mob_attack`) and burns up to 30 s: a breath, a stomp. Players too, LAN guests included |
+| `discard` | removes it, with no death and no drops |
+
+Walk and look orders are a goal of the highest priority on every content
+mod's mob (`mobs/orders.rs`): while one stands, the mob's own goals that move
+or look wait. Spawning mobs, choosing their targets and riding are not orders
+yet.
 
 **Where they run.** The game that simulates the world starts the server mods
 that are on, and only that one:

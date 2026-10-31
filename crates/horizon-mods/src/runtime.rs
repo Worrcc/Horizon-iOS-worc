@@ -3,7 +3,7 @@ use crate::manifest::{Manifest, Package, Side};
 use server_bindings::{
     HorizonServerMod,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
-    horizon::mods::{players, world as mod_world},
+    horizon::mods::{entities, players, world as mod_world},
 };
 use std::{
     path::{Path, PathBuf},
@@ -54,6 +54,10 @@ use bindings::{
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
+    },
+    horizon::mods::entities::{
+        Area as EntityArea, Entity as ModEntity, Order as EntityOrder, Point as EntityPoint,
+        Walk as EntityWalk,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
     horizon::mods::world::BlockChange,
@@ -112,6 +116,13 @@ const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
+/// Orders a mod may give per `entities.give-orders` call, mobs `entities.mobs` and
+/// `entities.near` return, and `near`'s and an area's largest radius.
+pub const ORDERS_PER_CALL: usize = 1024;
+const OWN_ENTITIES: usize = 1024;
+const NEAR_ENTITIES: usize = 256;
+const NEAR_RADIUS: f64 = 64.0;
+const AREA_RADIUS: f64 = 16.0;
 /// Chat lines a mod may show per call, HUD lines and their length.
 const CHAT_PER_CALL: usize = 8;
 /// `command.run-quiet` lines one call of a mod may queue (a quiet payload's
@@ -154,6 +165,9 @@ pub struct Snapshot {
     pub font_widths: Arc<[f32]>,
     /// The players on the server, for server mods.
     pub players: Vec<ServerPlayer>,
+    /// The loaded mobs, for capability `entities`; the game fills it only
+    /// while a running mod has it ([`Mods::wants_entities`]).
+    pub entities: Arc<[ModEntity]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
@@ -230,6 +244,12 @@ pub enum Output {
         name: String,
         dimension: String,
         blocks: Vec<BlockChange>,
+    },
+    /// `entities.give-orders`: orders to content mods' mobs, by id, in order, each
+    /// checked against the tick's [`Snapshot::entities`].
+    Orders {
+        name: String,
+        orders: Vec<(u32, EntityOrder)>,
     },
     /// `ui.open-screen`: the mod's entry in `entries()`; what it shows is
     /// [`Mods::screen`].
@@ -458,6 +478,16 @@ impl Mods {
                     .is_some_and(|m| m.capabilities.contains(&crate::Capability::World))
         })
     }
+    /// Whether a running mod may use capability `entities`: only then is
+    /// [`Snapshot::entities`] worth filling.
+    pub fn wants_entities(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.status == Status::Running
+                && e.manifest
+                    .as_ref()
+                    .is_some_and(|m| m.capabilities.contains(&crate::Capability::Entities))
+        })
+    }
     /// Lends the game's world to capability `world` for the calls until
     /// [`Mods::take_world`]; with none lent, `get-block` finds nothing and
     /// `set-blocks` checks only its count.
@@ -552,6 +582,8 @@ impl Mods {
             players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
@@ -1604,6 +1636,90 @@ impl mod_world::Host for State {
         Ok(())
     }
 }
+/// A content mod's kind: any namespace but vanilla's.
+fn own_kind(kind: &str) -> bool {
+    !kind.starts_with("minecraft:")
+}
+fn finite(p: &EntityPoint) -> bool {
+    p.x.is_finite() && p.y.is_finite() && p.z.is_finite()
+}
+/// Why `entities.give-orders` refuses an order, if it does.
+fn check_order(order: &EntityOrder) -> Result<(), String> {
+    match order {
+        EntityOrder::WalkTo(w) if !finite(&w.to) || !(0.0..=4.0).contains(&w.speed) => {
+            Err("walk-to needs a point and a speed of 0 to 4".into())
+        }
+        EntityOrder::LookAt(p) if !finite(p) => Err("look-at needs a point".into()),
+        EntityOrder::Push(p) if ![p.x, p.y, p.z].iter().all(|v| (-4.0..=4.0).contains(v)) => {
+            Err("push is -4 to 4 blocks per tick on each axis".into())
+        }
+        EntityOrder::Animate(Some(name)) if name.is_empty() || name.len() > 256 => {
+            Err("animate names an animation of 1 to 256 characters".into())
+        }
+        EntityOrder::HurtArea(a)
+            if !finite(&a.center)
+                || !(0.0..=AREA_RADIUS).contains(&a.radius)
+                || !(0.0..=1024.0).contains(&a.amount)
+                || a.fire > 30 =>
+        {
+            Err("hurt-area is a radius up to 16, up to 1024 hit points, up to 30 s of fire".into())
+        }
+        _ => Ok(()),
+    }
+}
+impl entities::Host for State {
+    fn mobs(&mut self) -> Vec<ModEntity> {
+        let own = self.snapshot.entities.iter().filter(|e| own_kind(&e.kind));
+        own.take(OWN_ENTITIES).cloned().collect()
+    }
+    fn near(&mut self, dimension: String, at: EntityPoint, radius: f64) -> Vec<ModEntity> {
+        if !finite(&at) || !radius.is_finite() {
+            return Vec::new();
+        }
+        let r = radius.clamp(0.0, NEAR_RADIUS);
+        let mut near: Vec<(f64, &ModEntity)> = self
+            .snapshot
+            .entities
+            .iter()
+            .filter(|e| e.dimension == dimension)
+            .map(|e| {
+                let d = (e.x - at.x).powi(2) + (e.y - at.y).powi(2) + (e.z - at.z).powi(2);
+                (d, e)
+            })
+            .filter(|(d, _)| *d <= r * r)
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.into_iter()
+            .take(NEAR_ENTITIES)
+            .map(|(_, e)| e.clone())
+            .collect()
+    }
+    fn give_orders(&mut self, orders: Vec<(u32, EntityOrder)>) -> Result<(), String> {
+        if orders.len() > ORDERS_PER_CALL {
+            return Err(format!(
+                "{} orders: at most {ORDERS_PER_CALL} per call",
+                orders.len()
+            ));
+        }
+        for (id, order) in &orders {
+            let e = self.snapshot.entities.iter().find(|e| e.id == *id);
+            match e {
+                None => return Err(format!("no mob {id} is loaded")),
+                Some(e) if !own_kind(&e.kind) => {
+                    return Err(format!("mob {id} is {}, not a content mod's", e.kind));
+                }
+                Some(_) => check_order(order).map_err(|e| format!("mob {id}: {e}"))?,
+            }
+        }
+        if !orders.is_empty() {
+            self.out.push(Output::Orders {
+                name: self.name.clone(),
+                orders,
+            });
+        }
+        Ok(())
+    }
+}
 impl players::Host for State {
     fn online(&mut self) -> Vec<ServerPlayer> {
         self.snapshot.players.clone()
@@ -1979,4 +2095,47 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+#[cfg(test)]
+mod entity_order_tests {
+    use super::*;
+
+    fn point(x: f64, y: f64, z: f64) -> EntityPoint {
+        EntityPoint { x, y, z }
+    }
+
+    #[test]
+    fn orders_are_checked_against_their_bounds() {
+        let walk = |speed| {
+            EntityOrder::WalkTo(EntityWalk {
+                to: point(0.0, 64.0, 0.0),
+                speed,
+            })
+        };
+        assert!(check_order(&walk(1.0)).is_ok());
+        assert!(check_order(&walk(5.0)).is_err());
+        let far = EntityOrder::WalkTo(EntityWalk {
+            to: point(f64::NAN, 0.0, 0.0),
+            speed: 1.0,
+        });
+        assert!(check_order(&far).is_err());
+        assert!(check_order(&EntityOrder::Push(point(0.0, 4.0, -4.0))).is_ok());
+        assert!(check_order(&EntityOrder::Push(point(0.0, 4.5, 0.0))).is_err());
+        assert!(check_order(&EntityOrder::Animate(Some(String::new()))).is_err());
+        assert!(check_order(&EntityOrder::Animate(None)).is_ok());
+        let area = |radius, amount, fire| {
+            EntityOrder::HurtArea(EntityArea {
+                center: point(0.0, 0.0, 0.0),
+                radius,
+                amount,
+                fire,
+            })
+        };
+        assert!(check_order(&area(16.0, 1024.0, 30)).is_ok());
+        assert!(check_order(&area(17.0, 1.0, 0)).is_err());
+        assert!(check_order(&area(2.0, 2000.0, 0)).is_err());
+        assert!(check_order(&area(2.0, 1.0, 31)).is_err());
+        assert!(own_kind("ruby:golem") && !own_kind("minecraft:zombie"));
+    }
 }

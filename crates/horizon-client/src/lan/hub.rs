@@ -1719,6 +1719,7 @@ impl Hub {
             precise: false,
             needs_sync: false,
             leash: None,
+            animation: None,
         }
     }
 

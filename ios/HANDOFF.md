@@ -104,8 +104,14 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
      (`tabula.rs`): all 192 of Ice and Fire 2.0's models, and pose folders as animations. A
      converted fire dragon (red_4 texture, `tail` idle, `walk` loop) was checked in the game,
      locally only.
-  2. An `entity` interface for mod code to steer its mobs (flight, breath attacks, growth,
-     taming, riding), and to pick animations beyond idle/walk/attack.
+  2. **The `entities` interface: started** (server mods, `api = "0.3"`, experimental, API
+     level 8): `mobs`, `near`, `give-orders` (walk-to, halt, look-at, push, gravity, animate,
+     hurt-area, discard). Animations reach players' games on `horizon:entity_animation`. The
+     example `crates/horizon-mod-sdk/examples/mob-orders` (`/heel`, `/animate`, `/breathe`,
+     `/hover`) was checked in the game with the converted dragon, in-frame and on the server
+     thread. Still to come: spawning, targets, taming, riding, growth, saved mob data.
+     `horizon-ctl command` runs a command in the window, so it never reaches server mods:
+     drive them with `horizon-ctl chat "/heel"`.
   3. Spawn rules and structures with their mobs.
   4. Block entities and screens (API 0.4), for machines such as forges.
 - **Mod entities, part 1 ran in the game** (desktop, server-thread single player, with a

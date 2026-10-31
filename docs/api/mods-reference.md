@@ -19,6 +19,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `players` | [`players`](#players) | see who is on the server and message them |
 | `world` | [`world`](#world) | read and change the world's blocks |
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
+| `entities` | [`entities`](#entities) | see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them |
 
 ## World `horizon-mod`
 
@@ -31,7 +32,7 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `entities`
 - Exports (what the mod provides): `server-events`
 
 ## World `horizon-ui-mod`
@@ -686,6 +687,73 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
+
+## `entities`
+
+Access: capability `entities`.
+
+Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): the mobs on the server, and orders to the content mods' own (docs/modpacks.md, entities): where to walk, where to look, how to fly, which of their animations to play, and whom their breath hurts.
+
+### record `entity`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The mob's id on this server while it is loaded. |
+| `kind` | `string` | `minecraft:zombie`, `ruby:golem`, ... |
+| `dimension` | `string` | `minecraft:overworld`, ... |
+| `x` | `f64` | Feet position, in blocks. |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `yaw` | `f32` | Where its body faces, vanilla's yaw in degrees (0 south, 90 west). |
+| `health` | `f32` |  |
+| `max-health` | `f32` |  |
+| `on-ground` | `bool` |  |
+| `target` | `option<u32>` | The mob it attacks, by id; none for no mob (a player, or none). |
+| `age` | `u32` | Ticks it has lived since it was loaded. |
+| `animation` | `option<string>` | The animation an `animate` order plays on it now. |
+
+### record `point`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `walk`
+
+| Field | Type | |
+| --- | --- | --- |
+| `to` | `point` |  |
+| `speed` | `f64` | A multiple of its movement speed, 0 to 4. |
+
+### record `area`
+
+| Field | Type | |
+| --- | --- | --- |
+| `center` | `point` | The centre of a ball, in the mob's dimension. |
+| `radius` | `f64` | Its radius in blocks, at most 16. |
+| `amount` | `f32` | Hit points every living thing in it but the mob loses (vanilla's `mob_attack` damage from the mob), at most 1024. |
+| `fire` | `u32` | Seconds those not immune to fire burn after, at most 30. |
+
+### variant `order`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `walk-to` | `walk` | Walk to a point by its path navigation, ahead of its own goals, until it arrives or gets another order to walk or `halt`. |
+| `halt` |  | Stop walking and looking where orders said: its goals take over. |
+| `look-at` | `point` | Turn its head toward a point until another order. |
+| `push` | `point` | Set its motion in blocks per tick, each axis -4 to 4: flight, leaps and dives. |
+| `gravity` | `bool` | Whether gravity pulls it (false: it stays where it is pushed). |
+| `animate` | `option<string>` | Play one of the animations of its own model's animation file, from its start (a looping one loops); none: back to its states' (idle, walk, attack). Players' games see it too. |
+| `hurt-area` | `area` | Hurt and burn what is in an area: a breath, a stomp. |
+| `discard` |  | Remove it, with no drops (`Entity.discard`). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `mobs` | `func() -> list<entity>` | The loaded mobs of content mods' kinds (any namespace but `minecraft`), as at the start of the tick, at most 1024. |
+| `near` | `func(dimension: string, at: point, radius: f64) -> list<entity>` | Every loaded mob within `radius` (at most 64) blocks of a point in a dimension, nearest first, at most 256. Players are `players.online`'s. |
+| `give-orders` | `func(orders: list<tuple<u32, order>>) -> result<_, string>` | Orders, by mob id, to content mods' mobs: checked now (an error queues none) and carried out in order before their dimension's next tick; an order to a mob gone by then is dropped. At most 1024 per call. |
 
 ## `server-events`
 
