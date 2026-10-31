@@ -21,6 +21,8 @@ pub struct Orders {
     pub walk: Option<([f64; 3], f64)>,
     /// Keep its head turned to this point.
     pub look: Option<[f64; 3]>,
+    /// Explicit player target, by UUID; a transient AI order, not saved.
+    pub target_player: Option<[i32; 4]>,
     /// The animation an order plays (mobs/geo.rs `animate`), and the age (ticks) it started at:
     /// elapsed ticks are `age.wrapping_sub(start)`, so a start before the age a loaded mob
     /// begins at (0) still counts right.

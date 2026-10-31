@@ -524,6 +524,39 @@ Some(64)).optional()])`, read with `args.integer("height")`; `command(name)`
 alone takes free text, an optional `text` argument named `args`
 (`args.text()` is the line as typed either way).
 
+**API level 10: feeding and specific players.** Capability `players` adds
+`take-item(player, item, count) -> result<u32, string>` and
+`give-item(player, item, count) -> result<_, string>`. Players are UUIDs;
+items are registry ids (`minecraft:beef`, `ruby:scale`), validated against
+vanilla and loaded content mods. Unknown items and offline players are errors.
+Taking removes up to `count` by item id, main hand first, then the remaining
+inventory slots, armor and off hand, and returns the actual number removed.
+Creative removes nothing and reports `count`, as vanilla feeding does.
+Calls share the real inventories: repeated takes, even from different mods
+in the same tick, cannot consume the same item twice. Giving merges matching
+plain stacks, fills empty inventory slots, and drops overflow at the player's
+feet before that dimension's next tick. Each give accepts at most 100 stacks,
+as `/give` does. Changed inventories are sent to their clients. These calls
+work for the in-frame player and every connection on the server thread, LAN
+and dedicated servers, including players in other dimensions.
+
+`entities.interactions()` now reports `sneaking` at the click and `hand`
+(`main_hand` or `off_hand`). `target(player(uuid))` chooses that online
+player, even if another is nearer; normal targetability still applies.
+Unknown/offline UUIDs reject the order batch; an order whose player leaves
+or is in another dimension when applied is dropped. Target choices are
+transient, like the existing target order. Rebuild experimental server mods
+against the changed interaction and target types.
+
+The `mob-orders` example demonstrates `/feed` (one beef for the nearest mob),
+`/gift <item> <count>`, and `/attackme`. A sneak-click with a bone labels
+`owner` and `tamed`; a click with beef consumes one beef with `take-item`
+and heals the mob. It respects creative's free feeding.
+
+The resource-free checker and script driver use shared inventory counts,
+validate item identifier syntax, and have no slot capacity; the running game
+checks registry membership, per-item stack limits and overflow drops.
+
 **Capability `world`.** API level 9 adds read-only `game-rule(name) ->
 option<string>` and `difficulty() -> string`: the server's current rule values
 (`"true"`, `"false"`, or a decimal integer), and `peaceful`, `easy`, `normal`,
@@ -581,7 +614,7 @@ gone by then are dropped):
 | `particles(particles)` | a vanilla particle type with no options (`name`, `at`, `delta`, finite nonnegative `speed`, `count` at most 256), sent as vanilla's level-particles packet within 32 blocks in the mob's dimension; zero count sends one with velocity `delta * speed`. Names are checked now; unknown sounds and particles, or particles needing options, reject the entire batch |
 | `hurt-area(area)` | every living thing but the mob within a radius (up to 16) of a point takes up to 1024 hit points as the mob's attack (`mob_attack`) and burns up to 30 s: a breath, a stomp. Players too, LAN guests included |
 | `discard` | removes it, with no death and no drops |
-| `target(target)` | whom it attacks with its template's own attacks: `none`, `mob(id)` or `nearest-player` (the player it sees) |
+| `target(target)` | whom it attacks with its template's own attacks: `none`, `mob(id)`, `nearest-player` (the player it sees), or API level 10's `player(uuid)` |
 | `scale(f32)` | its `minecraft:scale`, 0.0625 to 16: growth. Its box and model follow on every player's game, and it is kept in its save |
 | `attribute(attribute-change)` | sets a base value (`name`, `value`, finite 0..1024): `max_health`, `movement_speed`, `flying_speed`, `attack_damage`, `attack_knockback`, `armor`, `armor_toughness`, `knockback_resistance`, `follow_range`, or `step_height`. Vanilla bounds still limit effective values (e.g. armor at most 30). Stored in vanilla's `attributes` save list and synced where vanilla syncs the attribute. Raising max health does not heal; lowering it clamps health |
 | `heal(f32)` | `LivingEntity.heal`: adds a finite amount to positive health and clamps to 0..max health; never revives dead mobs. Negative amounts follow vanilla and reduce health |
@@ -596,7 +629,7 @@ animation an order plays and the data are kept in the mob's save
 (`horizon:animation`, `horizon:data`). Taming and riding are not orders yet.
 `interactions()` lets a mod build taming with `set-data` (`owner` = player UUID)
 and `walk-to`: the game's own use of the click still happens, and reading
-the interaction consumes no items.
+the interaction consumes no items; a mod uses `players.take-item` to feed it.
 
 **Where they run.** The game that simulates the world starts the server mods
 that are on, and only that one:

@@ -666,6 +666,8 @@ Capability `players`, server mods only (manifest `api = "0.3"`, experimental): t
 | `online` | `func() -> list<player>` | The players online, in the order they joined. |
 | `tell` | `func(player: string, text: string) -> bool` | A system message to one player, after the mod's name; false when no player with that id is online. Up to 8 messages per call. |
 | `broadcast` | `func(text: string)` | A system message to every player and the server's log, after the mod's name. Counts toward the same 8 per call. |
+| `take-item` | `func(player: string, item: string, count: u32) -> result<u32, string>` | Remove up to count by registry id, main hand first, then the rest of the inventory (including armor and off hand). Creative consumes none but reports count. The return value and subsequent calls see the real inventory now; unknown items or offline players are errors. |
+| `give-item` | `func(player: string, item: string, count: u32) -> result<_, string>` | Add plain items to a player's inventory; drop overflow at their feet before that dimension's next tick. At most 100 stacks per call, as /give. Unknown items or offline players are errors. |
 
 ## `world`
 
@@ -723,7 +725,7 @@ Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): 
 | `max-health` | `f32` |  |
 | `on-ground` | `bool` |  |
 | `target` | `option<u32>` | The mob it attacks, by id; none for no mob (a player, or none). |
-| `target-player` | `bool` | It attacks a player: the nearest it sees. |
+| `target-player` | `bool` | It attacks a player: the nearest it sees or one selected by UUID. |
 | `scale` | `f32` | Its `minecraft:scale`: 1 is its type's size. |
 | `data` | `list<tuple<string, string>>` | What mods stored on it (`set-data`, `spawn`), kept in its save. |
 | `age` | `u32` | Ticks it has lived since it was loaded. |
@@ -789,6 +791,8 @@ A player's right click on a content mod's mob.
 | `mob` | `u32` |  |
 | `kind` | `string` |  |
 | `item` | `option<string>` | What the player held in the hand they used, `minecraft:beef`, ... |
+| `sneaking` | `bool` | The player's shift key at the time of the click. |
+| `hand` | `string` | main_hand or off_hand: the hand that clicked. |
 
 ### variant `target`
 
@@ -799,6 +803,7 @@ Whom a mob attacks.
 | `none` |  |  |
 | `mob` | `u32` | A mob, by id. |
 | `nearest-player` |  | The nearest player it sees. |
+| `player` | `string` | That online player's UUID, even when another player is nearer. Dropped if the player leaves the level or becomes untargetable. |
 
 ### variant `order`
 

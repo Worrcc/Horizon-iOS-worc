@@ -662,6 +662,15 @@ interface players {
     /// A system message to every player and the server's log, after the
     /// mod's name. Counts toward the same 8 per call.
     broadcast: func(text: string);
+    /// Remove up to count by registry id, main hand first, then the rest of
+    /// the inventory (including armor and off hand). Creative consumes none
+    /// but reports count. The return value and subsequent calls see the real
+    /// inventory now; unknown items or offline players are errors.
+    take-item: func(player: string, item: string, count: u32) -> result<u32, string>;
+    /// Add plain items to a player's inventory; drop overflow at their feet
+    /// before that dimension's next tick. At most 100 stacks per call, as
+    /// /give. Unknown items or offline players are errors.
+    give-item: func(player: string, item: string, count: u32) -> result<_, string>;
 }
 
 /// Capability `world`, server mods only (manifest `api = "0.3"`,
@@ -734,7 +743,7 @@ interface entities {
         on-ground: bool,
         /// The mob it attacks, by id; none for no mob (a player, or none).
         target: option<u32>,
-        /// It attacks a player: the nearest it sees.
+        /// It attacks a player: the nearest it sees or one selected by UUID.
         target-player: bool,
         /// Its `minecraft:scale`: 1 is its type's size.
         scale: f32,
@@ -800,6 +809,10 @@ interface entities {
         kind: string,
         /// What the player held in the hand they used, `minecraft:beef`, ...
         item: option<string>,
+        /// The player's shift key at the time of the click.
+        sneaking: bool,
+        /// main_hand or off_hand: the hand that clicked.
+        hand: string,
     }
     /// Whom a mob attacks.
     variant target {
@@ -808,6 +821,9 @@ interface entities {
         mob(u32),
         /// The nearest player it sees.
         nearest-player,
+        /// That online player's UUID, even when another player is nearer.
+        /// Dropped if the player leaves the level or becomes untargetable.
+        player(string),
     }
     variant order {
         /// Walk to a point by its path navigation, ahead of its own goals,

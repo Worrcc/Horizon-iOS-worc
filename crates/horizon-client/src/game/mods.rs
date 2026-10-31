@@ -89,7 +89,13 @@ pub(super) struct ModsState {
     /// Players' right clicks on content mods' mobs this tick: who, the mob, its kind and the
     /// item held, for capability `entities` at the tick's end.
     #[cfg(feature = "mods")]
-    pub(super) interactions: Vec<(super::server_mods::Who, u32, String, Option<String>)>,
+    pub(super) interactions: Vec<horizon_mods::EntityInteraction>,
+    /// Valid item ids and stack sizes for player inventory calls.
+    #[cfg(feature = "mods")]
+    pub(super) item_limits: Option<std::sync::Arc<std::collections::HashMap<String, u32>>>,
+    /// Inventory overflow waiting for the player's dimension to tick.
+    #[cfg(feature = "mods")]
+    pub(super) item_drops: Vec<super::mod_players::ItemDrop>,
     /// `command.run` lines for this window's own world, run on the next tick:
     /// run at once, their chat lines would reach the mods while their output
     /// is still being shown, and a mod answering its own lines would recurse.

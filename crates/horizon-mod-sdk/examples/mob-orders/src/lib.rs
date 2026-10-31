@@ -6,7 +6,9 @@
 //! lets gravity back. `/raise <kind>` spawns one beside the player, `/grow <scale>` sizes the
 //! nearest, `/attack` sets it on the nearest player, `/label <key> <value>` stores a string on it
 //! (kept in its save) and `/info` says what it is. Right clicks tell the player what they
-//! held; a bone stores their UUID as the mob's `owner`. `/paint <texture|none>` changes
+//! held; a sneak-click with a bone labels its owner, a click with beef feeds it.
+//! `/feed` consumes one beef for the nearest mob, `/gift <item> <count>` gives items,
+//! `/attackme` chooses the caller by UUID. `/paint <texture|none>` changes
 //! its texture, `/roar` sends sound and flame particles, `/attr <name> <value>` changes
 //! base attributes, `/heal <n>` heals, and `/info` reports mobGriefing, time and sky visibility.
 use horizon_mod_sdk::server::{
@@ -33,6 +35,15 @@ fn near(player: &Player) -> Vec<Entity> {
     let mut near = entities::near(&player.dimension, at(player), REACH);
     near.retain(own);
     near
+}
+
+fn feed(player: &str, mob: u32) -> Result<bool, String> {
+    let taken = players::take_item(player, "minecraft:beef", 1)?;
+    if taken == 0 {
+        return Ok(false);
+    }
+    entities::give_orders(&[(mob, Order::Heal(4.0))])?;
+    Ok(true)
 }
 
 fn nearest(player: &Player) -> Result<Entity, String> {
@@ -65,6 +76,9 @@ impl ServerMod for MobOrders {
                 .command("roar")
                 .command_with("attr", [Argument::word("name"), Argument::number("value")])
                 .command_with("heal", [Argument::number("amount")])
+                .command("feed")
+                .command("gift")
+                .command("attackme")
                 .command("info"),
         ))
     }
@@ -76,11 +90,24 @@ impl ServerMod for MobOrders {
                 &click.player,
                 &format!("{} #{} noticed you (holding {item})", click.kind, click.mob),
             );
-            if item == "minecraft:bone" {
+            if item == "minecraft:bone" && click.sneaking {
                 let _ = entities::give_orders(&[(
                     click.mob,
-                    Order::SetData(vec![("owner".into(), Some(click.player))]),
+                    Order::SetData(vec![
+                        ("owner".into(), Some(click.player.clone())),
+                        ("tamed".into(), Some("true".into())),
+                    ]),
                 )]);
+            } else if item == "minecraft:beef" {
+                match feed(&click.player, click.mob) {
+                    Ok(true) => {
+                        players::tell(&click.player, "Fed one beef");
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        players::tell(&click.player, &error);
+                    }
+                }
             }
         }
     }
@@ -229,6 +256,39 @@ impl ServerMod for MobOrders {
                 let amount = args.number("amount").unwrap_or_default() as f32;
                 entities::give_orders(&[(mob.id, Order::Heal(amount))])?;
                 Ok(None)
+            }
+            "feed" => {
+                let mob = nearest(player)?;
+                Ok(Some(
+                    if feed(&player.id, mob.id)? {
+                        "Fed one beef"
+                    } else {
+                        "No beef to feed"
+                    }
+                    .into(),
+                ))
+            }
+            "gift" => {
+                // Registry ids contain ':' and '/', so use the command's free text.
+                let mut words = args.text().split_whitespace();
+                let item = words.next().ok_or("Usage: /gift <item> <count>")?;
+                let count = words
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .ok_or("Usage: /gift <item> <count>")?;
+                if words.next().is_some() {
+                    return Err("Usage: /gift <item> <count>".into());
+                }
+                players::give_item(&player.id, item, count)?;
+                Ok(Some(format!("Gave {count} {item}")))
+            }
+            "attackme" => {
+                let mob = nearest(player)?;
+                entities::give_orders(&[(
+                    mob.id,
+                    Order::Target(Target::Player(player.id.clone())),
+                )])?;
+                Ok(Some(format!("{} attacks {}", mob.kind, player.name)))
             }
             "info" => {
                 let mob = nearest(player)?;

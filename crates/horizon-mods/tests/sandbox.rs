@@ -49,6 +49,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "beacons",
                 "-p",
+                "mob-orders",
+                "-p",
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
@@ -73,6 +75,7 @@ fn mods_dir() -> &'static Path {
             ("predator_missile", example("predator-missile")),
             ("welcome", example("welcome")),
             ("beacons", example("beacons")),
+            ("mob_orders", example("mob-orders")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
         ];
@@ -888,6 +891,7 @@ fn the_examples_test_scripts_pass() {
         ("coords-hud", "coords_hud"),
         ("welcome", "welcome"),
         ("beacons", "beacons"),
+        ("mob-orders", "mob_orders"),
     ];
     for (example, hmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -900,7 +904,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 5);
+    assert_eq!(ran, 6);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):
@@ -1301,4 +1305,132 @@ fn browser_lists_items_and_hears_the_player() {
         mods.browser_event(owner, BrowserEvent::Page(1));
     }
     assert_eq!(said(&mut mods, "browser_poll")[0], "256 events");
+}
+
+#[test]
+fn mob_orders_consumes_food_once_labels_sneak_clicks_and_targets_a_uuid() {
+    use horizon_mods::{
+        EntityInteraction, EntityOrder, EntityTarget, ModEntity, testing::InventoryFixture,
+    };
+    let mut mods = load("mob_orders.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let p = ServerPlayer {
+        id: "00000000-0000-4000-8000-000000000001".into(),
+        name: "Alex".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    let mut fixture = InventoryFixture {
+        players: [(p.id.clone(), false)].into(),
+        ..Default::default()
+    };
+    fixture
+        .counts
+        .lock()
+        .unwrap()
+        .insert((p.id.clone(), "minecraft:beef".into()), 2);
+    mods.lend_inventories(Box::new(fixture.clone()));
+    let click = |item: &str, sneaking, hand: &str| EntityInteraction {
+        player: p.id.clone(),
+        mob: 7,
+        kind: "ruby:dragon".into(),
+        item: Some(item.into()),
+        sneaking,
+        hand: hand.into(),
+    };
+    let mut snap = Snapshot {
+        players: vec![p.clone()],
+        entities: vec![ModEntity {
+            id: 7,
+            kind: "ruby:dragon".into(),
+            dimension: p.dimension.clone(),
+            x: 3.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            health: 10.0,
+            max_health: 20.0,
+            on_ground: true,
+            target: None,
+            target_player: false,
+            scale: 1.0,
+            data: vec![],
+            age: 0,
+            animation: None,
+            texture: None,
+        }]
+        .into(),
+        ..Default::default()
+    };
+    snap.interactions = vec![click("minecraft:bone", false, "main_hand")].into();
+    mods.set_snapshot(snap.clone());
+    mods.server_tick(0);
+    assert!(
+        !mods
+            .drain()
+            .iter()
+            .any(|o| matches!(o, Output::Orders { .. }))
+    );
+    snap.interactions = vec![click("minecraft:bone", true, "off_hand")].into();
+    mods.set_snapshot(snap.clone());
+    mods.server_tick(1);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Orders { orders, .. }
+        if orders.iter().any(|(id, o)| *id == 7 && matches!(o, EntityOrder::SetData(entries)
+            if entries.contains(&("owner".into(), Some(p.id.clone())))
+            && entries.contains(&("tamed".into(), Some("true".into())))))))
+    );
+    let heals = |out: Vec<Output>| {
+        out.into_iter()
+            .filter_map(|o| match o {
+                Output::Orders { orders, .. } => Some(
+                    orders
+                        .into_iter()
+                        .filter(|(id, o)| *id == 7 && matches!(o, EntityOrder::Heal(4.0)))
+                        .count(),
+                ),
+                _ => None,
+            })
+            .sum::<usize>()
+    };
+    snap.interactions = vec![
+        click("minecraft:beef", false, "main_hand"),
+        click("minecraft:beef", false, "off_hand"),
+    ]
+    .into();
+    mods.set_snapshot(snap.clone());
+    mods.server_tick(2);
+    assert_eq!(heals(mods.drain()), 2);
+    assert_eq!(
+        fixture.counts.lock().unwrap()[&(p.id.clone(), "minecraft:beef".into())],
+        0
+    );
+    mods.server_tick(3);
+    assert_eq!(heals(mods.drain()), 0);
+    fixture.players.insert(p.id.clone(), true);
+    mods.lend_inventories(Box::new(fixture.clone()));
+    snap.interactions = vec![click("minecraft:beef", false, "off_hand")].into();
+    mods.set_snapshot(snap.clone());
+    mods.server_tick(4);
+    assert_eq!(heals(mods.drain()), 1);
+    assert_eq!(
+        fixture.counts.lock().unwrap()[&(p.id.clone(), "minecraft:beef".into())],
+        0
+    );
+    assert!(mods.server_command(&p, "gift ruby:scale 3"));
+    assert_eq!(
+        fixture.counts.lock().unwrap()[&(p.id.clone(), "ruby:scale".into())],
+        3
+    );
+    mods.drain();
+    assert!(mods.server_command(&p, "attackme"));
+    assert!(mods.drain().iter().any(|o| matches!(o, Output::Orders { orders, .. }
+        if orders.iter().any(|(id, o)| *id == 7 && matches!(o, EntityOrder::Target(EntityTarget::Player(id)) if id == &p.id)))));
+    assert_eq!(mods.entries()[0].status, Status::Running);
 }

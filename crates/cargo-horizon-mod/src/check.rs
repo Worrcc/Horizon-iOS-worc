@@ -213,6 +213,12 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
         game_mode: GameMode::Survival,
         health: 20.0,
     };
+    // Shared authoritative counts for inventory calls during the resource-free trial.
+    let inventories = horizon_mods::testing::InventoryFixture {
+        players: [(steve.id.clone(), false)].into(),
+        ..Default::default()
+    };
+    mods.lend_inventories(Box::new(inventories));
     let snapshot = |t: u64| Snapshot {
         player: Some(Player {
             x: 0.5 + t as f64 * 0.1,

@@ -30,3 +30,19 @@ expect.error = "No content mod's mob within 32 blocks"
 [[step]]
 command = "heal 20"
 expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "feed"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "attackme"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "gift minecraft:beef 2"
+expect.feedback = "Gave 2 minecraft:beef"
+
+[[step]]
+command = "gift invalid 1"
+expect.error = "invalid item id invalid"

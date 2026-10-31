@@ -327,6 +327,14 @@ pub trait WorldView: std::any::Any + Send {
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
 
+/// The real server inventories lent during mod hooks, shared between all mods.
+/// Implementations validate item ids and preserve stack components on removal.
+pub trait PlayerInventories: std::any::Any + Send {
+    fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String>;
+    fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String>;
+}
+type InventoriesSlot = Arc<Mutex<Option<Box<dyn PlayerInventories>>>>;
+
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
 pub struct Panel {
@@ -488,6 +496,7 @@ struct State {
     storage_budget: u64,
     limits: StoreLimits,
     world: WorldSlot,
+    inventories: InventoriesSlot,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -499,6 +508,7 @@ pub struct Mods {
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     world: WorldSlot,
+    inventories: InventoriesSlot,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -518,6 +528,27 @@ impl Mods {
                     .as_ref()
                     .is_some_and(|m| m.capabilities.contains(&crate::Capability::World))
         })
+    }
+    /// Whether lending inventories for capability `players` is useful.
+    pub fn wants_players(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.status == Status::Running
+                && e.manifest
+                    .as_ref()
+                    .is_some_and(|m| m.capabilities.contains(&crate::Capability::Players))
+        })
+    }
+    pub fn lend_inventories(&mut self, inventories: Box<dyn PlayerInventories>) {
+        *self
+            .inventories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(inventories);
+    }
+    pub fn take_inventories(&mut self) -> Option<Box<dyn PlayerInventories>> {
+        self.inventories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
     /// Whether a running mod may use capability `entities`: only then is
     /// [`Snapshot::entities`] worth filling.
@@ -671,6 +702,7 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
+        let inventories = self.inventories.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -712,6 +744,7 @@ impl Mods {
                 .instances(16)
                 .build(),
             world,
+            inventories,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1799,6 +1832,11 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
 fn check_order_names(order: &EntityOrder, snapshot: &Snapshot) -> Result<(), String> {
     let resources = &snapshot.entity_resources;
     match order {
+        EntityOrder::Target(EntityTarget::Player(id))
+            if !snapshot.players.iter().any(|p| p.id == *id) =>
+        {
+            Err(format!("no online player {id}"))
+        }
         EntityOrder::Texture(Some(name)) if !resources.textures.contains(name) => {
             Err(format!("no loaded mod entity texture {name}"))
         }
@@ -1909,6 +1947,24 @@ impl entities::Host for State {
     }
 }
 impl players::Host for State {
+    fn take_item(&mut self, player: String, item: String, count: u32) -> Result<u32, String> {
+        let mut slot = self
+            .inventories
+            .lock()
+            .map_err(|_| "inventories unavailable")?;
+        slot.as_mut()
+            .ok_or("inventories unavailable")?
+            .take_item(&player, &item, count)
+    }
+    fn give_item(&mut self, player: String, item: String, count: u32) -> Result<(), String> {
+        let mut slot = self
+            .inventories
+            .lock()
+            .map_err(|_| "inventories unavailable")?;
+        slot.as_mut()
+            .ok_or("inventories unavailable")?
+            .give_item(&player, &item, count)
+    }
     fn online(&mut self) -> Vec<ServerPlayer> {
         self.snapshot.players.clone()
     }
@@ -2308,7 +2364,79 @@ mod entity_tests {
             storage_budget: STORAGE_WRITE_BUDGET,
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
+            inventories: InventoriesSlot::default(),
         }
+    }
+
+    #[test]
+    fn inventory_imports_share_mutations_between_mods_and_return_errors() {
+        let mut first = state();
+        let mut second = state();
+        let fixture = crate::testing::InventoryFixture {
+            players: [("alice".into(), false), ("creative".into(), true)].into(),
+            ..Default::default()
+        };
+        *first.inventories.lock().unwrap() = Some(Box::new(fixture));
+        second.inventories = first.inventories.clone();
+        players::Host::give_item(&mut first, "alice".into(), "minecraft:beef".into(), 2).unwrap();
+        assert_eq!(
+            players::Host::take_item(&mut first, "alice".into(), "minecraft:beef".into(), 1)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            players::Host::take_item(&mut second, "alice".into(), "minecraft:beef".into(), 2)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            players::Host::take_item(&mut first, "alice".into(), "minecraft:beef".into(), 1)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            players::Host::take_item(&mut first, "creative".into(), "minecraft:beef".into(), 50)
+                .unwrap(),
+            50
+        );
+        assert!(
+            players::Host::take_item(&mut first, "offline".into(), "minecraft:beef".into(), 1)
+                .is_err()
+        );
+        assert!(players::Host::give_item(&mut first, "alice".into(), "bad id".into(), 1).is_err());
+        first.inventories.lock().unwrap().take();
+        assert!(
+            players::Host::take_item(&mut second, "alice".into(), "minecraft:beef".into(), 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_targets_are_checked_against_online_players() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let order = EntityOrder::Target(EntityTarget::Player(id.into()));
+        assert!(check_order_names(&order, &Snapshot::default()).is_err());
+        let snapshot = Snapshot {
+            players: vec![ServerPlayer {
+                id: id.into(),
+                name: "Alex".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            ..Default::default()
+        };
+        assert!(check_order_names(&order, &snapshot).is_ok());
+        assert!(
+            check_order_names(
+                &EntityOrder::Target(EntityTarget::Player("offline".into())),
+                &snapshot
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2321,6 +2449,13 @@ mod entity_tests {
                     mob,
                     kind: "ruby:golem".into(),
                     item: (mob % 2 == 0).then(|| "minecraft:bone".into()),
+                    sneaking: mob % 3 == 0,
+                    hand: if mob % 2 == 0 {
+                        "main_hand"
+                    } else {
+                        "off_hand"
+                    }
+                    .into(),
                 })
                 .collect();
             state.snapshot = Arc::new(Snapshot {
@@ -2336,6 +2471,8 @@ mod entity_tests {
                     assert_eq!(click.mob, expected.mob);
                     assert_eq!(click.kind, expected.kind);
                     assert_eq!(click.item, expected.item);
+                    assert_eq!(click.sneaking, expected.sneaking);
+                    assert_eq!(click.hand, expected.hand);
                 }
             }
         }
@@ -2439,6 +2576,7 @@ mod entity_tests {
                 name: "max_health".into(),
                 value: f64::NAN,
             }),
+            EntityOrder::Target(EntityTarget::Player("offline".into())),
             EntityOrder::Attribute(EntityAttributeChange {
                 name: "not_an_attribute".into(),
                 value: 500.0,

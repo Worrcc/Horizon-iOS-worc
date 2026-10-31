@@ -613,7 +613,10 @@ impl Game<'_> {
                     m.position.z,
                 )
                 .map(|p| p.position);
-                let seen_guest = if guests.is_empty() {
+                if m.ai.target != Some(Who::Player) {
+                    m.orders.target_player = None;
+                }
+                let seen_guest = if guests.is_empty() && m.orders.target_player.is_none() {
                     None
                 } else {
                     let bound = bindings.get(&m.id).copied();
@@ -625,6 +628,16 @@ impl Game<'_> {
                         }
                         None => {
                             bindings.remove(&m.id);
+                        }
+                    }
+                    if let Some(uuid) = m.orders.target_player {
+                        w.player = w
+                            .player
+                            .take()
+                            .filter(|v| v.uuid == uuid && v.alive && !v.creative && !v.spectator);
+                        if w.player.is_none() {
+                            m.ai.target = None;
+                            m.orders.target_player = None;
                         }
                     }
                     conn

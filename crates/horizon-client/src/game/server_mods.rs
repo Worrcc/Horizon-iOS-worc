@@ -233,7 +233,7 @@ pub(super) mod run {
     }
 
     /// `UUID.toString()`.
-    fn uuid_string(u: u128) -> String {
+    pub(in crate::game) fn uuid_string(u: u128) -> String {
         let h = format!("{u:032x}");
         format!(
             "{}-{}-{}-{}-{}",
@@ -319,6 +319,7 @@ pub(super) mod run {
             snapshot.interactions = self.take_mod_interactions();
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
+            self.lend_mod_inventories(None);
             let before = std::mem::take(&mut self.mods.players);
             for p in before
                 .iter()
@@ -373,6 +374,7 @@ pub(super) mod run {
             }
             self.mods.mods.server_tick(self.ticks);
             self.return_world();
+            self.return_mod_inventories(None);
             self.mods.players = players;
             self.show_mod_output();
             self.apply_mod_block_writes();
@@ -505,6 +507,7 @@ pub(super) mod run {
         /// Carries out server mods' orders to the mobs of the level in place, in order;
         /// those to mobs of another level wait for it, and those to mobs gone are dropped.
         pub(in crate::game) fn apply_mod_orders(&mut self) {
+            self.apply_mod_item_drops();
             self.apply_mod_spawns();
             if self.mods.mob_orders.is_empty() {
                 return;
@@ -549,6 +552,17 @@ pub(super) mod run {
         }
 
         fn apply_mod_order(&mut self, i: usize, order: EntityOrder) {
+            let chosen_player = if let EntityOrder::Target(EntityTarget::Player(id)) = &order {
+                if !self.server_players(None).iter().any(|p| p.id == *id) {
+                    return;
+                }
+                let Ok(uuid) = u128::from_str_radix(&id.replace('-', ""), 16) else {
+                    return;
+                };
+                Some(horizon_client::lan::playerdata::uuid_ints(uuid))
+            } else {
+                None
+            };
             let m = &mut self.mobs[i];
             match order {
                 EntityOrder::WalkTo(w) => m.orders.walk = Some(([w.to.x, w.to.y, w.to.z], w.speed)),
@@ -595,10 +609,13 @@ pub(super) mod run {
                 // Entity.discard: gone, no death, no drops.
                 EntityOrder::Discard => m.removed = true,
                 EntityOrder::Target(t) => {
+                    m.orders.target_player = chosen_player;
                     m.ai.target = match t {
                         EntityTarget::None => None,
                         EntityTarget::Mob(id) => Some(MobWho::Mob(id)),
-                        EntityTarget::NearestPlayer => Some(MobWho::Player),
+                        EntityTarget::NearestPlayer | EntityTarget::Player(_) => {
+                            Some(MobWho::Player)
+                        }
                     };
                 }
                 EntityOrder::Attribute(a) => {
@@ -774,31 +791,27 @@ pub(super) mod run {
             {
                 return;
             }
-            let who = self.lan_acting_uuid.map_or(Who::Local, Who::Uuid);
-            let interaction = (who, m.id, m.kind.id.clone(), item);
-            self.mods.interactions.push(interaction);
+            let player = self
+                .lan_acting_uuid
+                .map_or_else(|| self.player_uuid_string(), uuid_string);
+            self.mods
+                .interactions
+                .push(horizon_mods::EntityInteraction {
+                    player,
+                    mob: m.id,
+                    kind: m.kind.id.clone(),
+                    item,
+                    sneaking: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
+                    hand: match self.hand {
+                        horizon_client::first_person::Hand::Main => "main_hand",
+                        horizon_client::first_person::Hand::Off => "off_hand",
+                    }
+                    .into(),
+                });
         }
 
-        /// This tick's clicks on content mods' mobs, by player UUID, for the snapshot.
         fn take_mod_interactions(&mut self) -> std::sync::Arc<[horizon_mods::EntityInteraction]> {
-            let pending = std::mem::take(&mut self.mods.interactions);
-            let pending = pending.into_iter().filter_map(|(who, mob, kind, item)| {
-                let player = match who {
-                    Who::Local => self.player_uuid_string(),
-                    Who::Uuid(u) => uuid_string(u),
-                    Who::Conn(c) => {
-                        let guests = self.lan.iter().flat_map(|h| &h.hub.guests);
-                        uuid_string(guests.into_iter().find(|g| g.conn == c)?.uuid)
-                    }
-                };
-                Some(horizon_mods::EntityInteraction {
-                    player,
-                    mob,
-                    kind,
-                    item,
-                })
-            });
-            pending.collect::<Vec<_>>().into()
+            std::mem::take(&mut self.mods.interactions).into()
         }
 
         /// A player broke (or placed) `state` at `pos`: the player acting now.
@@ -841,8 +854,10 @@ pub(super) mod run {
             let snapshot = self.server_snapshot(players);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
+            self.lend_mod_inventories(None);
             let owned = self.mods.mods.server_command(&me, line);
             self.return_world();
+            self.return_mod_inventories(None);
             self.show_mod_output();
             self.apply_mod_block_writes();
             self.apply_mod_orders();
@@ -871,8 +886,10 @@ pub(super) mod run {
             let snapshot = self.server_snapshot(players);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
+            self.lend_mod_inventories(Some(host));
             let owned = self.mods.mods.server_command(&me, line);
             self.return_world();
+            self.return_mod_inventories(Some(host));
             if !owned {
                 return false;
             }

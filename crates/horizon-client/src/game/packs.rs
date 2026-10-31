@@ -218,6 +218,7 @@ impl Game<'_> {
         #[cfg(feature = "mods")]
         {
             self.mods.entity_resources = None;
+            self.mods.item_limits = None;
         }
         let context = pack.context.clone();
         self.pack = pack;

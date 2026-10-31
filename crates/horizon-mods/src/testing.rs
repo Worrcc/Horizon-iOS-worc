@@ -16,9 +16,62 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+/// Inventory fixture for script/check runs without game resources. Validates identifier
+/// syntax (the game checks the registry), with persistent counts and no capacity limit.
+#[derive(Clone, Default)]
+pub struct InventoryFixture {
+    pub players: std::collections::BTreeMap<String, bool>,
+    pub counts: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<(String, String), u32>>>,
+}
+impl InventoryFixture {
+    fn check(&self, player: &str, item: &str) -> Result<bool, String> {
+        let plain = |s: &str, slash| {
+            !s.is_empty()
+                && s.bytes().all(|b| {
+                    b.is_ascii_lowercase()
+                        || b.is_ascii_digit()
+                        || b"_.-".contains(&b)
+                        || slash && b == b'/'
+                })
+        };
+        if !item
+            .split_once(':')
+            .is_some_and(|(ns, path)| plain(ns, false) && plain(path, true))
+        {
+            return Err(format!("invalid item id {item}"));
+        }
+        self.players
+            .get(player)
+            .copied()
+            .ok_or_else(|| format!("no online player {player}"))
+    }
+}
+impl crate::PlayerInventories for InventoryFixture {
+    fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String> {
+        if self.check(player, item)? {
+            return Ok(count);
+        }
+        let mut counts = self.counts.lock().map_err(|_| "inventories unavailable")?;
+        let available = counts.entry((player.into(), item.into())).or_default();
+        let taken = (*available).min(count);
+        *available -= taken;
+        Ok(taken)
+    }
+    fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String> {
+        self.check(player, item)?;
+        let mut counts = self.counts.lock().map_err(|_| "inventories unavailable")?;
+        let available = counts.entry((player.into(), item.into())).or_default();
+        *available = available
+            .checked_add(count)
+            .ok_or("fixture inventory count overflow")?;
+        Ok(())
+    }
+}
+
 /// One mod in the sandbox, driven by a test.
 pub struct TestGame {
     mods: Mods,
+    inventories: InventoryFixture,
     dir: PathBuf,
     hmod: PathBuf,
     /// What the mod reads with `game-read`; ticks move the clock as the game does.
@@ -109,6 +162,7 @@ impl TestGame {
         let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
         let mut game = TestGame {
             mods: Mods::default(),
+            inventories: InventoryFixture::default(),
             hmod: copy.clone(),
             dir,
             player: Some(default_player()),
@@ -143,6 +197,13 @@ impl TestGame {
     }
 
     fn snapshot(&mut self) {
+        self.inventories.players = self
+            .players
+            .iter()
+            .map(|p| (p.id.clone(), matches!(p.game_mode, GameMode::Creative)))
+            .collect();
+        self.mods
+            .lend_inventories(Box::new(self.inventories.clone()));
         self.mods.set_snapshot(Snapshot {
             player: self.player.clone(),
             clock: self.clock,

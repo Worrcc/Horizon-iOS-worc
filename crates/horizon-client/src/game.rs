@@ -117,6 +117,8 @@ mod mod_browser;
 mod mod_browser_recipes;
 mod mod_input;
 #[cfg(feature = "mods")]
+mod mod_players;
+#[cfg(feature = "mods")]
 mod mod_recipes;
 mod mod_render;
 mod mods;

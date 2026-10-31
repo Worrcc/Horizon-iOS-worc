@@ -26,6 +26,9 @@ pub(super) fn player_for(
     guests: &GuestViews,
     bound: Option<u32>,
 ) -> Option<u32> {
+    if let Some(uuid) = m.orders.target_player {
+        return ordered_player(uuid, host, guests).flatten();
+    }
     // A tame cat reads its owner wherever they are while they sleep, or just
     // woke up (`CatRelaxOnOwnerGoal` uses `getOwner`, not the nearest player).
     if m.species() == Species::Cat
@@ -59,6 +62,22 @@ pub(super) fn player_for(
         }
     }
     choose(m.position, targeting, host, guests, bound)
+}
+
+/// Some(None): local host, Some(Some(conn)): guest, None: unavailable/untargetable.
+fn ordered_player(
+    uuid: [i32; 4],
+    host: Option<&PlayerView>,
+    guests: &GuestViews,
+) -> Option<Option<u32>> {
+    let eligible = |v: &PlayerView| v.uuid == uuid && v.alive && !v.creative && !v.spectator;
+    if host.is_some_and(eligible) {
+        return Some(None);
+    }
+    guests
+        .iter()
+        .find(|(_, v)| eligible(v))
+        .map(|(conn, _)| Some(*conn))
 }
 
 fn choose(
@@ -433,6 +452,47 @@ mod tests {
         let host = view(10.0, true);
         assert_eq!(choose(MOB, false, Some(&host), &guests, None), Some(7));
         assert_eq!(choose(MOB, false, None, &Vec::new(), None), None);
+    }
+
+    #[test]
+    fn explicit_uuid_binding_overrides_nearer_players_and_old_bindings() {
+        let mut host = view(1.0, false);
+        host.uuid = [1; 4];
+        let mut nearer = view(2.0, false);
+        nearer.uuid = [2; 4];
+        let mut chosen = view(12.0, false);
+        chosen.uuid = [3; 4];
+        let mut guests = vec![(7, nearer), (8, chosen)];
+        assert_eq!(ordered_player([3; 4], Some(&host), &guests), Some(Some(8)));
+        assert_eq!(ordered_player([1; 4], Some(&host), &guests), Some(None));
+        assert_eq!(ordered_player([4; 4], Some(&host), &guests), None);
+        guests[1].1.spectator = true;
+        assert_eq!(ordered_player([3; 4], Some(&host), &guests), None);
+        guests[1].1.spectator = false;
+        guests[1].1.creative = true;
+        assert_eq!(ordered_player([3; 4], Some(&host), &guests), None);
+        guests[1].1.creative = false;
+        guests[1].1.alive = false;
+        assert_eq!(ordered_player([3; 4], Some(&host), &guests), None);
+        // Exercise player_for, including a stale binding to a different guest.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        if !root.join("entity-models.json").exists() {
+            return;
+        }
+        let types = horizon_client::mobs::MobTypes::load(&root).unwrap();
+        let mut mob = Mob::new(
+            1,
+            std::sync::Arc::new(types.types["minecraft:zombie"].clone()),
+            MOB,
+            0.0,
+        );
+        mob.ai.target = Some(Who::Player);
+        mob.orders.target_player = Some([3; 4]);
+        guests[1].1.alive = true;
+        assert_eq!(player_for(&mob, Some(&host), &guests, Some(7)), Some(8));
+        mob.orders.target_player = Some([1; 4]);
+        assert_eq!(player_for(&mob, Some(&host), &guests, Some(7)), None);
     }
 
     #[test]
