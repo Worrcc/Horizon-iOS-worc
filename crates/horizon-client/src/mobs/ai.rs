@@ -1361,7 +1361,8 @@ pub fn despawn_check(m: &mut Mob, w: &MobWorld) -> bool {
 /// sulfur cube holding a block or let out of a bucket. The spawn caps do not
 /// count these mobs either (`NaturalSpawner.createState`).
 pub fn requires_custom_persistence(m: &Mob) -> bool {
-    super::riders::keeps_alive(m)
+    m.kind.flags.persistent
+        || super::riders::keeps_alive(m)
         || m.extra.leash.is_some()
         || super::raider::state(m).is_some_and(|s| s.raid_id.is_some())
         || m.species() == Species::Enderman && m.extra.carried.is_some()

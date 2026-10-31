@@ -171,6 +171,7 @@ struct EntityFile {
     #[serde(default)]
     attributes: std::collections::BTreeMap<String, f64>,
     fire_immune: Option<bool>,
+    persistent: Option<bool>,
     category: Option<String>,
     texture: Option<String>,
     model: Option<String>,
@@ -195,6 +196,8 @@ pub struct Entity {
     /// Attribute values by name (`max_health`, ...), from [`ENTITY_ATTRIBUTES`].
     pub attributes: std::collections::BTreeMap<String, f64>,
     pub fire_immune: Option<bool>,
+    /// Never despawns (`Mob.requiresCustomPersistence`), as tame or boss-like mods' mobs.
+    pub persistent: Option<bool>,
     pub category: Option<String>,
     /// The model's texture, `<namespace>:entity/<path>` for
     /// `assets/<namespace>/textures/entity/<path>.png` in one of the mod's namespaces.
@@ -563,6 +566,7 @@ impl Content {
                 eye_height: file.eye_height,
                 attributes: file.attributes,
                 fire_immune: file.fire_immune,
+                persistent: file.persistent,
                 category: file.category,
                 texture: file.texture,
                 model: file.model,

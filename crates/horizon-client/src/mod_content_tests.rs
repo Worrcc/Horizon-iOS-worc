@@ -892,6 +892,7 @@ fn mod_entities_copy_their_template_row() {
         eye_height: None,
         attributes: [("max_health".to_owned(), 60.0)].into_iter().collect(),
         fire_immune: Some(true),
+        persistent: None,
         category: None,
         texture: Some("ruby:entity/golem".into()),
         model: Some("ruby:golem".into()),

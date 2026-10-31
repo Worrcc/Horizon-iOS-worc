@@ -1458,6 +1458,7 @@ impl Def {
             climber: matches!(s, S::Spider | S::CaveSpider),
             lava_walker: s == S::Strider,
             omnidirectional: matches!(s, S::Bee | S::Parrot),
+            persistent: false,
             fire_immune: fire_immune
                 || matches!(
                     s,

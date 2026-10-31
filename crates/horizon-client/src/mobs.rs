@@ -324,6 +324,8 @@ pub struct Flags {
     /// LivingEntity.omnidirectionalAirMover (bees and parrots).
     pub omnidirectional: bool,
     pub fire_immune: bool,
+    /// A content mod's type that never despawns (its entity JSON's `persistent`).
+    pub persistent: bool,
     /// EntityTypeTags.BURN_IN_DAYLIGHT
     pub burns_in_day: bool,
     pub undead: bool,
@@ -570,6 +572,9 @@ fn mod_types(
         }
         if let Some(f) = row["fire_immune"].as_bool() {
             t.flags.fire_immune = f;
+        }
+        if let Some(p) = row["horizon_persistent"].as_bool() {
+            t.flags.persistent = p;
         }
         let mut attributes = (*t.attributes).clone();
         if let Some(values) = row["attributes"].as_object() {

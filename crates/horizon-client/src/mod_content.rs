@@ -415,6 +415,9 @@ impl<'a> Plan<'a> {
             if let Some(f) = e.fire_immune {
                 row.set("fire_immune", J::Bool(f));
             }
+            if let Some(p) = e.persistent {
+                row.set("horizon_persistent", J::Bool(p));
+            }
             if let Some(c) = &e.category {
                 row.set("category", J::Str(c.clone()));
             }
