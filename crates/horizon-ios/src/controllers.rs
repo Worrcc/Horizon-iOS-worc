@@ -1,5 +1,6 @@
 //! Controllers through Apple's GameController framework: every connected pad with the extended
-//! gamepad profile (Xbox, PlayStation, Switch Pro, MFi), read once a frame. Nothing elsewhere.
+//! gamepad profile (Xbox, PlayStation, Switch Pro, MFi), read once a frame, and their vibration
+//! through Core Haptics (`GCController.haptics`). Nothing elsewhere.
 
 /// One pad's state. Sticks are -1..1 with up positive; triggers 0..1.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -29,10 +30,142 @@ pub fn gamepads() -> Vec<Gamepad> {
     Vec::new()
 }
 
+/// Plays a vibration on every connected pad that has haptics: each step's strong and weak motor
+/// levels (0..1) for its milliseconds, one after another. `false` when no pad could play it.
+pub fn vibrate(steps: &[(f32, f32, u32)]) -> bool {
+    #[cfg(target_os = "ios")]
+    return ios::vibrate(steps);
+    #[cfg(not(target_os = "ios"))]
+    {
+        let _ = steps;
+        false
+    }
+}
+
 #[cfg(target_os = "ios")]
 mod ios {
     use super::Gamepad;
-    use objc2_game_controller::{GCController, GCControllerButtonInput, GCDevice};
+    use objc2::rc::{Allocated, Retained};
+    use objc2::runtime::AnyObject;
+    use objc2::{ClassType, class, msg_send, msg_send_id};
+    use objc2_foundation::{NSArray, NSError, NSString};
+    use objc2_game_controller::{
+        GCController, GCControllerButtonInput, GCDevice, GCHapticsLocalityDefault,
+    };
+    use std::cell::RefCell;
+
+    #[link(name = "CoreHaptics", kind = "framework")]
+    unsafe extern "C" {
+        static CHHapticEventTypeHapticContinuous: &'static NSString;
+        static CHHapticEventParameterIDHapticIntensity: &'static NSString;
+        static CHHapticEventParameterIDHapticSharpness: &'static NSString;
+    }
+
+    thread_local! {
+        /// Each pad's started `CHHapticEngine`, made the first time it vibrates.
+        static ENGINES: RefCell<Vec<(Retained<GCController>, Retained<AnyObject>)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    /// The pad's haptic engine, started; `None` for a pad without haptics.
+    unsafe fn engine(controller: &GCController) -> Option<Retained<AnyObject>> {
+        ENGINES.with_borrow_mut(|engines| {
+            if let Some((_, engine)) = engines.iter().find(|(c, _)| **c == *controller) {
+                return Some(engine.clone());
+            }
+            unsafe {
+                let haptics = controller.haptics()?;
+                let engine: Option<Retained<AnyObject>> =
+                    msg_send_id![&haptics, createEngineWithLocality: GCHapticsLocalityDefault];
+                let engine = engine?;
+                let started: Result<(), Retained<NSError>> =
+                    msg_send![&engine, startAndReturnError: _];
+                started.ok()?;
+                engines.push((controller.retain(), engine.clone()));
+                Some(engine)
+            }
+        })
+    }
+
+    /// One `CHHapticEvent` parameter.
+    unsafe fn parameter(id: &NSString, value: f32) -> Option<Retained<AnyObject>> {
+        unsafe {
+            let p: Allocated<AnyObject> = msg_send_id![class!(CHHapticEventParameter), alloc];
+            msg_send_id![p, initWithParameterID: id, value: value]
+        }
+    }
+
+    /// The steps as a `CHHapticPattern` of continuous events: the stronger motor sets the
+    /// intensity, the weak (high-frequency) motor's share the sharpness.
+    unsafe fn pattern(steps: &[(f32, f32, u32)]) -> Option<Retained<AnyObject>> {
+        let mut events = Vec::new();
+        let mut time = 0.0f64;
+        for &(strong, weak, millis) in steps {
+            let duration = f64::from(millis) / 1000.0;
+            let at = time;
+            time += duration;
+            let intensity = strong.max(weak).clamp(0.0, 1.0);
+            if intensity <= 0.0 || duration <= 0.0 {
+                continue;
+            }
+            let sharpness = (weak / (strong + weak)).clamp(0.0, 1.0);
+            unsafe {
+                let parameters = NSArray::from_vec(vec![
+                    parameter(CHHapticEventParameterIDHapticIntensity, intensity)?,
+                    parameter(CHHapticEventParameterIDHapticSharpness, sharpness)?,
+                ]);
+                let e: Allocated<AnyObject> = msg_send_id![class!(CHHapticEvent), alloc];
+                let event: Option<Retained<AnyObject>> = msg_send_id![
+                    e,
+                    initWithEventType: CHHapticEventTypeHapticContinuous,
+                    parameters: &*parameters,
+                    relativeTime: at,
+                    duration: duration
+                ];
+                events.push(event?);
+            }
+        }
+        if events.is_empty() {
+            return None;
+        }
+        unsafe {
+            let events = NSArray::from_vec(events);
+            let none: Retained<NSArray<AnyObject>> = NSArray::new();
+            let p: Allocated<AnyObject> = msg_send_id![class!(CHHapticPattern), alloc];
+            let pattern: Result<Retained<AnyObject>, Retained<NSError>> =
+                msg_send_id![p, initWithEvents: &*events, parameters: &*none, error: _];
+            pattern.ok()
+        }
+    }
+
+    pub(super) fn vibrate(steps: &[(f32, f32, u32)]) -> bool {
+        // Safety: GameController and Core Haptics are used on the main thread, as the game runs.
+        unsafe {
+            let Some(pattern) = pattern(steps) else {
+                return false;
+            };
+            let mut played = false;
+            for controller in GCController::controllers().iter() {
+                let Some(engine) = engine(controller) else {
+                    continue;
+                };
+                let player: Result<Retained<AnyObject>, Retained<NSError>> =
+                    msg_send_id![&engine, createPlayerWithPattern: &*pattern, error: _];
+                let started = player.and_then(|player| {
+                    let r: Result<(), Retained<NSError>> =
+                        msg_send![&player, startAtTime: 0.0f64, error: _];
+                    r
+                });
+                if started.is_ok() {
+                    played = true;
+                } else {
+                    // Stopped (the app went to the background): a new engine next time.
+                    ENGINES.with_borrow_mut(|e| e.retain(|(c, _)| **c != *controller));
+                }
+            }
+            played
+        }
+    }
 
     pub(super) fn gamepads() -> Vec<Gamepad> {
         let pressed = |b: &GCControllerButtonInput| unsafe { b.isPressed() };

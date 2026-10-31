@@ -1,6 +1,6 @@
 //! The real controllers on iOS: every pad Apple's GameController framework connects (Xbox,
-//! PlayStation, Switch Pro and MFi pads), merged, as gilrs' active pad is elsewhere. No
-//! vibration or DualSense output yet: GCDeviceHaptics would need Core Haptics.
+//! PlayStation, Switch Pro and MFi pads), merged, as gilrs' active pad is elsewhere. Vibration
+//! plays through Core Haptics on every pad that has it; no DualSense lights or triggers yet.
 use super::{super::Game, Pads};
 use horizon_client::gamepad::{Button, GlyphStyle, PadState, Pulse, Rumble};
 use serde_json::{Value, json};
@@ -62,7 +62,14 @@ impl Game<'_> {
     pub(super) fn pad_output_off(&mut self) {}
     pub(super) fn pad_output_frame(&mut self) {}
     pub(in crate::game) fn pad_close_output(&mut self) {}
-    pub(super) fn pad_vibrate(&mut self, _: Rumble, _: Pulse) {}
+    pub(super) fn pad_vibrate(&mut self, rumble: Rumble, _: Pulse) {
+        let steps: Vec<_> = rumble
+            .shape()
+            .into_iter()
+            .map(|step| (step.strong, step.weak, step.millis))
+            .collect();
+        horizon_ios::controllers::vibrate(&steps);
+    }
     pub(super) fn pad_devices_status(&self) -> Value {
         let pads: Vec<Value> = self
             .pad

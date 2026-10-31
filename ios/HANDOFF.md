@@ -68,7 +68,9 @@ Each item has a fix in the latest build, but nobody has seen it working yet.
 
 - **Branch:** `claude/launcher-mods-shaders-controller-xfv3kk`, all work committed and pushed.
   No pull request opened.
-- **Done:** instances (below). Type-checked for iOS (`ios/scripts/check-ios.sh`), unit tests
+- **Done:** instances (below); touch controls hide while a pad is used (`game/touch.rs`
+  `touch_hide`); pad vibration through Core Haptics (`horizon-ios/src/controllers.rs` `vibrate`,
+  raw `msg_send` to CHHapticEngine: type-checked only, never run). Type-checked for iOS (`ios/scripts/check-ios.sh`), unit tests
   pass (`cargo test -p horizon-client --no-default-features --lib instance_list`), clippy and fmt
   clean. **Not yet seen on a device:** the Instances button, New Instance, and a switch on
   the title reloading packs and mods.
@@ -92,7 +94,10 @@ so the plan is wasmtime with JIT where it is allowed, not an interpreter.
 
 ## Not done yet
 
-- Controller vibration, DualSense lights and triggers (`game/pad/hardware_ios.rs` has stubs).
+- DualSense lights and adaptive triggers (`game/pad/hardware_ios.rs`: `GCDeviceLight`,
+  `GCDualSenseAdaptiveTrigger`).
+- Controller navigation on the startup title while resources load (`Loading` reads no pads;
+  `Game`'s title and every screen after it do, through `pad_menu.rs`).
 - Mouse look with an iPad trackpad or mouse (they arrive as touches).
 - Code mods: wasmtime needs a JIT, which iOS forbids. An interpreter (wasmi) would be the route.
 - LAN discovery by multicast needs Apple's multicast entitlement. Joining by address works.
