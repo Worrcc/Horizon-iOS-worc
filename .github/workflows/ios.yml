@@ -30,6 +30,10 @@ jobs:
         with:
           shared-key: ios
       - name: Build Horizon.app and Horizon.ipa
+        # The Azure app for Microsoft sign-in (ios/README.md, "Microsoft sign-in"): a repository
+        # variable, not a secret, since client IDs are public. Unset, the app plays offline.
+        env:
+          HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
         run: ios/build.sh
       - name: Check the bundle
         run: |

@@ -1,5 +1,6 @@
 //! The playable game loop: streaming world, player simulation at 20 ticks/s,
 //! block interaction, inventory and HUD.
+mod account;
 mod advancements;
 mod advancements_screen;
 mod agent;
@@ -15109,7 +15110,11 @@ impl Loading {
             else {
                 return;
             };
-            match self.touch.touch(t, size) {
+            match self
+                .touch
+                .touch(t, size, self.gui.as_ref().map(|g| &g.atlas))
+            {
+                touch::MenuTouchAction::Account => account::tapped(),
                 touch::MenuTouchAction::ToggleKeyboard => {
                     self.touch.keyboard = !self.touch.keyboard;
                     if let Some(window) = &self.window {
@@ -15453,6 +15458,8 @@ pub fn run() -> Result<()> {
     if let Some(message) = ios::missing_resources(&options.resources) {
         return ios::show_error("Game files needed", message);
     }
+    #[cfg(target_os = "ios")]
+    account::start();
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {

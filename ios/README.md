@@ -145,9 +145,8 @@ E, Esc, F3 and so on).
 
 ## What doesn't work yet
 
-- **Online-mode servers**: the game is signed in with a Microsoft account by the desktop
-  launcher, and there's no launcher on iOS. You can play single player, Open to LAN, and
-  offline-mode servers under an offline name.
+- **Online-mode servers** need Microsoft sign-in, which needs a one-time setup (below). Until
+  then you can play single player, Open to LAN, and offline-mode servers under an offline name.
 - **Code mods**: Horizon's code mods are WebAssembly compiled at run time, and iOS doesn't let
   apps compile code. Content mods, resource packs and data packs work.
 - **Controller vibration** and DualSense lights and triggers.
@@ -160,6 +159,33 @@ iOS can close a backgrounded app at any time, so Horizon pauses and **saves the 
 it goes to the background**. On devices with little memory, lower the render distance in the
 video settings if the app closes while playing.
 
+## Microsoft sign-in
+
+Online-mode servers check that you own Minecraft: Java Edition, so the game signs in to your
+Microsoft account. On iOS there is no launcher to do that, so the game does it itself. Tap the
+**Sign in** button at the top right of the title screen. A popup shows a code, copies it and opens
+microsoft.com/link; sign in there, then come back. The popup closes by itself and the button
+shows your player name. Your sign-in is kept in the iOS Keychain (never in the Files app) and
+renewed at each start.
+
+**One-time setup, for whoever builds the app.** Signing in needs an *Azure app registration*
+(a client ID) that Mojang has approved for Minecraft. Horizon's own isn't public, and using
+another app's is against its rules, so register your own:
+
+1. Register an app at https://portal.azure.com (Microsoft Entra ID › App registrations › New
+   registration). Choose **Personal Microsoft accounts only**; no redirect URI is needed. Then,
+   under Authentication › Advanced settings, set **Allow public client flows** to **Yes**.
+   Copy the **Application (client) ID**.
+2. Ask Mojang to approve it for Minecraft, with the form at https://aka.ms/mce-reviewappid
+   (Minecraft Java "App ID review"). It takes days to weeks. Until then, sign-in stops with
+   "not approved by Mojang yet".
+3. Give the build the ID. On GitHub: the repository's **Settings › Secrets and variables ›
+   Actions › Variables**, add `HORIZON_MSA_CLIENT_ID` with the ID (a variable, not a secret:
+   client IDs are public). Then the next **ios** build has sign-in. With `ios/build.sh`,
+   set the same environment variable when building.
+
+[docs/microsoft-account.md](../docs/microsoft-account.md) describes each step of the sign-in.
+
 ## For developers
 
 - `ios/scripts/check-ios.sh` type-checks the whole game for `aarch64-apple-ios` on any host,
@@ -171,6 +197,8 @@ video settings if the app closes while playing.
     the background, and sets the window's orientation and edge gestures.
   - `crates/horizon-client/src/touch_controls.rs`: the touch controls' logic, unit tested.
     `game/touch.rs` applies and draws them.
+  - `crates/horizon-client/src/msa.rs` and `game/account.rs`: Microsoft sign-in (the
+    launcher's device-code flow, the title screen's button and its popups, the Keychain).
   - `crates/horizon-client/src/game/pad/hardware_ios.rs`: the controllers.
     `crates/horizon-ios` holds the UIKit and GameController calls (alert, clipboard is in
     `horizon-client-input`), so the game crate keeps `forbid(unsafe_code)`.

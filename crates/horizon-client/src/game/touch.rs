@@ -79,7 +79,13 @@ fn pointer_event(device: DeviceId, output: Output, scale: f32) -> Option<WindowE
 }
 
 /// A touch button: a dark box (light while pressed) with a thin edge and its label.
-fn draw_button(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4], label: &str, down: bool) {
+pub(super) fn draw_button(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &str,
+    down: bool,
+) {
     let [x, y, w, h] = rect;
     let fill = if down {
         rgba(255, 255, 255, 0x70)
@@ -120,20 +126,30 @@ pub(super) enum MenuTouchAction {
     Events(Vec<WindowEvent>),
     /// The keyboard button: show or hide the keyboard.
     ToggleKeyboard,
+    /// The Microsoft account button (`account.rs`).
+    Account,
 }
 
 impl MenuTouch {
-    /// A touch on a window of `size` pixels.
-    pub(super) fn touch(&mut self, touch: Touch, size: [u32; 2]) -> MenuTouchAction {
+    /// A touch on a window of `size` pixels; `atlas` once the menu has its artwork.
+    pub(super) fn touch(
+        &mut self,
+        touch: Touch,
+        size: [u32; 2],
+        atlas: Option<&HudAtlas>,
+    ) -> MenuTouchAction {
         let (layout, scale) = layout_of(size);
         let at = (
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
         );
-        if touch.phase == TouchPhase::Started
-            && inside(menu_button(&layout, MenuButton::Keyboard), at)
-        {
-            return MenuTouchAction::ToggleKeyboard;
+        if touch.phase == TouchPhase::Started {
+            if inside(menu_button(&layout, MenuButton::Keyboard), at) {
+                return MenuTouchAction::ToggleKeyboard;
+            }
+            if atlas.is_some_and(|atlas| super::account::hit(&layout, atlas, at)) {
+                return MenuTouchAction::Account;
+            }
         }
         self.device = Some(touch.device_id);
         let outputs =
@@ -162,15 +178,19 @@ impl MenuTouch {
             .collect()
     }
 
-    /// The keyboard button, once a finger has touched the screen.
+    /// The account button, and the keyboard button once a finger has touched the screen.
     pub(super) fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
-        if !ENABLED || !self.controls.used {
+        if !ENABLED {
             return;
         }
         let layout = Layout {
             width: batch.width,
             height: batch.height,
         };
+        super::account::draw(batch, atlas, &layout);
+        if !self.controls.used {
+            return;
+        }
         draw_button(
             batch,
             atlas,
@@ -244,6 +264,10 @@ impl Game<'_> {
         );
         let playing = self.touch_playing();
         if !playing && touch.phase == TouchPhase::Started {
+            if self.title.is_some() && super::account::hit(&layout, &self.gui.atlas, at) {
+                super::account::tapped();
+                return;
+            }
             if inside(menu_button(&layout, MenuButton::Keyboard), at) {
                 let shown = !self.touch.keyboard;
                 self.show_keyboard(shown);
@@ -367,7 +391,7 @@ impl Game<'_> {
 
     /// The buttons over the HUD, once a finger has touched the screen.
     pub(super) fn draw_touch_controls(&self, batch: &mut HudBatch) {
-        if !ENABLED || !self.touch.controls.used {
+        if !ENABLED {
             return;
         }
         let layout = Layout {
@@ -375,6 +399,12 @@ impl Game<'_> {
             height: batch.height,
         };
         let atlas = &self.gui.atlas;
+        if self.title.is_some() {
+            super::account::draw(batch, atlas, &layout);
+        }
+        if !self.touch.controls.used {
+            return;
+        }
         let button = |batch: &mut HudBatch, rect: [f32; 4], label: &str, down: bool| {
             draw_button(batch, atlas, rect, label, down)
         };

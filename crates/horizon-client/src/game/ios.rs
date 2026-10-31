@@ -150,6 +150,10 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
             self.app.about_to_wait(event_loop);
             self.check(event_loop);
         }
+        if self.running() {
+            super::account::update();
+            horizon_ios::poll_alert();
+        }
         if !self.running() {
             wait_for_alert(event_loop);
         }

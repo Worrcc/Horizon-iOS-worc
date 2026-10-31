@@ -26,6 +26,9 @@ horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
 horizon-friends = { path = "../horizon-friends" }
+# The iOS app's UIKit calls: alerts, the keychain, controllers (game/ios.rs, game/account.rs).
+# Nothing but no-ops on other systems.
+horizon-ios = { path = "../horizon-ios" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
 # Their runtime is the `mods` feature.
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
@@ -64,10 +67,6 @@ horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
-
-[target.'cfg(target_os = "ios")'.dependencies]
-# UIKit: the alert that shows why the game stopped (game/ios.rs).
-horizon-ios = { path = "../horizon-ios" }
 
 [target.'cfg(unix)'.dependencies]
 # The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).

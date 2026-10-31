@@ -110,6 +110,7 @@ mod model_library;
 pub mod models;
 pub mod motion;
 pub mod moved_extras;
+pub mod msa;
 pub mod multiplayer;
 pub mod music;
 pub mod net;
