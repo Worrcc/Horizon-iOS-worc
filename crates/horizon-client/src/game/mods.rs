@@ -86,6 +86,9 @@ pub(super) struct ModsState {
     /// carried out after the tick's other orders.
     #[cfg(feature = "mods")]
     pub(super) seatings: Vec<(u32, Option<String>)>,
+    /// Chunks first generated since server mods last ran, for `world.generated-chunks`.
+    #[cfg(feature = "mods")]
+    pub(super) generated_chunks: Vec<horizon_mods::ChunkPos>,
     /// Server mods' spawns: dimension, kind, position, yaw and data, made before that
     /// dimension's next tick.
     #[cfg(feature = "mods")]
@@ -575,6 +578,8 @@ impl Game<'_> {
             mob_kinds: Default::default(),
             entity_resources: Default::default(),
             interactions: Default::default(),
+            player_looks: Default::default(),
+            generated_chunks: Default::default(),
             view_hit: self.mod_view_hit(),
             recipes,
             known_recipes,

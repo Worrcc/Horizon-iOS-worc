@@ -656,6 +656,16 @@ interface players {
     }
     /// The players online, in the order they joined.
     online: func() -> list<player>;
+    /// Where a player looks.
+    record look {
+        /// Degrees, as F3 shows them (0 south, 90 west).
+        yaw: f32,
+        /// Degrees: -90 looks straight up, 90 straight down.
+        pitch: f32,
+    }
+    /// Where an online player looks, by UUID; none when no such player is
+    /// online.
+    facing: func(player: string) -> option<look>;
     /// A system message to one player, after the mod's name; false when no
     /// player with that id is online. Up to 8 messages per call.
     tell: func(player: string, text: string) -> bool;
@@ -694,6 +704,17 @@ interface %world {
         raining: bool,
         thundering: bool,
     }
+    /// A chunk column of a dimension, by chunk coordinates (block x >> 4).
+    record chunk-pos {
+        dimension: string,
+        x: s32,
+        z: s32,
+    }
+    /// The chunks the server generated for the first time during the last
+    /// tick (never ones loaded from the save), at most 256, oldest first:
+    /// where a mod places its own structures, once per chunk. They are loaded
+    /// now, so `get-block` reads them and `set-blocks` changes them.
+    generated-chunks: func() -> list<chunk-pos>;
     /// Time and weather in a dimension. Unknown dimensions return zero times
     /// and false flags; known dimensions need not have loaded chunks.
     time: func(dimension: string) -> world-time;

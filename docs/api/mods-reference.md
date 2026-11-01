@@ -661,9 +661,19 @@ Capability `players`, server mods only (manifest `api = "0.3"`, experimental): t
 | `game-mode` | `game-mode` |  |
 | `health` | `f32` | Hit points as vanilla counts them: 20 is full health without effects. |
 
+### record `look`
+
+Where a player looks.
+
+| Field | Type | |
+| --- | --- | --- |
+| `yaw` | `f32` | Degrees, as F3 shows them (0 south, 90 west). |
+| `pitch` | `f32` | Degrees: -90 looks straight up, 90 straight down. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `online` | `func() -> list<player>` | The players online, in the order they joined. |
+| `facing` | `func(player: string) -> option<look>` | Where an online player looks, by UUID; none when no such player is online. |
 | `tell` | `func(player: string, text: string) -> bool` | A system message to one player, after the mod's name; false when no player with that id is online. Up to 8 messages per call. |
 | `broadcast` | `func(text: string)` | A system message to every player and the server's log, after the mod's name. Counts toward the same 8 per call. |
 | `take-item` | `func(player: string, item: string, count: u32) -> result<u32, string>` | Remove up to count by registry id, main hand first, then the rest of the inventory (including armor and off hand). Creative consumes none but reports count. The return value and subsequent calls see the real inventory now; unknown items or offline players are errors. |
@@ -694,8 +704,19 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 | `raining` | `bool` |  |
 | `thundering` | `bool` |  |
 
+### record `chunk-pos`
+
+A chunk column of a dimension, by chunk coordinates (block x >> 4).
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `x` | `s32` |  |
+| `z` | `s32` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `generated-chunks` | `func() -> list<chunk-pos>` | The chunks the server generated for the first time during the last tick (never ones loaded from the save), at most 256, oldest first: where a mod places its own structures, once per chunk. They are loaded now, so `get-block` reads them and `set-blocks` changes them. |
 | `time` | `func(dimension: string) -> world-time` | Time and weather in a dimension. Unknown dimensions return zero times and false flags; known dimensions need not have loaded chunks. |
 | `can-see-sky` | `func(dimension: string, x: s32, y: s32, z: s32) -> bool` | Level.canSeeSky: sky light 15, independent of time, sky darkening or block light. False for unknown/unloaded chunks and dimensions without skylight. |
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |

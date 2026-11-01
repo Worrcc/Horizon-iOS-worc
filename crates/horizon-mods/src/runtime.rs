@@ -61,8 +61,8 @@ pub use server_bindings::{
         Particles as EntityParticles, Point as EntityPoint, Rider as EntityRider,
         Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
     },
-    horizon::mods::players::{GameMode, Player as ServerPlayer},
-    horizon::mods::world::{BlockChange, WorldTime},
+    horizon::mods::players::{GameMode, Look as PlayerLook, Player as ServerPlayer},
+    horizon::mods::world::{BlockChange, ChunkPos, WorldTime},
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
@@ -116,6 +116,8 @@ const FUEL_INIT: u64 = 2_000_000_000;
 const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
+/// `world.generated-chunks` lists at most this many chunks.
+pub const GENERATED_CHUNKS: usize = 256;
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
 /// Orders a mod may give per `entities.give-orders` call, mobs `entities.mobs` and
@@ -197,6 +199,10 @@ pub struct Snapshot {
     /// Players' right clicks on content mods' mobs during the last tick, for
     /// `entities.interactions`.
     pub interactions: Arc<[EntityInteraction]>,
+    /// Where each online server player looks, by UUID, for `players.facing`.
+    pub player_looks: Arc<[(String, PlayerLook)]>,
+    /// The chunks first generated during the last tick, for `world.generated-chunks`.
+    pub generated_chunks: Arc<[ChunkPos]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
@@ -1714,6 +1720,12 @@ impl mod_world::Host for State {
         let view = self.world.lock().ok()?;
         view.as_ref()?.block(&dimension, x, y, z)
     }
+    fn generated_chunks(&mut self) -> Vec<ChunkPos> {
+        (self.snapshot.generated_chunks.iter())
+            .take(GENERATED_CHUNKS)
+            .cloned()
+            .collect()
+    }
     fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.biome(&dimension, x, y, z)
@@ -1976,6 +1988,11 @@ impl players::Host for State {
     }
     fn online(&mut self) -> Vec<ServerPlayer> {
         self.snapshot.players.clone()
+    }
+    fn facing(&mut self, player: String) -> Option<PlayerLook> {
+        (self.snapshot.player_looks.iter())
+            .find(|(id, _)| *id == player)
+            .map(|(_, look)| *look)
     }
     fn tell(&mut self, player: String, text: String) -> bool {
         self.snapshot.players.iter().any(|p| p.id == player)

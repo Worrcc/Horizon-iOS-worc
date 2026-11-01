@@ -588,6 +588,11 @@ that code. Changes for a dimension whose level isn't ticking wait for it
 change in a chunk that isn't loaded when it is made is skipped, as `/setblock`
 refuses one.
 
+API level 11 adds `players.facing(player)` (where an online player looks: yaw and pitch)
+and `world.generated-chunks()`: the chunks the server generated for the first time during
+the last tick (never ones loaded from a save), at most 256, oldest first, loaded when the
+mod reads them, so a mod places its own structures in new terrain once per chunk.
+
 API level 9 adds the texture, sound, particles, attribute and heal orders and the entity record's
 `texture: option<string>`. The `mob-orders` example demonstrates `/paint
 <texture|none>`, `/roar` (sound and flame particles), and `/info` (including

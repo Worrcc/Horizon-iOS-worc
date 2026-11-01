@@ -202,8 +202,8 @@ pub mod server {
         self, Area, AttributeChange, Entity, Mount, Order, Particles, Point, Rider, Sound, Target,
         Walk,
     };
-    pub use horizon::mods::players::{self, GameMode, Player};
-    pub use horizon::mods::world::{self, BlockChange, WorldTime};
+    pub use horizon::mods::players::{self, GameMode, Look, Player};
+    pub use horizon::mods::world::{self, BlockChange, ChunkPos, WorldTime};
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks
     /// for are called; the others may stay as their defaults.

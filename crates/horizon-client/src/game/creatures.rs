@@ -512,6 +512,19 @@ impl Game<'_> {
                 Arc::make_mut(c).fresh = false;
             }
             self.spawn_generation_creatures(key.0, key.1);
+            // Server mods hear of it (`world.generated-chunks`), the oldest first.
+            #[cfg(feature = "mods")]
+            if self.mods.server {
+                let list = &mut self.mods.generated_chunks;
+                if list.len() >= horizon_mods::GENERATED_CHUNKS * 4 {
+                    list.remove(0);
+                }
+                list.push(horizon_mods::ChunkPos {
+                    dimension: self.dim.id().to_owned(),
+                    x: key.0,
+                    z: key.1,
+                });
+            }
         }
         self.tick_leads();
         self.spawn_natural();

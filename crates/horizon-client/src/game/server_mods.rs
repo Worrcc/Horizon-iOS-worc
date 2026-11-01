@@ -311,6 +311,31 @@ pub(super) mod run {
 
         /// Whether what players do now reaches server mods: one is running
         /// and this game simulates the world.
+        fn player_looks(&self) -> Vec<(String, horizon_mods::PlayerLook)> {
+            let mut out = Vec::new();
+            if self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && self.player.is_some()
+            {
+                let look = horizon_mods::PlayerLook {
+                    yaw: self.yaw,
+                    pitch: self.pitch,
+                };
+                out.push((self.player_uuid_string(), look));
+            }
+            let guests = self.lan.iter().flat_map(|h| &h.hub.guests);
+            out.extend(guests.filter(|g| g.placed).map(|g| {
+                let look = horizon_mods::PlayerLook {
+                    yaw: g.yaw,
+                    pitch: g.pitch,
+                };
+                (uuid_string(g.uuid), look)
+            }));
+            out
+        }
+
+        /// Whether what players do now reaches server mods: one is running
+        /// and this game simulates the world.
         fn hears_players(&self) -> bool {
             self.mods.server && self.remote.is_none()
         }
@@ -329,6 +354,7 @@ pub(super) mod run {
             let players = self.server_players(None);
             let mut snapshot = self.server_snapshot(players.clone());
             snapshot.interactions = self.take_mod_interactions();
+            snapshot.generated_chunks = std::mem::take(&mut self.mods.generated_chunks).into();
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             self.lend_mod_inventories(None);
@@ -450,6 +476,7 @@ pub(super) mod run {
         /// running mod has capability `entities`.
         fn server_snapshot(&mut self, players: Vec<ServerPlayer>) -> Snapshot {
             let mut snapshot = self.mod_snapshot_with(players);
+            snapshot.player_looks = self.player_looks().into();
             if self.mods.entities {
                 let here = self.dim.id();
                 // Who rides which mob: the server's players by their vehicle, and the
