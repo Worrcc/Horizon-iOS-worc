@@ -100,6 +100,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("age", "minecraft:wheat"),
     ("distance,persistent,waterlogged", "minecraft:oak_leaves"),
     ("stage", "minecraft:oak_sapling"),
+    ("layers", "minecraft:snow"),
 ];
 
 /// A guess without the oracle: the template whose properties include the
@@ -127,6 +128,15 @@ pub fn template(name: &str, properties: &BTreeSet<String>) -> Option<&'static st
 /// vines), which the names alone take for a wall.
 pub fn block_template(name: &str, blockstate: &Value) -> Option<&'static str> {
     let t = template(name, &properties(blockstate))?;
+    if t == "minecraft:snow"
+        && values(blockstate, "layers").iter().any(|value| {
+            !value
+                .parse::<u8>()
+                .is_ok_and(|layers| (1..=8).contains(&layers))
+        })
+    {
+        return None;
+    }
     let boolean = ["north", "east", "south", "west"]
         .iter()
         .flat_map(|side| values(blockstate, side))
@@ -1514,6 +1524,28 @@ mod tests {
         assert_eq!(block_template("gem_vine", &vine), Some("minecraft:vine"));
         let odd = json!({"variants": {"charge=1,mode=fast": {}}});
         assert_eq!(template("gem_core", &properties(&odd)), None);
+    }
+
+    #[test]
+    fn layered_piles_use_snow_template() {
+        let variants: serde_json::Map<String, Value> = (1..=8)
+            .map(|layers| {
+                (
+                    format!("layers={layers}"),
+                    json!({"model": "gem:block/pile"}),
+                )
+            })
+            .collect();
+        let pile = json!({"variants": variants});
+        for name in ["gold_pile", "silver_pile", "copper_pile"] {
+            assert_eq!(block_template(name, &pile), Some("minecraft:snow"));
+        }
+        for layers in [0, 9] {
+            let invalid = json!({"variants": {format!("layers={layers}"): {}}});
+            assert_eq!(block_template("gem_pile", &invalid), None);
+        }
+        let extra = json!({"variants": {"layers=1,metal=gold": {}}});
+        assert_eq!(block_template("gem_pile", &extra), None);
     }
 
     /// A small NeoForge jar carried over is a content mod Horizon loads.
