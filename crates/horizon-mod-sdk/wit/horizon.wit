@@ -666,6 +666,37 @@ interface players {
     /// Where an online player looks, by UUID; none when no such player is
     /// online.
     facing: func(player: string) -> option<look>;
+    /// The block a player clicked, and its face (down, up, north, south, west, east).
+    record block-hit {
+        x: s32,
+        y: s32,
+        z: s32,
+        face: string,
+    }
+    record item-use {
+        player: string,
+        item: string,
+        /// main_hand or off_hand.
+        hand: string,
+        sneaking: bool,
+        target: option<block-hit>,
+    }
+    /// Item right clicks during the last tick, oldest first, at most 256.
+    /// The game's own use of each item still happens. Reading does not consume them.
+    item-uses: func() -> list<item-use>;
+    record attack {
+        player: string,
+        item: option<string>,
+        /// The mob id used by entities.mobs and entities.near.
+        mob: option<u32>,
+        target-player: option<string>,
+        damage: f32,
+    }
+    /// Melee hits players landed during the last tick, oldest first, at most 256.
+    attacks: func() -> list<attack>;
+    /// Apply a registered status effect; zero seconds removes it. Unknown effects
+    /// or offline players are errors. Players' clients receive the change.
+    add-effect: func(player: string, id: string, seconds: u32, amplifier: u8) -> result<_, string>;
     /// A system message to one player, after the mod's name; false when no
     /// player with that id is online. Up to 8 messages per call.
     tell: func(player: string, text: string) -> bool;
@@ -739,6 +770,22 @@ interface %world {
     /// `set-blocks` (so a chest placed by them gets it). `table` is a loot table id
     /// (`minecraft:chests/simple_dungeon`, a mod's own). Not a container then: nothing.
     set-loot-table: func(dimension: string, x: s32, y: s32, z: s32, table: string) -> result<_, string>;
+    /// A plain item stack; components are not carried by this API.
+    record item-stack {
+        item: string,
+        count: u32,
+    }
+    /// Slots of the block's container; none when it has no container or is unloaded.
+    /// This reads one block's slots, including one half of a double chest.
+    container: func(dimension: string, x: s32, y: s32, z: s32) -> option<list<option<item-stack>>>;
+    /// Replace plain stacks after this tick's block writes, updating open viewers.
+    /// The slot count must match; item ids and stack counts are validated.
+    /// If the container is absent or its slot count changed when applied, skip it.
+    set-container: func(dimension: string, x: s32, y: s32, z: s32, slots: list<option<item-stack>>) -> result<_, string>;
+    /// Load a vanilla or mod structure template, as a structure block's LOAD does,
+    /// after this tick's block writes, preserving block entities and loot tables.
+    /// Rotation is 0..3 clockwise quarter turns; mirror reflects before rotating.
+    place-structure: func(dimension: string, id: string, x: s32, y: s32, z: s32, rotation: u32, mirror: bool) -> result<_, string>;
     /// Current server rule value as text, or none for an unknown rule.
     /// Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias.
     game-rule: func(name: string) -> option<string>;
@@ -840,6 +887,13 @@ interface entities {
         /// Base value, 0 to 1024; vanilla's attribute bounds limit its effective value.
         value: f64,
     }
+    record effect-change {
+        /// A registered effect id, such as minecraft:slowness.
+        id: string,
+        /// Duration in seconds; zero removes this effect.
+        seconds: u32,
+        amplifier: u8,
+    }
     record sound {
         /// A vanilla sound event id or a loaded mod's sounds.json event.
         name: string,
@@ -920,6 +974,8 @@ interface entities {
         /// LivingEntity.heal: add a finite amount, clamped to 0..max health,
         /// only while health is positive (never revives a dead mob).
         heal(f32),
+        /// Apply a registered status effect; zero seconds removes it.
+        effect(effect-change),
         /// Seat that player on it, at that seat (moved with later `mount`
         /// orders for the same player). The player gets off as from any
         /// mount (sneaking) or on `dismount`; the mob does not move by itself

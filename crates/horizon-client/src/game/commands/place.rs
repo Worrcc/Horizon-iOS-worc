@@ -1,7 +1,7 @@
 //! `/place template` (PlaceCommand): a saved structure template placed with
 //! rotation, mirroring and integrity.
 use super::{Arg, Context, Game, R, err};
-use horizon_client::{save, text::Text};
+use horizon_client::{structure_blocks, text::Text};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_world::{
     compression::Compression,
@@ -9,6 +9,14 @@ use horizon_world::{
     worldgen::structure::{Mirror, Rotation, StateTransforms, StructureTemplate},
 };
 use std::sync::{Arc, OnceLock};
+
+struct Placement {
+    rotation: Rotation,
+    mirror: Mirror,
+    integrity: f32,
+    seed: i64,
+    strict: bool,
+}
 
 fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
@@ -208,8 +216,34 @@ impl Game<'_> {
             _ => 0,
         };
         let strict = ctx.has("strict");
+        self.place_template_at(
+            &id,
+            pos,
+            Placement {
+                rotation,
+                mirror,
+                integrity,
+                seed,
+                strict,
+            },
+        )?;
+        self.feedback(Text::translate(
+            "commands.place.template.success",
+            &[Text::literal(id), num(pos[0]), num(pos[1]), num(pos[2])],
+        ));
+        Ok(1)
+    }
+    /// The same placement path is used by `/place template` and server mods.
+    fn place_template_at(&mut self, id: &str, pos: [i32; 3], placement: Placement) -> R<usize> {
+        let Placement {
+            rotation,
+            mirror,
+            integrity,
+            seed,
+            strict,
+        } = placement;
         let template = self
-            .load_template(&id)
+            .load_template(id)
             .filter(|t| !t.palettes().is_empty())
             .ok_or_else(|| err("commands.place.template.invalid", &[&id]))?;
         let transforms = self
@@ -230,26 +264,35 @@ impl Game<'_> {
                 continue;
             }
             let t = StructureTemplate::transform(b.pos, mirror, rotation, [0, 0, 0]);
-            let at = [pos[0] + t[0], pos[1] + t[1], pos[2] + t[2]];
+            let [Some(x), Some(y), Some(z)] = [
+                pos[0].checked_add(t[0]),
+                pos[1].checked_add(t[1]),
+                pos[2].checked_add(t[2]),
+            ] else {
+                continue;
+            };
+            let at = [x, y, z];
             if !self.world.chunks.contains_key(&(at[0] >> 4, at[2] >> 4)) {
                 continue;
             }
             let state = transforms.rotate(transforms.mirror(b.state, mirror), rotation);
-            if self.place_state(at, state, strict).is_ok() {
-                placed += 1;
+            if &*self.res.facts().get(state).name == "minecraft:structure_void" {
+                continue;
             }
-            if let Some(data) = &b.nbt {
-                let mut tag = Tag::Compound(data.clone());
-                if let Tag::Compound(c) = &mut tag {
-                    c.insert("x".into(), Tag::Int(at[0]));
-                    c.insert("y".into(), Tag::Int(at[1]));
-                    c.insert("z".into(), Tag::Int(at[2]));
-                }
-                if let Some((_, entity)) = save::decode_block_entity(&tag) {
-                    self.world
-                        .block_entities
-                        .insert((at[0], at[1], at[2]), entity);
-                }
+            if self.place_state(at, state, strict).is_err() {
+                continue;
+            }
+            placed += 1;
+            let mut data = b.nbt.clone().unwrap_or_default();
+            data.insert("x".into(), Tag::Int(at[0]));
+            data.insert("y".into(), Tag::Int(at[1]));
+            data.insert("z".into(), Tag::Int(at[2]));
+            let name = self.res.facts().get(state).name.clone();
+            if let Some(mut entity) = structure_blocks::generated_block_entity(&name, &data) {
+                let key = (at[0], at[1], at[2]);
+                self.take_loot_table(key, &Tag::Compound(data), &mut entity);
+                self.world.block_entities.insert(key, entity);
+                self.container_changed(key);
             }
         }
         // Entities saved with the template.
@@ -273,10 +316,40 @@ impl Game<'_> {
         if placed == 0 {
             return Err(err("commands.place.template.failed", &[]));
         }
-        self.feedback(Text::translate(
-            "commands.place.template.success",
-            &[Text::literal(id), num(pos[0]), num(pos[1]), num(pos[2])],
-        ));
-        Ok(1)
+        Ok(placed)
+    }
+
+    #[cfg(feature = "mods")]
+    pub(in crate::game) fn place_mod_template(
+        &mut self,
+        id: &str,
+        pos: [i32; 3],
+        rotation: u32,
+        mirror: bool,
+    ) -> Result<(), String> {
+        let rotation = match rotation {
+            0 => Rotation::None,
+            1 => Rotation::Clockwise90,
+            2 => Rotation::Clockwise180,
+            3 => Rotation::Counterclockwise90,
+            _ => return Err("rotation must be 0..3".into()),
+        };
+        self.place_template_at(
+            id,
+            pos,
+            Placement {
+                rotation,
+                mirror: if mirror {
+                    Mirror::LeftRight
+                } else {
+                    Mirror::None
+                },
+                integrity: 1.0,
+                seed: 0,
+                strict: false,
+            },
+        )
+        .map(drop)
+        .map_err(|e| format!("{e:?}"))
     }
 }

@@ -12,7 +12,7 @@ use std::{
 };
 use wasmtime::{
     Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
-    component::{Component, HasSelf, Linker},
+    component::{Component, HasSelf, Linker, Val},
 };
 
 mod bindings {
@@ -26,7 +26,7 @@ mod server_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-server-mod",
-        additional_derives: [PartialEq],
+        additional_derives: [PartialEq, serde::Deserialize],
         with: {
             "horizon:mods/log": super::bindings::horizon::mods::log,
             "horizon:mods/storage": super::bindings::horizon::mods::storage,
@@ -56,13 +56,16 @@ pub use server_bindings::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
     },
     horizon::mods::entities::{
-        Area as EntityArea, AttributeChange as EntityAttributeChange, Entity as ModEntity,
-        Interaction as EntityInteraction, Mount as EntityMount, Order as EntityOrder,
-        Particles as EntityParticles, Point as EntityPoint, Rider as EntityRider,
-        Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
+        Area as EntityArea, AttributeChange as EntityAttributeChange, EffectChange,
+        Entity as ModEntity, Interaction as EntityInteraction, Mount as EntityMount,
+        Order as EntityOrder, Particles as EntityParticles, Point as EntityPoint,
+        Rider as EntityRider, Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
     },
-    horizon::mods::players::{GameMode, Look as PlayerLook, Player as ServerPlayer},
-    horizon::mods::world::{BlockChange, ChunkPos, WorldTime},
+    horizon::mods::players::{
+        Attack as PlayerAttack, BlockHit as PlayerBlockHit, GameMode, ItemUse as PlayerItemUse,
+        Look as PlayerLook, Player as ServerPlayer,
+    },
+    horizon::mods::world::{BlockChange, ChunkPos, ItemStack as ContainerItemStack, WorldTime},
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
@@ -118,6 +121,10 @@ const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
 /// `world.generated-chunks` lists at most this many chunks.
 pub const GENERATED_CHUNKS: usize = 256;
+/// Item uses and landed melee attacks retained per tick.
+pub const PLAYER_ACTIONS: usize = 256;
+/// Largest block container accepted by the plain-slot API.
+pub const CONTAINER_SLOTS: usize = 256;
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
 /// Orders a mod may give per `entities.give-orders` call, mobs `entities.mobs` and
@@ -199,6 +206,11 @@ pub struct Snapshot {
     /// Players' right clicks on content mods' mobs during the last tick, for
     /// `entities.interactions`.
     pub interactions: Arc<[EntityInteraction]>,
+    /// Item right clicks and landed melee hits during the last tick.
+    pub item_uses: Arc<[PlayerItemUse]>,
+    pub attacks: Arc<[PlayerAttack]>,
+    /// Status effects from the game registry, including for players-only mods.
+    pub effect_ids: Arc<std::collections::HashSet<String>>,
     /// Where each online server player looks, by UUID, for `players.facing`.
     pub player_looks: Arc<[(String, PlayerLook)]>,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
@@ -286,6 +298,25 @@ pub enum Output {
         pos: (i32, i32, i32),
         table: String,
     },
+    /// `players.add-effect`: a change sent to the player's client too.
+    PlayerEffect {
+        player: String,
+        effect: EffectChange,
+    },
+    /// `world.set-container`: plain slots replaced after the tick's block writes.
+    SetContainer {
+        dimension: String,
+        pos: (i32, i32, i32),
+        slots: Vec<Option<ContainerItemStack>>,
+    },
+    /// `world.place-structure`: a template loaded after the tick's block writes.
+    PlaceStructure {
+        dimension: String,
+        id: String,
+        pos: (i32, i32, i32),
+        rotation: u32,
+        mirror: bool,
+    },
     /// `entities.give-orders`: orders to content mods' mobs, by id, in order, each
     /// checked against the tick's [`Snapshot::entities`].
     Orders {
@@ -330,6 +361,28 @@ pub trait WorldView: std::any::Any + Send {
     /// Sky light 15 at the position; false when no chunk can be read.
     fn can_see_sky(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> bool {
         false
+    }
+    /// One block's plain container slots (components are not carried).
+    fn container(
+        &self,
+        _dimension: &str,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+    ) -> Option<Vec<Option<ContainerItemStack>>> {
+        None
+    }
+    /// Check the item registry and that a nonempty stack fits its maximum size.
+    fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+        if resource_id(item) && (1..=99).contains(&count) {
+            Ok(())
+        } else {
+            Err(format!("invalid item stack {item} x{count}"))
+        }
+    }
+    /// Whether a structure template exists in the loaded vanilla/mod resources.
+    fn check_structure(&self, id: &str) -> Result<(), String> {
+        Err(format!("no structure template {id}"))
     }
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
@@ -670,6 +723,29 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            // Orders are imported by mods. Their variant grows over time, but
+            // Wasmtime's typed bindings require an identical case list. Decode
+            // by case name so components built against earlier subsets keep
+            // their own discriminants and still reach the same validation.
+            linker.allow_shadowing(true);
+            linker
+                .instance("horizon:mods/entities@0.1.0")
+                .map_err(|e| e.to_string())?
+                .func_new("give-orders", |mut store, _, params, results| {
+                    let result = decode_orders(params)
+                        .and_then(|orders| entities::Host::give_orders(store.data_mut(), orders));
+                    let [output] = results else {
+                        return Err(wasmtime::Error::msg("give-orders returns one result"));
+                    };
+                    *output = Val::Result(
+                        result
+                            .map(|()| None)
+                            .map_err(|error| Some(Box::new(Val::String(error)))),
+                    );
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())?;
+            linker.allow_shadowing(false);
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -1690,6 +1766,82 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn container(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<Vec<Option<ContainerItemStack>>> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.container(&dimension, x, y, z)
+    }
+    fn set_container(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        slots: Vec<Option<ContainerItemStack>>,
+    ) -> Result<(), String> {
+        if slots.len() > CONTAINER_SLOTS {
+            return Err(format!("at most {CONTAINER_SLOTS} container slots"));
+        }
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let view = view.as_ref().ok_or("world unavailable")?;
+        if !view.has_dimension(&dimension) {
+            return Err(format!("no dimension {dimension}"));
+        }
+        if let Some(current) = view.container(&dimension, x, y, z)
+            && current.len() != slots.len()
+        {
+            return Err(format!(
+                "container has {} slots, got {}",
+                current.len(),
+                slots.len()
+            ));
+        }
+        for stack in slots.iter().flatten() {
+            view.check_item_stack(&stack.item, stack.count)?;
+        }
+        self.out.push(Output::SetContainer {
+            dimension,
+            pos: (x, y, z),
+            slots,
+        });
+        Ok(())
+    }
+    fn place_structure(
+        &mut self,
+        dimension: String,
+        id: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        rotation: u32,
+        mirror: bool,
+    ) -> Result<(), String> {
+        if rotation > 3 {
+            return Err("rotation is 0 to 3 quarter turns".into());
+        }
+        if !resource_id(&id) {
+            return Err(format!("{id:?} is not a structure template id"));
+        }
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let view = view.as_ref().ok_or("world unavailable")?;
+        if !view.has_dimension(&dimension) {
+            return Err(format!("no dimension {dimension}"));
+        }
+        view.check_structure(&id)?;
+        self.out.push(Output::PlaceStructure {
+            dimension,
+            id,
+            pos: (x, y, z),
+            rotation,
+            mirror,
+        });
+        Ok(())
+    }
     fn time(&mut self, dimension: String) -> WorldTime {
         self.snapshot
             .world_times
@@ -1791,6 +1943,93 @@ impl mod_world::Host for State {
         Ok(())
     }
 }
+/// Decode self-describing component values without assuming a variant's
+/// numeric discriminants. The derived Rust records provide the field/type
+/// checks, while the normal host implementation validates names and bounds.
+fn decode_orders(params: &[Val]) -> Result<Vec<(u32, EntityOrder)>, String> {
+    let [Val::List(orders)] = params else {
+        return Err("give-orders expects a list of (mob id, order)".into());
+    };
+    if orders.len() > ORDERS_PER_CALL {
+        return Err(format!(
+            "{} orders: at most {ORDERS_PER_CALL} per call",
+            orders.len()
+        ));
+    }
+    let value = component_json(&params[0], 0)?;
+    serde_json::from_value(value).map_err(|error| format!("invalid entity orders: {error}"))
+}
+fn component_json(value: &Val, depth: usize) -> Result<serde_json::Value, String> {
+    use serde_json::Value as Json;
+    if depth > 16 {
+        return Err("entity order value is too deeply nested".into());
+    }
+    let child = |value: &Val| component_json(value, depth + 1);
+    let case_name = |name: &str| {
+        name.split('-')
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(chars).collect()
+                })
+            })
+            .collect::<String>()
+    };
+    Ok(match value {
+        Val::Bool(value) => Json::Bool(*value),
+        Val::U8(value) => (*value).into(),
+        Val::U32(value) => (*value).into(),
+        Val::Float32(value) if value.is_finite() => Json::from(*value),
+        Val::Float64(value) if value.is_finite() => Json::from(*value),
+        Val::String(value) => Json::String(value.clone()),
+        Val::List(values) | Val::Tuple(values) => {
+            Json::Array(values.iter().map(child).collect::<Result<_, _>>()?)
+        }
+        Val::Record(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(name, value)| child(value).map(|value| (name.replace('-', "_"), value)))
+                .collect::<Result<_, _>>()?,
+        ),
+        Val::Variant(name, None) | Val::Enum(name) => Json::String(case_name(name)),
+        Val::Variant(name, Some(value)) => {
+            Json::Object([(case_name(name), child(value)?)].into_iter().collect())
+        }
+        Val::Option(None) => Json::Null,
+        Val::Option(Some(value)) => child(value)?,
+        _ => return Err("invalid or nonfinite entity order value".into()),
+    })
+}
+
+/// A namespaced registry id with no path traversal or extra separators.
+fn resource_id(id: &str) -> bool {
+    id.len() <= 256
+        && id.split_once(':').is_some_and(|(namespace, path)| {
+            !namespace.is_empty()
+                && namespace != "."
+                && namespace != ".."
+                && !path.is_empty()
+                && namespace
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
+                && path
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_./-".contains(&b))
+                && path
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        })
+}
+fn check_effect(effect: &EffectChange, snapshot: &Snapshot) -> Result<(), String> {
+    if !snapshot.effect_ids.contains(&effect.id) {
+        return Err(format!("unknown status effect {}", effect.id));
+    }
+    // The game counts durations in signed ticks, twenty per second.
+    if effect.seconds > i32::MAX as u32 / 20 {
+        return Err("effect duration exceeds the game's tick range".into());
+    }
+    Ok(())
+}
 /// A content mod's kind: any namespace but vanilla's.
 fn own_kind(kind: &str) -> bool {
     !kind.starts_with("minecraft:")
@@ -1889,6 +2128,7 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
 fn check_order_names(order: &EntityOrder, snapshot: &Snapshot) -> Result<(), String> {
     let resources = &snapshot.entity_resources;
     match order {
+        EntityOrder::Effect(effect) => check_effect(effect, snapshot),
         EntityOrder::Target(EntityTarget::Player(id))
             if !snapshot.players.iter().any(|p| p.id == *id) =>
         {
@@ -2004,6 +2244,41 @@ impl entities::Host for State {
     }
 }
 impl players::Host for State {
+    fn item_uses(&mut self) -> Vec<PlayerItemUse> {
+        self.snapshot
+            .item_uses
+            .iter()
+            .take(PLAYER_ACTIONS)
+            .cloned()
+            .collect()
+    }
+    fn attacks(&mut self) -> Vec<PlayerAttack> {
+        self.snapshot
+            .attacks
+            .iter()
+            .take(PLAYER_ACTIONS)
+            .cloned()
+            .collect()
+    }
+    fn add_effect(
+        &mut self,
+        player: String,
+        id: String,
+        seconds: u32,
+        amplifier: u8,
+    ) -> Result<(), String> {
+        if !self.snapshot.players.iter().any(|p| p.id == player) {
+            return Err(format!("no online player {player}"));
+        }
+        let effect = EffectChange {
+            id,
+            seconds,
+            amplifier,
+        };
+        check_effect(&effect, &self.snapshot)?;
+        self.out.push(Output::PlayerEffect { player, effect });
+        Ok(())
+    }
     fn take_item(&mut self, player: String, item: String, count: u32) -> Result<u32, String> {
         let mut slot = self
             .inventories
@@ -2499,6 +2774,415 @@ mod entity_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn pre_level_12_server_components_still_link() {
+        use wit_parser::{ManglingAndAbi, Resolve, TypeDefKind};
+        let wit = include_str!("../../horizon-mod-sdk/wit/horizon.wit");
+        let mut resolve = Resolve::default();
+        let package = resolve.push_str("horizon.wit", wit).unwrap();
+        // Reconstruct the previous imported interfaces: no API-12 functions
+        // and the old order variant, including its original mount discriminant.
+        for (_, interface) in resolve.interfaces.iter_mut() {
+            let additions: &[&str] = match interface.name.as_deref() {
+                Some("players") => &["item-uses", "attacks", "add-effect"],
+                Some("world") => &["container", "set-container", "place-structure"],
+                _ => &[],
+            };
+            interface
+                .functions
+                .retain(|name, _| !additions.contains(&name.as_str()));
+        }
+        for (_, ty) in resolve.types.iter_mut() {
+            if ty.name.as_deref() == Some("order")
+                && let TypeDefKind::Variant(variant) = &mut ty.kind
+            {
+                variant.cases.retain(|case| case.name != "effect");
+            }
+        }
+        let world = resolve
+            .select_world(&[package], Some("horizon-server-mod"))
+            .unwrap();
+        let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
+        let wasm = wit_component::ComponentEncoder::default()
+            .module(&module)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut mods = Mods::default();
+        let (engine, linker) = mods.engine().unwrap();
+        let component = Component::new(engine, wasm).unwrap();
+        let mut store = Store::new(engine, state());
+        store.set_fuel(FUEL_INIT).unwrap();
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        // Dummy exports trap if called; binding them still checks every old
+        // server-events signature against the current generated bindings.
+        HorizonServerMod::new(&mut store, &instance).unwrap();
+    }
+
+    #[test]
+    fn dynamic_orders_decode_case_names_and_preserve_payloads() {
+        let record = |fields: Vec<(&str, Val)>| {
+            Val::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value))
+                    .collect(),
+            )
+        };
+        let variant =
+            |name: &str, payload: Option<Val>| Val::Variant(name.into(), payload.map(Box::new));
+        let order = |value| Val::Tuple(vec![Val::U32(7), value]);
+        let values = Val::List(vec![
+            order(variant(
+                "mount",
+                Some(record(vec![
+                    ("player", Val::String("alice".into())),
+                    ("height", Val::Float32(2.0)),
+                    ("forward", Val::Float32(-0.5)),
+                ])),
+            )),
+            order(variant("dismount", None)),
+            order(variant(
+                "set-data",
+                Some(Val::List(vec![
+                    Val::Tuple(vec![
+                        Val::String("owner".into()),
+                        Val::Option(Some(Box::new(Val::String("alice".into())))),
+                    ]),
+                    Val::Tuple(vec![Val::String("old".into()), Val::Option(None)]),
+                ])),
+            )),
+            order(variant(
+                "effect",
+                Some(record(vec![
+                    ("id", Val::String("minecraft:wither".into())),
+                    ("seconds", Val::U32(10)),
+                    ("amplifier", Val::U8(2)),
+                ])),
+            )),
+            order(variant("target", Some(variant("nearest-player", None)))),
+            order(variant("animate", Some(Val::Option(None)))),
+        ]);
+        let got = decode_orders(&[values]).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    7,
+                    EntityOrder::Mount(EntityMount {
+                        player: "alice".into(),
+                        height: 2.0,
+                        forward: -0.5
+                    })
+                ),
+                (7, EntityOrder::Dismount),
+                (
+                    7,
+                    EntityOrder::SetData(vec![
+                        ("owner".into(), Some("alice".into())),
+                        ("old".into(), None)
+                    ])
+                ),
+                (
+                    7,
+                    EntityOrder::Effect(EffectChange {
+                        id: "minecraft:wither".into(),
+                        seconds: 10,
+                        amplifier: 2
+                    })
+                ),
+                (7, EntityOrder::Target(EntityTarget::NearestPlayer)),
+                (7, EntityOrder::Animate(None)),
+            ]
+        );
+        assert!(decode_orders(&[Val::List(vec![order(variant("unknown", None))])]).is_err());
+        assert!(
+            decode_orders(&[Val::List(vec![order(variant(
+                "heal",
+                Some(Val::Float32(f32::NAN))
+            ))])])
+            .is_err()
+        );
+        assert!(
+            decode_orders(&[Val::List(vec![
+                order(variant("halt", None));
+                ORDERS_PER_CALL + 1
+            ])])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_ids_reject_namespace_and_path_traversal() {
+        for bad in [
+            ".:template",
+            "..:template",
+            "minecraft:../template",
+            "minecraft:./template",
+            "minecraft:a//b",
+            "minecraft:a:b",
+        ] {
+            assert!(!resource_id(bad), "{bad}");
+        }
+        for good in ["minecraft:igloo/top", "ruby_mod:temple.v2/test-1"] {
+            assert!(resource_id(good), "{good}");
+        }
+    }
+
+    #[test]
+    fn player_action_lists_are_ordered_bounded_and_repeatable() {
+        let mut state = state();
+        for count in [0, 2, 256, 300] {
+            let item_uses = (0..count)
+                .map(|i| PlayerItemUse {
+                    player: i.to_string(),
+                    item: "minecraft:stick".into(),
+                    hand: "off_hand".into(),
+                    sneaking: i % 2 == 0,
+                    target: Some(PlayerBlockHit {
+                        x: i,
+                        y: 64,
+                        z: 0,
+                        face: "up".into(),
+                    }),
+                })
+                .collect::<Vec<_>>();
+            let attacks = (0..count)
+                .map(|i| PlayerAttack {
+                    player: i.to_string(),
+                    item: None,
+                    mob: Some(i as u32),
+                    target_player: None,
+                    damage: i as f32,
+                })
+                .collect::<Vec<_>>();
+            state.snapshot = Arc::new(Snapshot {
+                item_uses: item_uses.into(),
+                attacks: attacks.into(),
+                ..Default::default()
+            });
+            for _ in 0..2 {
+                let uses = players::Host::item_uses(&mut state);
+                let attacks = players::Host::attacks(&mut state);
+                assert_eq!(
+                    uses,
+                    state.snapshot.item_uses[..(count as usize).min(PLAYER_ACTIONS)]
+                );
+                assert_eq!(
+                    attacks,
+                    state.snapshot.attacks[..(count as usize).min(PLAYER_ACTIONS)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn status_effects_require_registry_ids_online_players_and_safe_durations() {
+        let mut state = state();
+        state.snapshot = Arc::new(Snapshot {
+            players: vec![ServerPlayer {
+                id: "alice".into(),
+                name: "Alice".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            effect_ids: Arc::new(["minecraft:slowness".into()].into()),
+            ..Default::default()
+        });
+        let effect = |id: &str, seconds| EffectChange {
+            id: id.into(),
+            seconds,
+            amplifier: 255,
+        };
+        assert!(
+            check_order_names(
+                &EntityOrder::Effect(effect("minecraft:slowness", 0)),
+                &state.snapshot
+            )
+            .is_ok()
+        );
+        assert!(
+            check_order_names(
+                &EntityOrder::Effect(effect("minecraft:unknown", 2)),
+                &state.snapshot
+            )
+            .is_err()
+        );
+        assert!(
+            check_order_names(
+                &EntityOrder::Effect(effect("minecraft:slowness", u32::MAX)),
+                &state.snapshot
+            )
+            .is_err()
+        );
+        assert!(
+            players::Host::add_effect(
+                &mut state,
+                "offline".into(),
+                "minecraft:slowness".into(),
+                2,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            players::Host::add_effect(&mut state, "alice".into(), "minecraft:unknown".into(), 2, 0)
+                .is_err()
+        );
+        assert!(state.out.is_empty());
+        for seconds in [0, 20] {
+            players::Host::add_effect(
+                &mut state,
+                "alice".into(),
+                "minecraft:slowness".into(),
+                seconds,
+                255,
+            )
+            .unwrap();
+            assert_eq!(
+                state.out.last(),
+                Some(&Output::PlayerEffect {
+                    player: "alice".into(),
+                    effect: effect("minecraft:slowness", seconds)
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn container_and_template_validation_queues_only_valid_changes() {
+        struct Templates;
+        impl WorldView for Templates {
+            fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn has_dimension(&self, dimension: &str) -> bool {
+                dimension == "minecraft:overworld"
+            }
+            fn check_state(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn container(
+                &self,
+                _: &str,
+                x: i32,
+                _: i32,
+                _: i32,
+            ) -> Option<Vec<Option<ContainerItemStack>>> {
+                (x == 0).then(|| vec![None; 3])
+            }
+            fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+                (item == "minecraft:stick" && (1..=64).contains(&count))
+                    .then_some(())
+                    .ok_or("invalid stack".into())
+            }
+            fn check_structure(&self, id: &str) -> Result<(), String> {
+                (id == "minecraft:igloo/top")
+                    .then_some(())
+                    .ok_or("unknown template".into())
+            }
+        }
+        let mut state = state();
+        *state.world.lock().unwrap() = Some(Box::new(Templates));
+        let dimension = "minecraft:overworld";
+        assert_eq!(
+            mod_world::Host::container(&mut state, dimension.into(), 0, 64, 0),
+            Some(vec![None; 3])
+        );
+        assert_eq!(
+            mod_world::Host::container(&mut state, dimension.into(), 1, 64, 0),
+            None
+        );
+        let stack = |item: &str, count| {
+            Some(ContainerItemStack {
+                item: item.into(),
+                count,
+            })
+        };
+        for slots in [
+            vec![None; 2],
+            vec![None; CONTAINER_SLOTS + 1],
+            vec![stack("unknown:item", 1), None, None],
+            vec![stack("minecraft:stick", 0), None, None],
+            vec![stack("minecraft:stick", 65), None, None],
+        ] {
+            assert!(
+                mod_world::Host::set_container(&mut state, dimension.into(), 0, 64, 0, slots)
+                    .is_err()
+            );
+        }
+        assert!(
+            mod_world::Host::set_container(
+                &mut state,
+                "unknown:dimension".into(),
+                0,
+                64,
+                0,
+                vec![None; 3]
+            )
+            .is_err()
+        );
+        for (id, rotation) in [
+            ("minecraft:igloo/top", 4),
+            ("minecraft:unknown", 0),
+            ("minecraft:../igloo/top", 0),
+            ("minecraft:igloo:top", 0),
+        ] {
+            assert!(
+                mod_world::Host::place_structure(
+                    &mut state,
+                    dimension.into(),
+                    id.into(),
+                    0,
+                    64,
+                    0,
+                    rotation,
+                    false
+                )
+                .is_err()
+            );
+        }
+        assert!(state.out.is_empty());
+        mod_world::Host::set_container(
+            &mut state,
+            dimension.into(),
+            0,
+            64,
+            0,
+            vec![stack("minecraft:stick", 64), None, None],
+        )
+        .unwrap();
+        // A container placed by this tick's block writes is validated again on apply.
+        mod_world::Host::set_container(&mut state, dimension.into(), 1, 64, 0, vec![None; 3])
+            .unwrap();
+        mod_world::Host::place_structure(
+            &mut state,
+            dimension.into(),
+            "minecraft:igloo/top".into(),
+            0,
+            64,
+            0,
+            3,
+            true,
+        )
+        .unwrap();
+        assert_eq!(state.out.len(), 3);
     }
 
     #[test]

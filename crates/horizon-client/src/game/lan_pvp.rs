@@ -35,6 +35,10 @@ pub(super) enum Victim {
 pub(super) struct Strike {
     /// The attacking guest, kept after their turn through `as_guest` ends.
     attacker: Option<u32>,
+    #[cfg(feature = "mods")]
+    mod_player: String,
+    #[cfg(feature = "mods")]
+    mod_item: Option<String>,
     amount: f32,
     scale: f32,
     crit: bool,
@@ -60,6 +64,10 @@ pub(super) struct Strike {
 pub(super) struct Sweep {
     /// The attacking guest (none: the host).
     attacker: Option<u32>,
+    #[cfg(feature = "mods")]
+    mod_player: String,
+    #[cfg(feature = "mods")]
+    mod_item: Option<String>,
     from: [f64; 3],
     /// The damage after the enchantments and the attack strength.
     damage: f32,
@@ -166,6 +174,15 @@ impl Game<'_> {
         };
         Some(Strike {
             attacker: self.lan_acting,
+            #[cfg(feature = "mods")]
+            mod_player: self.lan_acting_uuid.map_or_else(
+                || self.player_uuid_string(),
+                super::server_mods::run::uuid_string,
+            ),
+            #[cfg(feature = "mods")]
+            mod_item: self.inventory[self.selected]
+                .as_ref()
+                .map(|s| s.item.to_string()),
             amount,
             scale,
             crit,
@@ -288,7 +305,9 @@ impl Game<'_> {
         // attacker), then causeExtraKnockback along the attacker's yaw.
         let land = |g: &mut Self| {
             g.combat.player_attacker = Some((s.from, s.disable_blocking));
+            let before = g.player.as_ref().map_or(0.0, |p| p.health.health());
             let hurt = g.mob_hits_player(s.amount, s.from, "minecraft:player_attack");
+            let damage = before - g.player.as_ref().map_or(0.0, |p| p.health.health());
             g.combat.player_attacker = None;
             let (strength, xd, zd) = s.knockback;
             if hurt && strength > 0.0 {
@@ -296,9 +315,9 @@ impl Game<'_> {
             }
             // The victim's thorns, dealt to the attacker below.
             let thorns = if hurt { g.thorns_damage() } else { Vec::new() };
-            (hurt, thorns)
+            (hurt, thorns, damage)
         };
-        let (hurt, thorns) = if self.ui.rules.bool("pvp") && harm {
+        let (hurt, thorns, _damage) = if self.ui.rules.bool("pvp") && harm {
             match victim {
                 Victim::Host => land(self),
                 Victim::Guest(conn) => self.guest_struck_by(host, conn, land).unwrap_or_default(),
@@ -306,6 +325,19 @@ impl Game<'_> {
         } else {
             Default::default()
         };
+        #[cfg(feature = "mods")]
+        if hurt {
+            let target = match victim {
+                Victim::Host => Some(self.player_uuid_string()),
+                Victim::Guest(conn) => host
+                    .hub
+                    .guest(conn)
+                    .map(|g| super::server_mods::run::uuid_string(g.uuid)),
+            };
+            if let Some(target) = target {
+                self.mod_player_hit(s.mod_player.clone(), s.mod_item.clone(), target, _damage);
+            }
+        }
         // ServerPlayer.awardKillScore: the blow that kills a player.
         if hurt {
             let died = match victim {
@@ -403,6 +435,15 @@ impl Game<'_> {
         let damage = (base + self.enchant_damage_bonus("minecraft:player")) * scale;
         Sweep {
             attacker: self.lan_acting,
+            #[cfg(feature = "mods")]
+            mod_player: self.lan_acting_uuid.map_or_else(
+                || self.player_uuid_string(),
+                super::server_mods::run::uuid_string,
+            ),
+            #[cfg(feature = "mods")]
+            mod_item: self.inventory[self.selected]
+                .as_ref()
+                .map(|s| s.item.to_string()),
             from,
             damage,
             knockback: self.extra_knockback_direction(),
@@ -464,10 +505,13 @@ impl Game<'_> {
         }
         let (xd, zd) = sweep.knockback;
         let land = |g: &mut Self| {
+            let before = g.player.as_ref().map_or(0.0, |p| p.health.health());
             let hurt = g.mob_hits_player(sweep.damage, sweep.from, "minecraft:player_attack");
+            let damage = before - g.player.as_ref().map_or(0.0, |p| p.health.health());
             if hurt {
                 g.knock_back_player(0.4, xd, zd);
             }
+            (hurt, damage)
         };
         for (victim, team) in victims {
             if sweep.skip == Some(victim)
@@ -476,10 +520,26 @@ impl Game<'_> {
             {
                 continue;
             }
-            match victim {
+            let (_hurt, _damage) = match victim {
                 Victim::Host => land(self),
-                Victim::Guest(conn) => {
-                    self.guest_struck_by(host, conn, land);
+                Victim::Guest(conn) => self.guest_struck_by(host, conn, land).unwrap_or_default(),
+            };
+            #[cfg(feature = "mods")]
+            if _hurt {
+                let target = match victim {
+                    Victim::Host => Some(self.player_uuid_string()),
+                    Victim::Guest(conn) => host
+                        .hub
+                        .guest(conn)
+                        .map(|g| super::server_mods::run::uuid_string(g.uuid)),
+                };
+                if let Some(target) = target {
+                    self.mod_player_hit(
+                        sweep.mod_player.clone(),
+                        sweep.mod_item.clone(),
+                        target,
+                        _damage,
+                    );
                 }
             }
         }

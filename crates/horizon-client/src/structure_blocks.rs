@@ -201,7 +201,7 @@ fn text(nbt: &Compound, key: &str) -> Option<String> {
 /// before a container's loot is unpacked: `StructureTemplate.placeInWorld`
 /// hands the template's block entity NBT to `loadWithComponents`, which is
 /// what a chunk load does with a saved one.
-fn generated_block_entity(block: &str, nbt: &Compound) -> Option<BlockEntity> {
+pub fn generated_block_entity(block: &str, nbt: &Compound) -> Option<BlockEntity> {
     let fallback = BlockEntity::for_block(block)?;
     let mut tag = nbt.clone();
     // RandomizableContainer.tryLoadLootTable: with a table the items are not read.
@@ -259,6 +259,35 @@ pub fn block_entities(
 mod tests {
     use super::*;
     use horizon_world::loot::{ExplorationMap, LootStack};
+
+    #[test]
+    fn template_loot_table_takes_precedence_over_saved_items() {
+        let Tag::Compound(data) = Tag::compound([
+            (
+                "LootTable",
+                Tag::String("minecraft:chests/simple_dungeon".into()),
+            ),
+            (
+                "Items",
+                crate::save::encode_items(&[Some(ItemStack {
+                    item: "minecraft:diamond".into(),
+                    count: 1,
+                    damage: 0,
+                    extra: None,
+                })]),
+            ),
+        ]) else {
+            unreachable!()
+        };
+        // Templates may omit `id`; the block supplies it. Vanilla does not
+        // deserialize Items when a RandomizableContainer has a LootTable.
+        let Some(BlockEntity::Chest(slots)) = generated_block_entity("minecraft:chest", &data)
+        else {
+            panic!("chest");
+        };
+        assert_eq!(slots.len(), 27);
+        assert!(slots.iter().all(Option::is_none));
+    }
 
     #[test]
     fn generated_end_gateway_keeps_its_exit() {

@@ -11,9 +11,11 @@
 //! `/attackme` chooses the caller by UUID. `/paint <texture|none>` changes
 //! its texture, `/roar` sends sound and flame particles, `/attr <name> <value>` changes
 //! base attributes, `/heal <n>` heals, and `/info` reports mobGriefing, time and sky visibility.
+//! `/uses` reports last tick's item uses, `/burn` gives the nearest mob wither,
+//! and `/peek x y z` lists a block container's plain stacks.
 use horizon_mod_sdk::server::{
-    Area, Args, Argument, AttributeChange, Entity, Order, Particles, Player, Point, Registration,
-    ServerMod, Sound, Target, Walk, entities, players, world,
+    Area, Args, Argument, AttributeChange, EffectChange, Entity, Order, Particles, Player, Point,
+    Registration, ServerMod, Sound, Target, Walk, entities, players, world,
 };
 
 /// How far the orders reach, in blocks.
@@ -79,6 +81,16 @@ impl ServerMod for MobOrders {
                 .command("feed")
                 .command("gift")
                 .command("attackme")
+                .command("uses")
+                .command("burn")
+                .command_with(
+                    "peek",
+                    [
+                        Argument::integer("x", None, None),
+                        Argument::integer("y", None, None),
+                        Argument::integer("z", None, None),
+                    ],
+                )
                 .command("info"),
         ))
     }
@@ -289,6 +301,63 @@ impl ServerMod for MobOrders {
                     Order::Target(Target::Player(player.id.clone())),
                 )])?;
                 Ok(Some(format!("{} attacks {}", mob.kind, player.name)))
+            }
+            "uses" => {
+                let uses: Vec<String> = players::item_uses()
+                    .iter()
+                    .map(|click| {
+                        let target = click.target.as_ref().map_or_else(
+                            || "air".into(),
+                            |hit| format!("{} {} {} {}", hit.x, hit.y, hit.z, hit.face),
+                        );
+                        format!(
+                            "{}: {} ({}, sneaking {}) at {target}",
+                            click.player, click.item, click.hand, click.sneaking
+                        )
+                    })
+                    .collect();
+                Ok(Some(if uses.is_empty() {
+                    "No item uses last tick".into()
+                } else {
+                    uses.join("; ")
+                }))
+            }
+            "burn" => {
+                let mob = nearest(player)?;
+                entities::give_orders(&[(
+                    mob.id,
+                    Order::Effect(EffectChange {
+                        id: "minecraft:wither".into(),
+                        seconds: 10,
+                        amplifier: 0,
+                    }),
+                )])?;
+                Ok(Some(format!("{} withers for 10 seconds", mob.kind)))
+            }
+            "peek" => {
+                let x = args.integer("x").ok_or("Usage: /peek x y z")?;
+                let y = args.integer("y").ok_or("Usage: /peek x y z")?;
+                let z = args.integer("z").ok_or("Usage: /peek x y z")?;
+                let slots = world::container(&player.dimension, x, y, z)
+                    .ok_or("No container at that position")?;
+                let contents: Vec<String> = slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, stack)| {
+                        stack
+                            .as_ref()
+                            .map(|stack| format!("{index}: {} x{}", stack.item, stack.count))
+                    })
+                    .collect();
+                Ok(Some(format!(
+                    "{} slots: {}",
+                    slots.len(),
+                    if contents.is_empty() {
+                        "empty".into()
+                    } else {
+                        contents.join(", ")
+                    }
+                )))
             }
             "info" => {
                 let mob = nearest(player)?;

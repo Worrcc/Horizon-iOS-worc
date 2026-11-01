@@ -670,10 +670,44 @@ Where a player looks.
 | `yaw` | `f32` | Degrees, as F3 shows them (0 south, 90 west). |
 | `pitch` | `f32` | Degrees: -90 looks straight up, 90 straight down. |
 
+### record `block-hit`
+
+The block a player clicked, and its face (down, up, north, south, west, east).
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+| `face` | `string` |  |
+
+### record `item-use`
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` |  |
+| `item` | `string` |  |
+| `hand` | `string` | main_hand or off_hand. |
+| `sneaking` | `bool` |  |
+| `target` | `option<block-hit>` |  |
+
+### record `attack`
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` |  |
+| `item` | `option<string>` |  |
+| `mob` | `option<u32>` | The mob id used by entities.mobs and entities.near. |
+| `target-player` | `option<string>` |  |
+| `damage` | `f32` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `online` | `func() -> list<player>` | The players online, in the order they joined. |
 | `facing` | `func(player: string) -> option<look>` | Where an online player looks, by UUID; none when no such player is online. |
+| `item-uses` | `func() -> list<item-use>` | Item right clicks during the last tick, oldest first, at most 256. The game's own use of each item still happens. Reading does not consume them. |
+| `attacks` | `func() -> list<attack>` | Melee hits players landed during the last tick, oldest first, at most 256. |
+| `add-effect` | `func(player: string, id: string, seconds: u32, amplifier: u8) -> result<_, string>` | Apply a registered status effect; zero seconds removes it. Unknown effects or offline players are errors. Players' clients receive the change. |
 | `tell` | `func(player: string, text: string) -> bool` | A system message to one player, after the mod's name; false when no player with that id is online. Up to 8 messages per call. |
 | `broadcast` | `func(text: string)` | A system message to every player and the server's log, after the mod's name. Counts toward the same 8 per call. |
 | `take-item` | `func(player: string, item: string, count: u32) -> result<u32, string>` | Remove up to count by registry id, main hand first, then the rest of the inventory (including armor and off hand). Creative consumes none but reports count. The return value and subsequent calls see the real inventory now; unknown items or offline players are errors. |
@@ -714,6 +748,15 @@ A chunk column of a dimension, by chunk coordinates (block x >> 4).
 | `x` | `s32` |  |
 | `z` | `s32` |  |
 
+### record `item-stack`
+
+A plain item stack; components are not carried by this API.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `generated-chunks` | `func() -> list<chunk-pos>` | The chunks the server generated for the first time during the last tick (never ones loaded from the save), at most 256, oldest first: where a mod places its own structures, once per chunk. They are loaded now, so `get-block` reads them and `set-blocks` changes them. |
@@ -723,6 +766,9 @@ A chunk column of a dimension, by chunk coordinates (block x >> 4).
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
 | `set-loot-table` | `func(dimension: string, x: s32, y: s32, z: s32, table: string) -> result<_, string>` | Gives the container at a position (a chest, trapped chest, barrel, ...) a loot table, as a structure's chest has: it is rolled as generated chests are, after this tick's `set-blocks` (so a chest placed by them gets it). `table` is a loot table id (`minecraft:chests/simple_dungeon`, a mod's own). Not a container then: nothing. |
+| `container` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<list<option<item-stack>>>` | Slots of the block's container; none when it has no container or is unloaded. This reads one block's slots, including one half of a double chest. |
+| `set-container` | `func(dimension: string, x: s32, y: s32, z: s32, slots: list<option<item-stack>>) -> result<_, string>` | Replace plain stacks after this tick's block writes, updating open viewers. The slot count must match; item ids and stack counts are validated. If the container is absent or its slot count changed when applied, skip it. |
+| `place-structure` | `func(dimension: string, id: string, x: s32, y: s32, z: s32, rotation: u32, mirror: bool) -> result<_, string>` | Load a vanilla or mod structure template, as a structure block's LOAD does, after this tick's block writes, preserving block entities and loot tables. Rotation is 0..3 clockwise quarter turns; mirror reflects before rotating. |
 | `game-rule` | `func(name: string) -> option<string>` | Current server rule value as text, or none for an unknown rule. Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias. |
 | `difficulty` | `func() -> string` | peaceful, easy, normal or hard, as of the start of this call. |
 
@@ -810,6 +856,14 @@ Seat a player on a mob.
 | `name` | `string` | max_health, movement_speed, flying_speed, attack_damage, attack_knockback, armor, armor_toughness, knockback_resistance, follow_range or step_height (as in entity JSON). |
 | `value` | `f64` | Base value, 0 to 1024; vanilla's attribute bounds limit its effective value. |
 
+### record `effect-change`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | A registered effect id, such as minecraft:slowness. |
+| `seconds` | `u32` | Duration in seconds; zero removes this effect. |
+| `amplifier` | `u8` |  |
+
 ### record `sound`
 
 | Field | Type | |
@@ -871,6 +925,7 @@ Whom a mob attacks.
 | `scale` | `f32` | Its `minecraft:scale`, 0.0625 to 16: growth. Its size and model follow, on every player's game. |
 | `attribute` | `attribute-change` | Set a base attribute, kept in vanilla's saved attributes list. Raising max_health does not heal; lowering it clamps health. |
 | `heal` | `f32` | LivingEntity.heal: add a finite amount, clamped to 0..max health, only while health is positive (never revives a dead mob). |
+| `effect` | `effect-change` | Apply a registered status effect; zero seconds removes it. |
 | `mount` | `mount` | Seat that player on it, at that seat (moved with later `mount` orders for the same player). The player gets off as from any mount (sneaking) or on `dismount`; the mob does not move by itself for the rider: the mod moves it from `rider`'s input. |
 | `dismount` |  | Let its rider off, beside it. |
 | `set-data` | `list<tuple<string, option<string>>>` | Store strings on it, kept in its save: a key (1 to 64 characters) to a value (up to 1024), none removes the key. At most 32 keys. |

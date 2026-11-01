@@ -304,6 +304,24 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                     pos.0, pos.1, pos.2
                 )
             }
+            Output::PlayerEffect { player, effect } => {
+                format!(
+                    "effect {} on {player}: {} s, amplifier {}",
+                    effect.id, effect.seconds, effect.amplifier
+                )
+            }
+            Output::SetContainer { pos, slots, .. } => {
+                format!(
+                    "set {} container slots at {} {} {}",
+                    slots.len(),
+                    pos.0,
+                    pos.1,
+                    pos.2
+                )
+            }
+            Output::PlaceStructure { id, pos, .. } => {
+                format!("placed structure {id} at {} {} {}", pos.0, pos.1, pos.2)
+            }
             Output::Orders { orders, .. } => format!("gave {} mob order(s)", orders.len()),
             Output::Spawn { kind, .. } => format!("spawned {kind}"),
             Output::OpenScreen { .. } => "opened a screen".to_string(),

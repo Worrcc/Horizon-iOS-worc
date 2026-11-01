@@ -593,6 +593,54 @@ and `world.generated-chunks()`: the chunks the server generated for the first ti
 the last tick (never ones loaded from a save), at most 256, oldest first, loaded when the
 mod reads them, so a mod places its own structures in new terrain once per chunk.
 
+**API level 12: item behaviours, effects, containers and templates.** These are functions
+mods call and new records; existing player and entity records and the hooks the game calls
+keep their shapes. The `give-orders` host accepts earlier order variants by case name,
+so adding `effect` preserves components compiled against the previous order list.
+
+Capability `players` adds two lists, each capped at 256 entries per tick, oldest first.
+`item-uses() -> list<item-use>` reports last tick's right clicks with an item, including
+clicks in air and on blocks. An `item-use` contains `player` (UUID), `item` (registry id),
+`hand` (`main_hand` or `off_hand`), `sneaking`, and `target: option<block-hit>`; a block
+hit has integer `x`, `y`, `z` and `face`. `attacks() -> list<attack>` reports melee hits
+players landed. An `attack` has `player`, `item: option<string>` (none for an empty hand),
+`mob: option<u32>` (the id from `entities.mobs()`), `target-player: option<string>`
+(UUID), and `damage: f32` (actual health lost). Polling does not consume a list. The game's own item use or
+attack still happens. The lists include every server player, including single player's
+connection to its server thread, LAN guests and dedicated server players.
+
+`players.add-effect(player, id, seconds, amplifier) -> result<_, string>` adds a status
+effect to an online player and sends it to that player's client. The entity order
+`effect(effect-change)` applies the same operation to a content mod's mob;
+`effect-change` contains `id: string`, `seconds: u32` and `amplifier: u8` (zero is level I).
+Effect ids, for example `minecraft:slowness`, must exist in the game's effect registry.
+Zero seconds removes that effect. Unknown ids reject the call or order batch.
+
+Capability `world` adds `container(dimension, x, y, z) ->
+option<list<option<item-stack>>>`: the slots of a loaded block container (chests,
+barrels, furnaces, hoppers and other supported containers), or none when there is no
+container there. Each chest block exposes its own 27 slots, including each half of a
+double chest. Each `item-stack` has `item: string` and `count: u32`; none is an empty
+slot. These are **plain items: components are not carried**. Reading does not expose
+enchantments, names or other components, and writing replaces stacks with plain items.
+`set-container(dimension, x, y, z, slots) -> result<_, string>` requires the container's
+exact slot count and valid item ids and counts. Changes run after the tick's block
+writes, and players viewing an open container receive its changed slots. If the
+container is absent or its slot count differs when the queued write runs, the write
+is skipped and logged.
+
+`world.place-structure(dimension, id, x, y, z, rotation, mirror) -> result<_, string>`
+loads a vanilla or loaded content mod's `data/<namespace>/structure/<path>.nbt`
+template (`minecraft:igloo/top`, for example). `rotation` is 0 through 3 quarter turns;
+`mirror` reflects the template. Placement reuses the game's template code after
+the tick's block writes, including block entities and their loot tables: generated
+chests retain `LootTable` and roll it as other generated chests do. Template entities
+follow the game's existing template placement support. Only loaded chunks are written.
+
+The `mob-orders` example demonstrates `/uses` (last tick's item uses), `/burn` (ten
+seconds of wither I on the nearest content mod's mob), and `/peek x y z` (the occupied
+slots and slot count of a container).
+
 API level 9 adds the texture, sound, particles, attribute and heal orders and the entity record's
 `texture: option<string>`. The `mob-orders` example demonstrates `/paint
 <texture|none>`, `/roar` (sound and flame particles), and `/info` (including

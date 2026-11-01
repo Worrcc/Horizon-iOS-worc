@@ -100,6 +100,22 @@ pub(super) struct ModsState {
     /// item held, for capability `entities` at the tick's end.
     #[cfg(feature = "mods")]
     pub(super) interactions: Vec<horizon_mods::EntityInteraction>,
+    /// Player actions collected until the end of this server tick.
+    #[cfg(feature = "mods")]
+    pub(super) item_uses: Vec<horizon_mods::PlayerItemUse>,
+    /// A block/entity click can fall through to a second Item packet in the same tick.
+    #[cfg(feature = "mods")]
+    pub(super) use_fallbacks: std::collections::HashMap<(String, String), String>,
+    #[cfg(feature = "mods")]
+    pub(super) attacks: Vec<horizon_mods::PlayerAttack>,
+    /// Published actions remain visible to commands until the next tick.
+    #[cfg(feature = "mods")]
+    pub(super) last_item_uses: std::sync::Arc<[horizon_mods::PlayerItemUse]>,
+    #[cfg(feature = "mods")]
+    pub(super) last_attacks: std::sync::Arc<[horizon_mods::PlayerAttack]>,
+    /// World operations run after the tick's block writes, in request order.
+    #[cfg(feature = "mods")]
+    pub(super) world_operations: Vec<horizon_mods::Output>,
     /// Valid item ids and stack sizes for player inventory calls.
     #[cfg(feature = "mods")]
     pub(super) item_limits: Option<std::sync::Arc<std::collections::HashMap<String, u32>>>,
@@ -379,6 +395,11 @@ impl Game<'_> {
         let mods = Mods::load_for(self.mod_runs(), &paths, on, vanilla_command);
         self.mods.mods = mods;
         self.mods.interactions.clear();
+        self.mods.item_uses.clear();
+        self.mods.use_fallbacks.clear();
+        self.mods.attacks.clear();
+        self.mods.last_item_uses = Default::default();
+        self.mods.last_attacks = Default::default();
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));
         // Entries were replaced wholesale: a screen's owner index is stale.
@@ -581,6 +602,13 @@ impl Game<'_> {
             mob_kinds: Default::default(),
             entity_resources: Default::default(),
             interactions: Default::default(),
+            item_uses: self.mods.last_item_uses.clone(),
+            attacks: self.mods.last_attacks.clone(),
+            effect_ids: horizon_client::brewing::EFFECTS
+                .iter()
+                .map(|e| format!("minecraft:{}", e.id))
+                .collect::<std::collections::HashSet<_>>()
+                .into(),
             player_looks: Default::default(),
             generated_chunks: Default::default(),
             view_hit: self.mod_view_hit(),
@@ -815,6 +843,9 @@ impl Game<'_> {
                 | Output::Reply { .. }
                 | Output::SetBlocks { .. }
                 | Output::SetLootTable { .. }
+                | Output::SetContainer { .. }
+                | Output::PlaceStructure { .. }
+                | Output::PlayerEffect { .. }
                 | Output::Orders { .. }
                 | Output::Spawn { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);

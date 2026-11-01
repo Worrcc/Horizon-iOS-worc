@@ -112,6 +112,11 @@ pub(super) struct Levels {
 }
 
 impl Levels {
+    /// Worlds not in place, read by capability `world`'s container snapshot.
+    #[cfg(feature = "mods")]
+    pub(super) fn parked_worlds(&self) -> impl Iterator<Item = (Dim, &World)> {
+        self.parked.iter().map(|(d, p)| (*d, &p.world))
+    }
     /// The chunks of each level not in place (capability `world` lends
     /// them to server mods for a call).
     #[cfg_attr(not(feature = "mods"), allow(dead_code))]

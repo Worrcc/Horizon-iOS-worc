@@ -174,6 +174,10 @@ mod screens;
 mod sculk;
 mod sculk_fixture;
 mod server_links;
+#[cfg(feature = "mods")]
+mod server_mod_actions;
+#[cfg(feature = "mods")]
+mod server_mod_world;
 mod server_mods;
 mod server_packs;
 mod server_travel;
@@ -4143,6 +4147,17 @@ impl Game<'_> {
         if self.spectator() {
             return Ok(None);
         }
+        // Capture the server player's requested hand before gameplay can consume its stack.
+        if let Some(GuestUse::OnBlock(hand) | GuestUse::Item(hand) | GuestUse::Entity(hand)) =
+            self.guest_use
+        {
+            let target = if matches!(self.guest_use, Some(GuestUse::OnBlock(_))) {
+                self.pick()
+            } else {
+                None
+            };
+            self.with_hand(hand, |game| game.mod_item_used(target.as_ref()));
+        }
         // A carrot or warped fungus on a stick boosts the ridden pig or strider.
         // A guest's use packets name one hand and touch no entity: the client
         // sends one per hand and part of its click, and Interact for entities.
@@ -4188,6 +4203,9 @@ impl Game<'_> {
     /// `Player.interactOn` for the entity under the crosshair with the
     /// acting hand: whether it took the click.
     fn interact_entity(&mut self) -> Result<bool> {
+        if self.guest_use.is_none() && self.entity_targeted() {
+            self.mod_item_used(None);
+        }
         Ok(self.interact_frame()
             || self.interact_armor_stand()
             || self.interact_cushion()
@@ -4218,6 +4236,9 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        if self.guest_use.is_none() && !self.entity_targeted() {
+            self.mod_item_used(block_hit);
+        }
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -8582,7 +8603,9 @@ impl Game<'_> {
             let kind = self.mobs[i].kind.id.clone();
             let damage = (sweep_damage + self.enchant_damage_bonus(&kind)) * scale;
             let source = self.attack_source(from);
+            let old_health = self.mobs[i].health;
             if self.hurt_by_player(i, damage, source) {
+                self.mod_melee_hit(self.mobs[i].id, old_health - self.mobs[i].health);
                 self.mobs[i].knockback(0.4, xd, zd);
                 self.last_hurt_by_player
                     .insert(self.mobs[i].id, self.lan_acting);
@@ -8695,6 +8718,7 @@ impl Game<'_> {
         };
         let landed = self.hurt_by_player(index, amount, source);
         if landed {
+            self.mod_melee_hit(self.mobs[index].id, old_health - self.mobs[index].health);
             let victim = self.mob_entity(&self.mobs[index]);
             self.player_hit(
                 &victim,

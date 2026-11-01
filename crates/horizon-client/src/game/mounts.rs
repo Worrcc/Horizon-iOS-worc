@@ -86,6 +86,9 @@ impl Game<'_> {
         if self.mobs[i].species() != species || !equine::boost(&mut self.mobs[i]) {
             return false;
         }
+        if self.guest_use.is_none() {
+            self.mod_item_used(None);
+        }
         if !self.creative
             && let Some(stack) = self.inventory[self.selected].as_mut()
         {

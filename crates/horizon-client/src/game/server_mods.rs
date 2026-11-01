@@ -49,6 +49,8 @@ impl Game<'_> {
     }
     pub(super) fn apply_mod_block_writes(&mut self) {}
     pub(super) fn apply_mod_orders(&mut self) {}
+    pub(super) fn mod_item_used(&mut self, _hit: Option<&super::Hit>) {}
+    pub(super) fn mod_melee_hit(&mut self, _mob: u32, _damage: f32) {}
     pub(super) fn mod_mob_interacted(&mut self, _index: usize, _item: Option<String>) {}
 }
 
@@ -141,8 +143,44 @@ pub(super) mod run {
         registry: &'static BlockRegistry,
         biomes: std::sync::Arc<horizon_client::biome::Biomes>,
         dims: Vec<(&'static str, ChunkMap)>,
+        containers: super::super::server_mod_world::ContainerSnapshot,
+        items: std::sync::Arc<std::collections::HashMap<String, u32>>,
+        resources: std::path::PathBuf,
+        world_root: std::path::PathBuf,
     }
     impl WorldView for LentWorld {
+        fn container(
+            &self,
+            dimension: &str,
+            x: i32,
+            y: i32,
+            z: i32,
+        ) -> Option<Vec<Option<horizon_mods::ContainerItemStack>>> {
+            self.containers
+                .get(&(dimension.to_owned(), (x, y, z)))
+                .cloned()
+        }
+        fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+            let max = self
+                .items
+                .get(item)
+                .ok_or_else(|| format!("unknown item {item}"))?;
+            if count == 0 || count > *max {
+                return Err(format!("invalid count for {item}: {count} (max {max})"));
+            }
+            Ok(())
+        }
+        fn check_structure(&self, id: &str) -> Result<(), String> {
+            if super::super::server_mod_world::structure_exists(
+                &self.resources,
+                &self.world_root,
+                id,
+            ) {
+                Ok(())
+            } else {
+                Err(format!("no structure template {id}"))
+            }
+        }
         fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
@@ -349,8 +387,14 @@ pub(super) mod run {
             self.send_server_mod_commands();
             if !self.mods.server {
                 self.mods.interactions.clear();
+                self.mods.item_uses.clear();
+                self.mods.use_fallbacks.clear();
+                self.mods.attacks.clear();
                 return;
             }
+            self.mods.last_item_uses = std::mem::take(&mut self.mods.item_uses).into();
+            self.mods.use_fallbacks.clear();
+            self.mods.last_attacks = std::mem::take(&mut self.mods.attacks).into();
             let players = self.server_players(None);
             let mut snapshot = self.server_snapshot(players.clone());
             snapshot.interactions = self.take_mod_interactions();
@@ -439,6 +483,21 @@ pub(super) mod run {
             if !self.mods.world {
                 return;
             }
+            let containers = self.mod_container_snapshot();
+            let items = self
+                .mods
+                .item_limits
+                .get_or_insert_with(|| {
+                    std::sync::Arc::new(
+                        self.res
+                            .items()
+                            .items
+                            .iter()
+                            .map(|(id, info)| (id.to_string(), info.max_stack))
+                            .collect(),
+                    )
+                })
+                .clone();
             let mut dims = vec![(self.dim.id(), std::mem::take(&mut self.world.chunks))];
             for (dim, chunks) in self.levels.parked_chunks() {
                 dims.push((dim.id(), std::mem::take(chunks)));
@@ -449,6 +508,10 @@ pub(super) mod run {
                 registry,
                 biomes,
                 dims,
+                containers,
+                items,
+                resources: self.options.resources.clone(),
+                world_root: self.world_root.clone(),
             }));
         }
 
@@ -754,6 +817,19 @@ pub(super) mod run {
                     horizon_client::mobs::orders::attribute(m, &a.name, a.value)
                 }
                 EntityOrder::Heal(amount) => m.heal(amount),
+                EntityOrder::Effect(effect) => {
+                    if let Some(id) = super::super::potions::mob_effect_id(&effect.id) {
+                        if effect.seconds == 0 {
+                            m.extra.effects.retain(|e| e.0 != id);
+                            m.extra.hidden_effects.retain(|e| *e != id);
+                        } else {
+                            let ticks =
+                                effect.seconds.saturating_mul(20).min(i32::MAX as u32) as i32;
+                            m.add_effect(id, ticks, i32::from(effect.amplifier));
+                        }
+                        m.needs_sync = true;
+                    }
+                }
                 EntityOrder::Scale(s) => {
                     use horizon_client::mobs::finalize::{Attr, set_base};
                     set_base(m, Attr::Scale, f64::from(s));
@@ -887,6 +963,42 @@ pub(super) mod run {
         pub(in crate::game) fn apply_mod_block_writes(&mut self) {
             self.apply_mod_block_changes();
             self.apply_mod_loot_tables();
+            self.apply_mod_world_operations();
+        }
+
+        /// Apply containers and templates only once their dimension is in place.
+        fn apply_mod_world_operations(&mut self) {
+            if self.mods.world_operations.is_empty() {
+                return;
+            }
+            let dim = self.dim.id();
+            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.world_operations)
+                .into_iter()
+                .partition(|op| match op {
+                    Output::SetContainer { dimension, .. }
+                    | Output::PlaceStructure { dimension, .. } => dimension == dim,
+                    _ => false,
+                });
+            self.mods.world_operations = later;
+            for op in now {
+                let result = match op {
+                    Output::SetContainer { pos, slots, .. } => self.apply_mod_container(pos, slots),
+                    Output::PlaceStructure {
+                        id,
+                        pos,
+                        rotation,
+                        mirror,
+                        ..
+                    } => self.place_mod_template(&id, [pos.0, pos.1, pos.2], rotation, mirror),
+                    _ => unreachable!(),
+                };
+                if let Err(error) = result {
+                    log::warn!("Horizon: server mod world operation: {error}");
+                }
+            }
+            if let Some(host) = self.lan.as_mut() {
+                host.hub.sync_containers(&self.world);
+            }
         }
 
         /// `world.set-loot-table`, after the tick's blocks: the container rolls the table as a
@@ -1060,6 +1172,7 @@ pub(super) mod run {
             }
             self.route_mod_output(Some(host));
             self.apply_mod_block_writes();
+            host.hub.sync_containers(&self.world);
             // Orders wait for the level's next tick: an area's hurt reaches the players through
             // the hub, which is out of `self.lan` until this returns.
             true
@@ -1139,6 +1252,14 @@ pub(super) mod run {
                     for p in self.server_players(host.as_deref()) {
                         let line = named(&name, text.clone());
                         self.tell_server_player(host.as_deref_mut(), &p.id, line);
+                    }
+                }
+                Output::PlayerEffect { player, effect } => {
+                    self.apply_mod_player_effect(host, &player, effect);
+                }
+                operation @ (Output::SetContainer { .. } | Output::PlaceStructure { .. }) => {
+                    if self.mods.world_operations.len() < MAX_QUEUED_WRITES {
+                        self.mods.world_operations.push(operation);
                     }
                 }
                 Output::SetLootTable {

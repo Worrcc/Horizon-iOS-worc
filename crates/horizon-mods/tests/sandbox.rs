@@ -1433,5 +1433,75 @@ fn mob_orders_consumes_food_once_labels_sneak_clicks_and_targets_a_uuid() {
     assert!(mods.server_command(&p, "attackme"));
     assert!(mods.drain().iter().any(|o| matches!(o, Output::Orders { orders, .. }
         if orders.iter().any(|(id, o)| *id == 7 && matches!(o, EntityOrder::Target(EntityTarget::Player(id)) if id == &p.id)))));
+    snap.item_uses = vec![horizon_mods::PlayerItemUse {
+        player: p.id.clone(),
+        item: "minecraft:stick".into(),
+        hand: "off_hand".into(),
+        sneaking: true,
+        target: Some(horizon_mods::PlayerBlockHit {
+            x: 1,
+            y: 64,
+            z: 2,
+            face: "up".into(),
+        }),
+    }]
+    .into();
+    snap.effect_ids = std::sync::Arc::new(["minecraft:wither".into()].into());
+    mods.set_snapshot(snap);
+    assert!(mods.server_command(&p, "uses"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { text, error: false, .. }
+        if text == &format!("{}: minecraft:stick (off_hand, sneaking true) at 1 64 2 up", p.id)))
+    );
+    assert!(mods.server_command(&p, "burn"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Orders { orders, .. }
+        if orders.iter().any(|(id, o)| *id == 7 && matches!(o, EntityOrder::Effect(effect)
+            if effect.id == "minecraft:wither" && effect.seconds == 10 && effect.amplifier == 0))))
+    );
+    struct Chest;
+    impl horizon_mods::WorldView for Chest {
+        fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn has_dimension(&self, _: &str) -> bool {
+            true
+        }
+        fn check_state(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn container(
+            &self,
+            _: &str,
+            x: i32,
+            y: i32,
+            z: i32,
+        ) -> Option<Vec<Option<horizon_mods::ContainerItemStack>>> {
+            ((x, y, z) == (1, 64, 2)).then(|| {
+                vec![
+                    None,
+                    Some(horizon_mods::ContainerItemStack {
+                        item: "minecraft:stick".into(),
+                        count: 3,
+                    }),
+                ]
+            })
+        }
+    }
+    mods.lend_world(Box::new(Chest));
+    assert!(mods.server_command(&p, "peek 1 64 2"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { text, error: false, .. }
+        if text == "2 slots: 1: minecraft:stick x3"))
+    );
     assert_eq!(mods.entries()[0].status, Status::Running);
 }

@@ -46,3 +46,16 @@ expect.feedback = "Gave 2 minecraft:beef"
 [[step]]
 command = "gift invalid 1"
 expect.error = "invalid item id invalid"
+
+# API level 12 polling and container reads need no game window.
+[[step]]
+command = "uses"
+expect.feedback = "No item uses last tick"
+
+[[step]]
+command = "burn"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "peek 0 64 0"
+expect.error = "No container at that position"
