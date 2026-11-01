@@ -885,6 +885,39 @@ pub(super) mod run {
         /// Makes the blocks server mods set in the level in place, in order,
         /// as `/setblock` does. Those of other dimensions wait for their level.
         pub(in crate::game) fn apply_mod_block_writes(&mut self) {
+            self.apply_mod_block_changes();
+            self.apply_mod_loot_tables();
+        }
+
+        /// `world.set-loot-table`, after the tick's blocks: the container rolls the table as a
+        /// generated or `/setblock {LootTable:...}` one does (`take_loot_table`).
+        fn apply_mod_loot_tables(&mut self) {
+            if self.mods.loot_writes.is_empty() {
+                return;
+            }
+            let dim = self.dim.id().to_owned();
+            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.loot_writes)
+                .into_iter()
+                .partition(|(d, _, _)| *d == dim);
+            self.mods.loot_writes = later;
+            for (_, key, table) in now {
+                let Some(mut entity) = self.world.block_entities.remove(&key) else {
+                    continue;
+                };
+                if let horizon_client::containers::BlockEntity::Chest(slots) = &mut entity {
+                    slots.iter_mut().for_each(|s| *s = None);
+                }
+                let tag = horizon_world::nbt::Tag::compound([(
+                    "LootTable",
+                    horizon_world::nbt::Tag::String(table.as_str().into()),
+                )]);
+                self.take_loot_table(key, &tag, &mut entity);
+                self.world.block_entities.insert(key, entity);
+                self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+            }
+        }
+
+        fn apply_mod_block_changes(&mut self) {
             if self.mods.block_writes.is_empty() {
                 return;
             }
@@ -1106,6 +1139,15 @@ pub(super) mod run {
                     for p in self.server_players(host.as_deref()) {
                         let line = named(&name, text.clone());
                         self.tell_server_player(host.as_deref_mut(), &p.id, line);
+                    }
+                }
+                Output::SetLootTable {
+                    dimension,
+                    pos,
+                    table,
+                } => {
+                    if self.mods.loot_writes.len() < MAX_QUEUED_WRITES {
+                        self.mods.loot_writes.push((dimension, pos, table));
                     }
                 }
                 Output::SetBlocks {

@@ -280,6 +280,12 @@ pub enum Output {
         dimension: String,
         blocks: Vec<BlockChange>,
     },
+    /// `world.set-loot-table`: a container's loot table, after the tick's block writes.
+    SetLootTable {
+        dimension: String,
+        pos: (i32, i32, i32),
+        table: String,
+    },
     /// `entities.give-orders`: orders to content mods' mobs, by id, in order, each
     /// checked against the tick's [`Snapshot::entities`].
     Orders {
@@ -1725,6 +1731,36 @@ impl mod_world::Host for State {
             .take(GENERATED_CHUNKS)
             .cloned()
             .collect()
+    }
+    fn set_loot_table(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        table: String,
+    ) -> Result<(), String> {
+        let valid = table.split_once(':').is_some_and(|(ns, path)| {
+            !ns.is_empty()
+                && !path.is_empty()
+                && table
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-./:".contains(c))
+        });
+        if !valid {
+            return Err(format!("{table:?} is not a loot table id"));
+        }
+        if let Some(view) = self.world.lock().ok().as_ref().and_then(|v| v.as_ref())
+            && !view.has_dimension(&dimension)
+        {
+            return Err(format!("no dimension {dimension}"));
+        }
+        self.out.push(Output::SetLootTable {
+            dimension,
+            pos: (x, y, z),
+            table,
+        });
+        Ok(())
     }
     fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;

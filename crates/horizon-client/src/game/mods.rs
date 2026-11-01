@@ -71,6 +71,9 @@ pub(super) struct ModsState {
     /// tick.
     #[cfg(feature = "mods")]
     pub(super) block_writes: Vec<(String, horizon_mods::BlockChange)>,
+    /// Server mods' `world.set-loot-table`: dimension, container, table, after the block writes.
+    #[cfg(feature = "mods")]
+    pub(super) loot_writes: Vec<(String, (i32, i32, i32), String)>,
     /// A running server mod has capability `entities`: its calls get the
     /// loaded mobs to read.
     #[cfg(feature = "mods")]
@@ -811,6 +814,7 @@ impl Game<'_> {
                 | Output::Broadcast { .. }
                 | Output::Reply { .. }
                 | Output::SetBlocks { .. }
+                | Output::SetLootTable { .. }
                 | Output::Orders { .. }
                 | Output::Spawn { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);

@@ -306,11 +306,35 @@ fn load_dir(
         if path.is_dir() {
             load_dir(&path, namespace, &format!("{prefix}{stem}/"), out)?;
         } else if path.extension().is_some_and(|e| e == "json") {
-            let value = serde_json::from_slice(&fs::read(&path)?)?;
+            let mut value = serde_json::from_slice(&fs::read(&path)?)?;
+            namespace_ids(&mut value);
             out.insert(format!("{namespace}:{prefix}{stem}"), value);
         }
     }
     Ok(())
+}
+/// Vanilla reads an id without a namespace as `minecraft:` (ResourceLocation): mods' tables
+/// often write `"type": "item"` or `"function": "set_count"`. The parser matches full ids, so
+/// the registry-id fields of a loaded file get the namespace here.
+fn namespace_ids(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                match value {
+                    Value::String(s)
+                        if matches!(key.as_str(), "type" | "function" | "condition")
+                            && !s.contains(':')
+                            && !s.is_empty() =>
+                    {
+                        *s = format!("minecraft:{s}");
+                    }
+                    _ => namespace_ids(value),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(namespace_ids),
+        _ => {}
+    }
 }
 fn cost(v: &Value) -> (i32, i32) {
     (
@@ -1508,6 +1532,23 @@ fn enchant(stack: &mut LootStack, name: &str, level: i32) {
 #[cfg(test)]
 mod namespace_tests {
     use super::*;
+
+    #[test]
+    fn ids_without_a_namespace_are_minecraft() {
+        let mut v: Value = serde_json::from_str(
+            r#"{"pools": [{"entries": [{"type": "item", "name": "diamond",
+                "functions": [{"function": "set_count"}],
+                "modifier": [{"type": "set_count", "count": {"type": "uniform"}}]}]}]}"#,
+        )
+        .unwrap();
+        namespace_ids(&mut v);
+        let entry = &v["pools"][0]["entries"][0];
+        assert_eq!(entry["type"], "minecraft:item");
+        assert_eq!(entry["name"], "diamond");
+        assert_eq!(entry["functions"][0]["function"], "minecraft:set_count");
+        assert_eq!(entry["modifier"][0]["type"], "minecraft:set_count");
+        assert_eq!(entry["modifier"][0]["count"]["type"], "minecraft:uniform");
+    }
 
     /// A content mods' root: the mods' loot tables and tags load beside
     /// vanilla's, under their own namespaces.

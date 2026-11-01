@@ -298,6 +298,12 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             } => {
                 format!("set {} block(s) in {dimension}", blocks.len())
             }
+            Output::SetLootTable { table, pos, .. } => {
+                format!(
+                    "gave the container at {} {} {} loot table {table}",
+                    pos.0, pos.1, pos.2
+                )
+            }
             Output::Orders { orders, .. } => format!("gave {} mob order(s)", orders.len()),
             Output::Spawn { kind, .. } => format!("spawned {kind}"),
             Output::OpenScreen { .. } => "opened a screen".to_string(),
