@@ -164,6 +164,34 @@ mod tests {
         assert!((x - 0.0625).abs() < 1e-9 && z.abs() < 1e-9);
     }
     #[test]
+    fn a_rider_reaches_what_its_vehicle_touches() {
+        use horizon_core::geometry::Aabb;
+        let mut m = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        // Seated 1.3 blocks up; the target stands on the ground 1.6 blocks ahead.
+        m.position = Vec3::new(0.0, 1.3, 0.0);
+        let at = Vec3::new(1.6, 0.0, 0.0);
+        let t = super::super::world::TargetInfo {
+            position: at,
+            eye_y: 0.5,
+            bounds: Aabb::new(Vec3::new(1.4, 0.0, -0.2), Vec3::new(1.8, 0.7, 0.2)),
+            alive: true,
+            can_be_seen_as_enemy: true,
+            is_player: false,
+            creative: false,
+            passenger: false,
+        };
+        assert!(!m.within_melee_range(&t));
+        m.extra.mount = Some(2);
+        m.extra.vehicle_bounds = Some(Aabb::new(
+            Vec3::new(-0.7, 0.0, -0.7),
+            Vec3::new(0.7, 1.6, 0.7),
+        ));
+        assert!(m.within_melee_range(&t));
+        // Off its vehicle, a stale box is not used.
+        m.extra.mount = None;
+        assert!(!m.within_melee_range(&t));
+    }
+    #[test]
     fn archers_keep_their_distance_and_brawlers_close_in() {
         assert!(ranged(Species::Skeleton) && ranged(Species::Pillager));
         assert!(!ranged(Species::Zombie) && !ranged(Species::Vindicator));

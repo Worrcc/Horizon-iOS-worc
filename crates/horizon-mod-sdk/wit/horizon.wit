@@ -1016,6 +1016,16 @@ interface entities {
     /// it from the tick after, where `data` tells it apart. At most 64 spawns
     /// per hook call; an unknown kind is an error.
     spawn: func(kind: string, dimension: string, at: point, yaw: f32, data: list<tuple<string, string>>) -> result<_, string>;
+    /// Seats a content mod's mob on another loaded mob (`Entity.startRiding`,
+    /// as `/ride` does), or with no vehicle lets it off (`stopRiding`). Checked
+    /// now: both loaded in one dimension, within 16 blocks, not the same mob,
+    /// and no loop of riders. Carried out with the tick's orders, unless by then
+    /// the vehicle carries another mob or a player, or either is gone. The
+    /// rider then sits on the vehicle, which walks and fights as before; it is
+    /// saved riding (`Passengers`) and every player sees it.
+    ride: func(rider: u32, vehicle: option<u32>) -> result<_, string>;
+    /// The mob or boat a loaded mob rides, as at the start of the tick.
+    vehicle: func(id: u32) -> option<u32>;
 }
 
 /// What the server calls in a server mod (manifest `api = "0.3"`,

@@ -938,6 +938,8 @@ Whom a mob attacks.
 | `interactions` | `func() -> list<interaction>` | The right clicks players made on content mods' mobs during the last tick, in order, at most 256: feeding, taming, mounting are the mod's to decide. The game's own use of the click (a lead, a name tag) still happens. |
 | `give-orders` | `func(orders: list<tuple<u32, order>>) -> result<_, string>` | Orders, by mob id, to content mods' mobs: checked now (an error queues none) and carried out in order before their dimension's next tick; an order to a mob gone by then is dropped. At most 1024 per call. |
 | `spawn` | `func(kind: string, dimension: string, at: point, yaw: f32, data: list<tuple<string, string>>) -> result<_, string>` | Spawns a content mod's mob (any namespace but `minecraft`) at a point of a dimension, facing `yaw`, persistent, with `data` stored on it (as `set-data`), before that dimension's next tick: `mobs` lists it from the tick after, where `data` tells it apart. At most 64 spawns per hook call; an unknown kind is an error. |
+| `ride` | `func(rider: u32, vehicle: option<u32>) -> result<_, string>` | Seats a content mod's mob on another loaded mob (`Entity.startRiding`, as `/ride` does), or with no vehicle lets it off (`stopRiding`). Checked now: both loaded in one dimension, within 16 blocks, not the same mob, and no loop of riders. Carried out with the tick's orders, unless by then the vehicle carries another mob or a player, or either is gone. The rider then sits on the vehicle, which walks and fights as before; it is saved riding (`Passengers`) and every player sees it. |
+| `vehicle` | `func(id: u32) -> option<u32>` | The mob or boat a loaded mob rides, as at the start of the tick. |
 
 ## `server-events`
 

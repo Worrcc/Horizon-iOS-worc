@@ -319,6 +319,10 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                     pos.2
                 )
             }
+            Output::Ride { rider, vehicle } => match vehicle {
+                Some(v) => format!("seated mob {rider} on mob {v}"),
+                None => format!("let mob {rider} off its vehicle"),
+            },
             Output::SetSpawner { entity, pos, .. } => {
                 format!(
                     "set the spawner at {} {} {} to {entity}",

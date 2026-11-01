@@ -921,6 +921,9 @@ pub struct Extra {
     /// `Entity.boardingCooldown`: ticks after leaving a boat before a boat
     /// can pick this mob up again.
     pub boarding_cooldown: i32,
+    /// The box of the mob this one rides, as last seated (`position_riders`), for
+    /// `Mob.getAttackBoundingBox`; none while it rides no mob.
+    pub vehicle_bounds: Option<horizon_core::geometry::Aabb>,
     /// A chicken carrying a zombie (`IsChickenJockey`).
     pub jockey: bool,
     /// A skeleton horse waiting to spring its trap, and how long it has waited.

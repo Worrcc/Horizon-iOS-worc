@@ -97,6 +97,7 @@ impl Game<'_> {
                 };
                 let Some(&j) = index.get(&v) else { continue };
                 let vehicle = &self.mobs[j];
+                let vehicle_bounds = vehicle.bounds();
                 let attach = riders::passenger_attachment(vehicle);
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
@@ -111,6 +112,7 @@ impl Game<'_> {
                 m.body_yaw = body;
                 m.previous_body_yaw = prev_body;
                 m.extra.passenger = true;
+                m.extra.vehicle_bounds = Some(vehicle_bounds);
                 // A rider never walks off on its own.
                 m.ai.nav.stop();
             }

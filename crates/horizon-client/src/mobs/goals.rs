@@ -574,11 +574,32 @@ impl Mob {
         self.ai.seen_cache.push((who, v));
         v
     }
-    /// Mob.isWithinMeleeAttackRange: the box inflated by sqrt(2.04) - 0.6.
+    /// Mob.isWithinMeleeAttackRange: `getAttackBoundingBox` inflated by sqrt(2.04) - 0.6.
     pub fn within_melee_range(&self, t: &TargetInfo) -> bool {
         let reach = 2.04f32.sqrt() as f64 - 0.6;
-        let b = self.bounds().inflate(Vec3::new(reach, 0.0, reach));
+        let b = self.attack_bounds().inflate(Vec3::new(reach, 0.0, reach));
         b.intersects(t.bounds)
+    }
+    /// `Mob.getAttackBoundingBox`: a rider's box widened sideways to its vehicle's and
+    /// reaching down to the vehicle's bottom, so a mounted mob hits what its mount touches.
+    pub fn attack_bounds(&self) -> Aabb {
+        use horizon_core::geometry::Axis::{X, Y, Z};
+        let own = self.bounds();
+        let Some(v) = self
+            .extra
+            .vehicle_bounds
+            .filter(|_| self.extra.mount.is_some())
+        else {
+            return own;
+        };
+        Aabb::new(
+            Vec3::new(own.min(X).min(v.min(X)), v.min(Y), own.min(Z).min(v.min(Z))),
+            Vec3::new(
+                own.max(X).max(v.max(X)),
+                own.max(Y),
+                own.max(Z).max(v.max(Z)),
+            ),
+        )
     }
     /// TargetingConditions.forCombat().test for the player: alive, not
     /// creative, within range scaled by visibility, optionally visible.

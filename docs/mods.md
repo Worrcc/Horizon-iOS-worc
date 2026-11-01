@@ -645,6 +645,18 @@ the same tick, as a Java structure processor rewrites a template spawner's `Spaw
 spawner keeps its delays, spawn count and ranges; players see the new mob in it. No spawner
 there then, or an unknown type: the write is skipped and logged.
 
+**API level 14: mobs riding mobs.** `entities.ride(rider, vehicle) -> result<_, string>` seats a
+content mod's mob on another loaded mob, vanilla's or a mod's (`Entity.startRiding`, as `/ride`
+does), and `ride(rider, none)` lets it off (`stopRiding`). The call checks that both are loaded
+in one dimension within 16 blocks, that they differ, and that the vehicle does not already ride
+the rider (directly or through its own vehicles); at most 64 a call. It is carried out with the
+tick's orders, unless by then the vehicle carries another mob or a player, or either is gone or
+dead. The rider then sits on the vehicle as a jockey does: while the rider has a target (a
+`target` order), its vehicle carries it there (`getControllingPassenger`); it is saved riding
+(`Passengers`), never despawns while riding, and every player sees it seated.
+`entities.vehicle(id) -> option<u32>` is the mob or boat a loaded mob rides, as at the start of
+the tick.
+
 The `mob-orders` example demonstrates `/uses` (last tick's item uses), `/burn` (ten
 seconds of wither I on the nearest content mod's mob), and `/peek x y z` (the occupied
 slots and slot count of a container).

@@ -89,6 +89,9 @@ pub(super) struct ModsState {
     /// carried out after the tick's other orders.
     #[cfg(feature = "mods")]
     pub(super) seatings: Vec<(u32, Option<String>)>,
+    /// Server mods' `entities.ride`: rider and vehicle (none: off), after the seatings.
+    #[cfg(feature = "mods")]
+    pub(super) rides: Vec<(u32, Option<u32>)>,
     /// Chunks first generated since server mods last ran, for `world.generated-chunks`.
     #[cfg(feature = "mods")]
     pub(super) generated_chunks: Vec<horizon_mods::ChunkPos>,
@@ -600,6 +603,7 @@ impl Game<'_> {
             },
             entities: Default::default(),
             mob_kinds: Default::default(),
+            vehicles: Default::default(),
             entity_resources: Default::default(),
             interactions: Default::default(),
             item_uses: self.mods.last_item_uses.clone(),
@@ -846,6 +850,7 @@ impl Game<'_> {
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
                 | Output::SetSpawner { .. }
+                | Output::Ride { .. }
                 | Output::PlayerEffect { .. }
                 | Output::Orders { .. }
                 | Output::Spawn { .. }) => {

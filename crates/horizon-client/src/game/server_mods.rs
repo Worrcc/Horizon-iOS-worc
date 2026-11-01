@@ -563,6 +563,13 @@ pub(super) mod run {
                     all.extend(alive.map(|m| mod_entity(m, dim.id(), riders.get(&m.id))));
                 }
                 snapshot.entities = all.into();
+                let mut vehicles: Vec<(u32, u32)> = (self.mobs.iter())
+                    .filter_map(|m| Some((m.id, m.extra.mount?)))
+                    .collect();
+                for (_, mobs) in self.levels.parked_mobs() {
+                    vehicles.extend(mobs.iter().filter_map(|m| Some((m.id, m.extra.mount?))));
+                }
+                snapshot.vehicles = vehicles.into();
                 let root = &self.options.resources;
                 if self
                     .mods
@@ -638,6 +645,68 @@ pub(super) mod run {
                 }
             }
             self.apply_mod_seatings();
+            self.apply_mod_rides();
+        }
+
+        /// `entities.ride`: as `/ride` (`Entity.startRiding`/`stopRiding`), for mobs of
+        /// the level in place; those of a parked level wait for it.
+        fn apply_mod_rides(&mut self) {
+            if self.mods.rides.is_empty() {
+                return;
+            }
+            let parked: std::collections::HashSet<u32> = (self.levels.parked_mobs())
+                .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
+                .collect();
+            let live = |game: &Self, id: u32| {
+                (game.mobs.iter()).position(|m| m.id == id && !m.removed && m.alive())
+            };
+            for (rider, vehicle) in std::mem::take(&mut self.mods.rides) {
+                let Some(i) = live(self, rider) else {
+                    if parked.contains(&rider) {
+                        self.mods.rides.push((rider, vehicle));
+                    }
+                    continue;
+                };
+                let Some(v) = vehicle else {
+                    self.dismount_mob(rider);
+                    continue;
+                };
+                if self.mobs[i].extra.mount == Some(v) {
+                    continue;
+                }
+                let Some(j) = live(self, v) else { continue };
+                // A vehicle carries one: another mob, the window's player or a guest.
+                let player_on = self.riding == Some(v)
+                    || (self.lan.iter())
+                        .flat_map(|h| &h.hub.guests)
+                        .any(|g| g.vehicle == Some(v));
+                if self.mobs[j].extra.rider.is_some_and(|r| r != rider) || player_on {
+                    continue;
+                }
+                // No loop: the vehicle's vehicles must not include the rider.
+                let mut at = self.mobs[j].extra.mount;
+                let mut looped = false;
+                for _ in 0..16 {
+                    let Some(next) = at else { break };
+                    if next == rider {
+                        looped = true;
+                        break;
+                    }
+                    at = self
+                        .mobs
+                        .iter()
+                        .find(|m| m.id == next)
+                        .and_then(|m| m.extra.mount);
+                }
+                if looped {
+                    continue;
+                }
+                if self.mobs[i].extra.mount.is_some() {
+                    self.dismount_mob(rider);
+                }
+                self.mount_mob(rider, v);
+                self.position_riders();
+            }
         }
 
         /// `mount` and `dismount`: a player gets on a content mod's mob (as a player
@@ -1312,6 +1381,11 @@ pub(super) mod run {
                         data,
                     };
                     self.mods.mob_spawns.push(spawn);
+                }
+                Output::Ride { rider, vehicle } => {
+                    if self.mods.rides.len() < MAX_QUEUED_ORDERS {
+                        self.mods.rides.push((rider, vehicle));
+                    }
                 }
                 Output::Orders { name, orders } => {
                     let queued = &mut self.mods.mob_orders;

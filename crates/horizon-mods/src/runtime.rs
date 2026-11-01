@@ -136,6 +136,9 @@ const NEAR_RADIUS: f64 = 64.0;
 const AREA_RADIUS: f64 = 16.0;
 /// `entities.spawn` calls one hook call may make.
 const SPAWNS_PER_CALL: usize = 64;
+/// `entities.ride`: at most this many per hook call, within this many blocks.
+const RIDES_PER_CALL: usize = 64;
+const RIDE_RANGE: f64 = 16.0;
 /// `set-data`'s bounds: keys a mob keeps, a key's and a value's length.
 const DATA_KEYS: usize = 32;
 const DATA_KEY_CHARS: usize = 64;
@@ -201,6 +204,9 @@ pub struct Snapshot {
     pub entities: Arc<[ModEntity]>,
     /// The content mods' mob types, for `entities.spawn`; filled with [`Snapshot::entities`].
     pub mob_kinds: Arc<[String]>,
+    /// Loaded mobs riding something: (rider, vehicle), for `entities.vehicle`
+    /// and `entities.ride`; filled with [`Snapshot::entities`].
+    pub vehicles: Arc<[(u32, u32)]>,
     /// Loaded resources used to check texture, sound and particle orders.
     pub entity_resources: Arc<EntityResources>,
     /// Players' right clicks on content mods' mobs during the last tick, for
@@ -317,6 +323,9 @@ pub enum Output {
         rotation: u32,
         mirror: bool,
     },
+    /// `entities.ride`: a content mod's mob onto another mob, or off (none), with the
+    /// tick's orders.
+    Ride { rider: u32, vehicle: Option<u32> },
     /// `world.set-spawner`: a monster spawner's mob, after the tick's block writes.
     SetSpawner {
         dimension: String,
@@ -2239,6 +2248,47 @@ impl entities::Host for State {
         }
         Ok(())
     }
+    fn ride(&mut self, rider: u32, vehicle: Option<u32>) -> Result<(), String> {
+        let find = |id: u32| self.snapshot.entities.iter().find(|e| e.id == id);
+        let r = find(rider).ok_or_else(|| format!("no mob {rider} is loaded"))?;
+        if !own_kind(&r.kind) {
+            return Err(format!("mob {rider} is {}, not a content mod's", r.kind));
+        }
+        if let Some(v) = vehicle {
+            if v == rider {
+                return Err("a mob cannot ride itself".into());
+            }
+            let ve = find(v).ok_or_else(|| format!("no mob {v} is loaded"))?;
+            let d = (r.x - ve.x).powi(2) + (r.y - ve.y).powi(2) + (r.z - ve.z).powi(2);
+            if ve.dimension != r.dimension || d > RIDE_RANGE * RIDE_RANGE {
+                return Err(format!(
+                    "mob {v} is not within {RIDE_RANGE} blocks of {rider}"
+                ));
+            }
+            // The vehicle's own chain of vehicles must not lead back to the rider.
+            let mut at = v;
+            for _ in 0..16 {
+                match self.snapshot.vehicles.iter().find(|(m, _)| *m == at) {
+                    Some(&(_, next)) if next == rider => {
+                        return Err(format!("mob {v} rides {rider}"));
+                    }
+                    Some(&(_, next)) => at = next,
+                    None => break,
+                }
+            }
+        }
+        let rides = self.out.iter().filter(|o| matches!(o, Output::Ride { .. }));
+        if rides.count() >= RIDES_PER_CALL {
+            return Err(format!("at most {RIDES_PER_CALL} rides per call"));
+        }
+        self.out.push(Output::Ride { rider, vehicle });
+        Ok(())
+    }
+    fn vehicle(&mut self, id: u32) -> Option<u32> {
+        (self.snapshot.vehicles.iter())
+            .find(|(m, _)| *m == id)
+            .map(|&(_, v)| v)
+    }
     fn spawn(
         &mut self,
         kind: String,
@@ -3251,6 +3301,60 @@ mod entity_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn ride_checks_kinds_range_and_loops_and_vehicle_reads_the_snapshot() {
+        let mob = |id: u32, kind: &str, x: f64| ModEntity {
+            id,
+            kind: kind.into(),
+            dimension: "minecraft:overworld".into(),
+            x,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+            on_ground: true,
+            target: None,
+            target_player: false,
+            scale: 1.0,
+            data: vec![],
+            age: 0,
+            animation: None,
+            texture: None,
+            rider: None,
+        };
+        let mut state = state();
+        state.snapshot = Arc::new(Snapshot {
+            entities: vec![
+                mob(1, "ruby:knight", 0.0),
+                mob(2, "ruby:horse", 2.0),
+                mob(3, "minecraft:horse", 4.0),
+                mob(4, "ruby:far", 40.0),
+            ]
+            .into(),
+            // 2 already rides 1: 1 onto 2 would loop.
+            vehicles: vec![(2, 1)].into(),
+            ..Snapshot::default()
+        });
+        let ride = |state: &mut State, r, v| entities::Host::ride(state, r, v);
+        assert!(ride(&mut state, 1, Some(3)).is_ok());
+        assert!(ride(&mut state, 1, None).is_ok());
+        assert!(ride(&mut state, 3, Some(2)).is_err(), "a vanilla rider");
+        assert!(ride(&mut state, 1, Some(1)).is_err());
+        assert!(ride(&mut state, 1, Some(4)).is_err(), "out of range");
+        assert!(ride(&mut state, 1, Some(9)).is_err(), "not loaded");
+        assert!(ride(&mut state, 1, Some(2)).is_err(), "a loop");
+        let queued: Vec<_> = (state.out.iter())
+            .filter_map(|o| match o {
+                Output::Ride { rider, vehicle } => Some((*rider, *vehicle)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(queued, [(1, Some(3)), (1, None)]);
+        assert_eq!(entities::Host::vehicle(&mut state, 2), Some(1));
+        assert_eq!(entities::Host::vehicle(&mut state, 1), None);
     }
 
     #[test]
