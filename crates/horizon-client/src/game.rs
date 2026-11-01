@@ -105,6 +105,7 @@ mod lightning;
 mod llamas;
 mod locator_bar;
 mod loom;
+mod lootr;
 mod mace;
 mod machines;
 mod maps;
@@ -1920,6 +1921,8 @@ struct Game<'a> {
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
     lan_acting_uuid: Option<u128>,
+    /// Lootr's per-player loot (game/lootr.rs).
+    lootr: lootr::Lootr,
     /// Command feedback to forward to a guest.
     chat_capture: Option<Vec<horizon_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
@@ -3709,6 +3712,10 @@ impl Game<'_> {
             // ShulkerBoxBlock.canOpen: the lid has no room; nothing opens.
         } else if let Some(entity) = BlockEntity::for_block(&name) {
             self.world.block_entities.get_or_insert_with(key, || entity);
+            // Lootr: the player's own loot in a container that still holds its table's roll.
+            if !self.lootr_open(key, &name) {
+                return;
+            }
             let centre = [
                 f64::from(key.0) + 0.5,
                 f64::from(key.1) + 0.5,
@@ -4010,6 +4017,16 @@ impl Game<'_> {
         }
         // The block entity as it was, for what the drops copy from it.
         let key = (pos[0], pos[1], pos[2]);
+        // Lootr: a container with its players' loot breaks only while sneaking.
+        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
+            || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
+        if self.lootr_protects(key, &facts.name, sneaking) {
+            self.message = Some((
+                "Sneak to break a chest with players' loot".into(),
+                std::time::Instant::now(),
+            ));
+            return Ok(());
+        }
         if let Some(entity) = self.world.block_entities.get(&key).cloned() {
             let name = self.world.block_names.get(&key).cloned();
             self.pending.record(pos, &entity, &facts.name, name);
@@ -6617,6 +6634,8 @@ impl Game<'_> {
         self.craft_size = 2;
         self.craft_table = None;
         if let Some(key) = self.container.take() {
+            // Lootr: the player's loot is kept and the shared roll goes back.
+            self.lootr_close(key);
             // A cart's or chest boat's items go back to it.
             self.close_cart_container(key);
             let last = self.container_opener_event(key, false);
@@ -11471,6 +11490,13 @@ impl Game<'_> {
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
+        // Open Lootr containers save their loot table, not a player's loot.
+        self.lootr_settle();
+        let saved = self.save_level_settled(wait);
+        self.lootr_reopen();
+        saved
+    }
+    fn save_level_settled(&mut self, wait: bool) -> Result<()> {
         self.save.save_forced_chunks(&self.streaming.forced)?;
         self.streaming.save(&mut self.world, wait);
         let keys: Vec<_> = self.world.modified.drain().collect();
@@ -14009,6 +14035,7 @@ impl<'a> Game<'a> {
             guest_entity_events: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,
+            lootr: Default::default(),
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,

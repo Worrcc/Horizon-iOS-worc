@@ -908,6 +908,10 @@ impl Game<'_> {
     /// `playSound` with no player), the guest included, once the last opener
     /// has left.
     pub(super) fn guest_container_closed(&mut self, host: &mut LanHost, conn: u32) {
+        // Lootr: the guest's own loot is kept and the shared roll goes back.
+        if let Some(pos) = host.hub.guest(conn).and_then(|g| g.menu.as_ref()?.pos) {
+            self.lootr_close(pos);
+        }
         if let Some(g) = host.hub.guest(conn)
             && let Some(pos) = g.menu.as_ref().and_then(|m| m.pos)
             && !g.spectator()
