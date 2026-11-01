@@ -317,6 +317,12 @@ pub enum Output {
         rotation: u32,
         mirror: bool,
     },
+    /// `world.set-spawner`: a monster spawner's mob, after the tick's block writes.
+    SetSpawner {
+        dimension: String,
+        pos: (i32, i32, i32),
+        entity: String,
+    },
     /// `entities.give-orders`: orders to content mods' mobs, by id, in order, each
     /// checked against the tick's [`Snapshot::entities`].
     Orders {
@@ -1839,6 +1845,29 @@ impl mod_world::Host for State {
             pos: (x, y, z),
             rotation,
             mirror,
+        });
+        Ok(())
+    }
+    fn set_spawner(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        entity: String,
+    ) -> Result<(), String> {
+        if !resource_id(&entity) {
+            return Err(format!("{entity:?} is not an entity type id"));
+        }
+        if let Some(view) = self.world.lock().ok().as_ref().and_then(|v| v.as_ref())
+            && !view.has_dimension(&dimension)
+        {
+            return Err(format!("no dimension {dimension}"));
+        }
+        self.out.push(Output::SetSpawner {
+            dimension,
+            pos: (x, y, z),
+            entity,
         });
         Ok(())
     }

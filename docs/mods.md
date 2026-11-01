@@ -637,6 +637,14 @@ the tick's block writes, including block entities and their loot tables: generat
 chests retain `LootTable` and roll it as other generated chests do. Template entities
 follow the game's existing template placement support. Only loaded chunks are written.
 
+**API level 13: spawners.** `world.set-spawner(dimension, x, y, z, entity) -> result<_, string>`
+sets the mob a monster spawner (`minecraft:spawner`) spawns, as a spawn egg used on it does
+(`BaseSpawner.setEntityId`): vanilla's entity types or a content mod's. It runs after the
+tick's block writes, so a mod can place a spawner with `set-blocks` and give it its mob in
+the same tick, as a Java structure processor rewrites a template spawner's `SpawnData`. The
+spawner keeps its delays, spawn count and ranges; players see the new mob in it. No spawner
+there then, or an unknown type: the write is skipped and logged.
+
 The `mob-orders` example demonstrates `/uses` (last tick's item uses), `/burn` (ten
 seconds of wither I on the nearest content mod's mob), and `/peek x y z` (the occupied
 slots and slot count of a container).

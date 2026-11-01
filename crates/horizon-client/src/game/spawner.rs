@@ -401,6 +401,37 @@ impl Game<'_> {
         self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
         Some(true)
     }
+    /// Server mods' `world.set-spawner`: the spawner's mob, set as a spawn egg
+    /// sets it (`BaseSpawner.setEntityId`), keeping its delays and ranges.
+    #[cfg(feature = "mods")]
+    pub(super) fn apply_mod_spawner(
+        &mut self,
+        pos: [i32; 3],
+        kind: &str,
+    ) -> std::result::Result<(), String> {
+        let key = (pos[0], pos[1], pos[2]);
+        if !matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::Spawner(_))
+        ) {
+            return Err(format!("no spawner at {} {} {}", pos[0], pos[1], pos[2]));
+        }
+        if !self.res.mob_types().contains_key(kind) {
+            return Err(format!("unknown entity type {kind}"));
+        }
+        let mut events = Vec::new();
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            horizon_core::random::LegacyRandom::new(0),
+        );
+        if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
+            s.set_entity_id(kind, &mut random, &mut events);
+        }
+        self.world.random = random;
+        let _ = self.apply_spawner_events(key, events, &HashMap::new());
+        self.spawner_block_updated(key);
+        Ok(())
+    }
     /// `SpawnerRenderer` and `TrialSpawnerRenderer`: the next mob of every
     /// spawner near the camera, small and turning.
     pub(super) fn spawner_geometry(

@@ -786,6 +786,12 @@ interface %world {
     /// after this tick's block writes, preserving block entities and loot tables.
     /// Rotation is 0..3 clockwise quarter turns; mirror reflects before rotating.
     place-structure: func(dimension: string, id: string, x: s32, y: s32, z: s32, rotation: u32, mirror: bool) -> result<_, string>;
+    /// Sets the mob a monster spawner (`minecraft:spawner`) spawns, as a spawn egg
+    /// used on it does, after this tick's block writes (so a spawner placed by them
+    /// gets it). `entity` is an entity type id, vanilla's or a content mod's. The
+    /// spawner keeps its delays, counts and ranges. Not a spawner then, or an
+    /// unknown type: nothing, logged.
+    set-spawner: func(dimension: string, x: s32, y: s32, z: s32, entity: string) -> result<_, string>;
     /// Current server rule value as text, or none for an unknown rule.
     /// Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias.
     game-rule: func(name: string) -> option<string>;

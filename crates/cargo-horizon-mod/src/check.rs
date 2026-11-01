@@ -319,6 +319,12 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                     pos.2
                 )
             }
+            Output::SetSpawner { entity, pos, .. } => {
+                format!(
+                    "set the spawner at {} {} {} to {entity}",
+                    pos.0, pos.1, pos.2
+                )
+            }
             Output::PlaceStructure { id, pos, .. } => {
                 format!("placed structure {id} at {} {} {}", pos.0, pos.1, pos.2)
             }

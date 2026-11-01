@@ -976,7 +976,8 @@ pub(super) mod run {
                 .into_iter()
                 .partition(|op| match op {
                     Output::SetContainer { dimension, .. }
-                    | Output::PlaceStructure { dimension, .. } => dimension == dim,
+                    | Output::PlaceStructure { dimension, .. }
+                    | Output::SetSpawner { dimension, .. } => dimension == dim,
                     _ => false,
                 });
             self.mods.world_operations = later;
@@ -990,6 +991,9 @@ pub(super) mod run {
                         mirror,
                         ..
                     } => self.place_mod_template(&id, [pos.0, pos.1, pos.2], rotation, mirror),
+                    Output::SetSpawner { pos, entity, .. } => {
+                        self.apply_mod_spawner([pos.0, pos.1, pos.2], &entity)
+                    }
                     _ => unreachable!(),
                 };
                 if let Err(error) = result {
@@ -1257,7 +1261,9 @@ pub(super) mod run {
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
-                operation @ (Output::SetContainer { .. } | Output::PlaceStructure { .. }) => {
+                operation @ (Output::SetContainer { .. }
+                | Output::PlaceStructure { .. }
+                | Output::SetSpawner { .. }) => {
                     if self.mods.world_operations.len() < MAX_QUEUED_WRITES {
                         self.mods.world_operations.push(operation);
                     }

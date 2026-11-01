@@ -845,6 +845,7 @@ impl Game<'_> {
                 | Output::SetLootTable { .. }
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
+                | Output::SetSpawner { .. }
                 | Output::PlayerEffect { .. }
                 | Output::Orders { .. }
                 | Output::Spawn { .. }) => {
