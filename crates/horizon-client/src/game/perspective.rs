@@ -611,12 +611,17 @@ impl Game<'_> {
             return;
         };
         let assets = &self.armor_stand_assets;
-        let Some((texture, _)) = assets.equipment.get(asset).and_then(|k| k.get("wings")) else {
+        let Some(equipment) = assets
+            .equipment
+            .get(asset)
+            .and_then(|k| k.get("wings"))
+            .and_then(|layers| layers.first())
+        else {
             return;
         };
         let (Some(model), Some(rect)) = (
             assets.player.get("elytra"),
-            self.gui.atlas.sprites.get(texture),
+            self.gui.atlas.sprites.get(&equipment.texture),
         ) else {
             return;
         };

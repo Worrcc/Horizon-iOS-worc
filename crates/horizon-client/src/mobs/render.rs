@@ -1251,7 +1251,18 @@ fn render_visible(
         draw_body(out);
     }
     for (part, uv, color) in extra {
-        draw(part, base, &poses, *uv, *color, light, overlay, out);
+        if let Some(slot) = super::armor_geo::slot(part) {
+            let overlay = if armor_slot(&format!("#{slot}"))
+                .is_some_and(|slot| super::gear::enchanted(m, slot))
+            {
+                ARMOR_GLINT
+            } else {
+                0
+            };
+            super::armor_geo::draw(part, &model, base, &poses, *uv, *color, light, overlay, out);
+        } else {
+            draw(part, base, &poses, *uv, *color, light, overlay, out);
+        }
     }
     let mut all_layers = layers(m);
     // WardenRenderer: the translucent emissive layers fade with the animations.
@@ -1271,6 +1282,13 @@ fn render_visible(
     // its maps' capacity.
     let mut layer_poses = Poses::default();
     for layer in all_layers {
+        if layer.model.rsplit_once('#').is_some_and(|(_, slot)| {
+            extra
+                .iter()
+                .any(|(p, _, _)| super::armor_geo::slot(p) == Some(slot))
+        }) {
+            continue;
+        }
         let Some(part) = m.kind.layer(&layer.model).cloned() else {
             continue;
         };

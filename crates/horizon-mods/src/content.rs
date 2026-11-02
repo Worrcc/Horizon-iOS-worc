@@ -687,6 +687,44 @@ impl Content {
             }
         }
         let mut ids = BTreeSet::new();
+        // Equipment assets remain resource files, including unknown vanilla fields.
+        // Validate the optional geometry reference before copying them to the content root.
+        for name in &self.files {
+            let mut parts = name.splitn(3, '/');
+            if parts.next() == Some("assets")
+                && parts.next().is_some()
+                && parts
+                    .next()
+                    .is_some_and(|p| p.starts_with("equipment/") && p.ends_with(".json"))
+            {
+                let file: serde_json::Value = serde_json::from_slice(&self.file(name)?)
+                    .map_err(|e| format!("{name}: {e}"))?;
+                for kind in ["humanoid", "humanoid_leggings"] {
+                    for layer in file["layers"][kind].as_array().into_iter().flatten() {
+                        let Some(model) = layer.get("model") else {
+                            continue;
+                        };
+                        let model = model
+                            .as_str()
+                            .ok_or_else(|| format!("{name}: equipment model must be a string"))?;
+                        let (ns, path) = model.split_once(':').unwrap_or_default();
+                        if !resource_id(model)
+                            || !self.namespaces.iter().any(|n| n == ns)
+                            || !path.starts_with("armor/")
+                            || path == "armor/"
+                        {
+                            return Err(format!(
+                                "{name}: equipment model must be <mod namespace>:armor/<name>"
+                            ));
+                        }
+                        let geo = format!("assets/{ns}/geo/{path}.geo.json");
+                        if self.files.binary_search(&geo).is_err() {
+                            return Err(format!("{name}: equipment model has no {geo}"));
+                        }
+                    }
+                }
+            }
+        }
         for (block, name) in blocks {
             let file: BlockFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
@@ -850,6 +888,61 @@ capabilities = ["registries"]
         let content = package.and_then(|p| Content::read(&path, &p.manifest));
         std::fs::remove_dir_all(&dir).unwrap();
         content
+    }
+
+    #[test]
+    fn equipment_models_validate_all_layers_paths_namespaces_and_presence() {
+        let geo = "assets/ruby/geo/armor/horn.geo.json";
+        let equipment = "assets/ruby/equipment/metal.json";
+        let document = |model: serde_json::Value| {
+            serde_json::json!({"layers":{
+                "humanoid":[{"texture":"ruby:metal"},{"texture":"ruby:metal","model":model}],
+                "humanoid_leggings":[{"texture":"ruby:metal","model":"ruby:armor/horn"}]
+            }})
+            .to_string()
+        };
+        let valid = document(serde_json::json!("ruby:armor/horn"));
+        let content = hmod(
+            "equipment-model",
+            MANIFEST_TEXT,
+            &[(equipment, valid.as_bytes()), (geo, b"{}")],
+        )
+        .unwrap();
+        assert!(content.files.contains(&geo.to_owned()));
+        assert!(
+            hmod(
+                "missing-equipment-model",
+                MANIFEST_TEXT,
+                &[(equipment, valid.as_bytes())]
+            )
+            .unwrap_err()
+            .contains("equipment model has no")
+        );
+        for bad in [
+            serde_json::json!("minecraft:armor/horn"),
+            serde_json::json!("other:armor/horn"),
+            serde_json::json!("ruby:horn"),
+            serde_json::json!("ruby:armor/../horn"),
+            serde_json::json!("ruby:armor/"),
+            serde_json::json!("ruby:armor//horn"),
+            serde_json::json!("ruby:armor/Bad"),
+            serde_json::json!(3),
+            serde_json::Value::Null,
+        ] {
+            let file = document(bad.clone());
+            assert!(
+                hmod(
+                    "invalid-equipment-model",
+                    MANIFEST_TEXT,
+                    &[(equipment, file.as_bytes()), (geo, b"{}")]
+                )
+                .unwrap_err()
+                .contains("equipment model"),
+                "{bad}"
+            );
+        }
+        let old = br#"{"layers":{"humanoid":[{"texture":"ruby:metal"}]}}"#;
+        hmod("old-equipment", MANIFEST_TEXT, &[(equipment, old)]).unwrap();
     }
 
     #[test]

@@ -1070,6 +1070,22 @@ fn declared_equipment_and_charged_templates_load_into_the_catalog() {
         "data/gear/horizon/item/ingot.json".into(),
         json!({"template":"minecraft:stick","max_stack_size":16,"rarity":"rare"}).to_string(),
     ));
+    declarations.push((
+        "assets/gear/equipment/metal.json".into(),
+        json!({"layers":{
+            "humanoid":[{"texture":"gear:metal","model":"gear:armor/horn"}],
+            "humanoid_leggings":[{"texture":"gear:metal","model":"gear:armor/horn_inner"}]
+        }})
+        .to_string(),
+    ));
+    let geometry =
+        include_str!("../tests/fixtures/armor-geo/assets/armor_fixture/geo/armor/horn.geo.json");
+    for name in ["horn", "horn_inner"] {
+        declarations.push((
+            format!("assets/gear/geo/armor/{name}.geo.json"),
+            geometry.into(),
+        ));
+    }
     write("items.json", vanilla.clone());
     let borrowed: Vec<_> = declarations
         .iter()
@@ -1079,6 +1095,22 @@ fn declared_equipment_and_charged_templates_load_into_the_catalog() {
     let out = scratch.join("root");
     build(&base, &[m], &out).unwrap();
     let items = Items::catalog(&out).unwrap();
+    let equipment: Value =
+        serde_json::from_slice(&fs::read(out.join("assets/gear/equipment/metal.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        equipment["layers"]["humanoid"][0]["model"],
+        "gear:armor/horn"
+    );
+    assert_eq!(
+        equipment["layers"]["humanoid_leggings"][0]["model"],
+        "gear:armor/horn_inner"
+    );
+    assert_eq!(
+        fs::read_to_string(out.join("assets/gear/geo/armor/horn.geo.json")).unwrap(),
+        geometry
+    );
+
     for (slot, suffix) in [
         ("head", "helmet"),
         ("chest", "chestplate"),

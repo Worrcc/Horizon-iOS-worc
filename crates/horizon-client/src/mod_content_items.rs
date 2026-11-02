@@ -78,6 +78,8 @@ impl NewItem<'_> {
             // Retain the class's equipment sounds and default equip flags.
             if let Some(equip) = v.get_mut("minecraft:equippable") {
                 equip.set_json("slot", json!(a.slot));
+                // The asset's ordered layers (including optional geometry models)
+                // are validated by Content and copied intact into the resource root.
                 if let Some(texture) = &a.texture {
                     equip.set_json("asset_id", json!(texture));
                 }

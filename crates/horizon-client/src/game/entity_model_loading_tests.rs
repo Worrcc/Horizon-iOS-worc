@@ -229,16 +229,25 @@ fn armor_equipment_loads_without_an_entity_model_document() {
     assert!(assets.main.is_none());
     assert!(assets.layers.is_empty());
     assert_eq!(
-        assets.equipment["minecraft:leather"]["humanoid"],
-        ("entity/equipment/humanoid/leather".into(), Some(0x123456))
+        assets.equipment["minecraft:leather"]["humanoid"][0].texture,
+        "entity/equipment/humanoid/leather"
+    );
+    assert_eq!(
+        assets.equipment["minecraft:leather"]["humanoid"][0].undyed,
+        Some(0x123456)
+    );
+    assert!(
+        assets.equipment["minecraft:leather"]["humanoid"][0]
+            .model
+            .is_none()
     );
     assert!(!assets.equipment.contains_key("minecraft:invalid"));
     assert_eq!(
-        assets.equipment["gear:metal/fire"]["humanoid"].0,
+        assets.equipment["gear:metal/fire"]["humanoid"][0].texture,
         "gear:entity/equipment/humanoid/metal/fire"
     );
     assert_eq!(
-        assets.equipment["gear:metal/fire"]["humanoid_leggings"].0,
+        assets.equipment["gear:metal/fire"]["humanoid_leggings"][0].texture,
         "gear:entity/equipment/humanoid_leggings/metal/fire_legs"
     );
 }
@@ -288,4 +297,35 @@ fn entity_model_document_benchmark() {
             "baseline_median_ms": old, "optimized_median_ms": new, "speedup": old / new
         })
     );
+}
+
+#[test]
+fn armor_geo_equipment_caches_geometry_and_reloads_layers() {
+    let root = FixtureRoot::new();
+    let geo = root.0.join("assets/armor_fixture/geo/armor");
+    fs::create_dir_all(&geo).unwrap();
+    fs::write(
+        geo.join("horn.geo.json"),
+        include_str!("../../tests/fixtures/armor-geo/assets/armor_fixture/geo/armor/horn.geo.json"),
+    )
+    .unwrap();
+    let dir = root.0.join("assets/armor_fixture/equipment");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("horn.json");
+    let equipment = json!({"layers":{"humanoid":[
+        {"texture":"armor_fixture:horn","model":"armor_fixture:armor/horn"},
+        {"texture":"armor_fixture:overlay","model":"armor_fixture:armor/horn"}
+    ]}});
+    fs::write(&file, equipment.to_string()).unwrap();
+    let mut assets = ArmorStandAssets::load(&root.0, None);
+    assert_eq!(assets.models.len(), 1);
+    assert_eq!(assets.equipment["armor_fixture:horn"]["humanoid"].len(), 2);
+    let helmet = &assets.models["armor_fixture:armor/horn"]["helmet"];
+    assert_eq!(helmet.children[0].children[0].name, "horn");
+    // Geometry works even without vanilla equipment models, and is refreshed on reload.
+    assert!(assets.player.is_empty());
+    fs::remove_file(&file).unwrap();
+    assets.reload_trims(&root.0);
+    assert!(assets.models.is_empty());
+    assert!(assets.equipment.is_empty());
 }

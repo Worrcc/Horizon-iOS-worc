@@ -4343,11 +4343,12 @@ impl Game<'_> {
                 );
             }
             // Other players on a server: PlayerRenderer's HumanoidArmorLayer.
-            let armor = if &*mob.kind.id == "minecraft:player" {
-                self.worn_armor_layers(mob)
-            } else {
-                Vec::new()
-            };
+            let mut armor = self.worn_armor_layers(mob);
+            if &*mob.kind.id != "minecraft:player" {
+                // Vanilla mob equipment keeps its species-specific models. Custom
+                // geometry attaches to the same humanoid parts as the player's.
+                armor.retain(|(part, _, _)| horizon_client::mobs::armor_geo::slot(part).is_some());
+            }
             horizon_client::mobs::render::render_with(
                 mob,
                 alpha as f32,

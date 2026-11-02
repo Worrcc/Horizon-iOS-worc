@@ -12,6 +12,7 @@ pub mod anim;
 pub mod animal_brain;
 pub mod aquatic;
 pub mod armadillo;
+pub mod armor_geo;
 pub mod axolotl;
 pub mod bat;
 pub mod bedrock_anim;

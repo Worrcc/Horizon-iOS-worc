@@ -250,8 +250,48 @@ Like vanilla 26.3 equipment assets, that file declares, for example,
 `{"layers":{"humanoid":[{"texture":"ruby:metal"}],"humanoid_leggings":[{"texture":"ruby:metal"}]}}`.
 The PNGs are `assets/ruby/textures/entity/equipment/humanoid/metal.png` and
 `.../humanoid_leggings/metal.png`; leggings use the second layer. Nested asset names and mod
-texture namespaces work for players and armor stands. This uses vanilla humanoid geometry;
-custom Java armor geometry requires a separate model implementation.
+texture namespaces work for players and armor stands. Layers without a `model` keep
+vanilla humanoid geometry. A layer can replace it with Bedrock geometry, also supported
+for humanoid mobs:
+
+```json
+{
+  "layers": {
+    "humanoid": [{"texture": "ruby:metal", "model": "ruby:armor/metal"}],
+    "humanoid_leggings": [{"texture": "ruby:metal", "model": "ruby:armor/metal_inner"}]
+  }
+}
+```
+
+`model` must be a string `<mod namespace>:armor/<name>` naming an existing
+`assets/<namespace>/geo/armor/<name>.geo.json` in the same content mod's owned namespaces.
+It is checked when loading both folders and `.hmod` archives; nested names work. Models
+are baked once per name at equipment loading and refreshed on resource reload. Each entry
+in the layer array draws in order with its own texture and optional model.
+
+Use `format_version: "1.12.0"`, `minecraft:geometry[0]`, a `description` with `identifier`,
+`texture_width` and `texture_height`, and `bones`. The creature geometry baker handles
+cube `origin`, `size`, `uv`, `inflate`, `mirror`, bone `pivot`, `rotation`, `mirror`, and
+parented children. The six root bone names are `head`, `body`, `right_arm`, `left_arm`,
+`right_leg`, `left_leg`; omit unused roots. Every other bone must descend from one of
+those roots. Root transforms are replaced by the wearer's corresponding vanilla part
+transform, including animation, crouch/head offsets and baby scale. Children keep their
+local bind poses and rotations. Do not add a separate enclosing root bone.
+
+Pivots and cube origins use absolute Bedrock model coordinates: Java `(x,y,z)` becomes
+`(x,24-y,z)`. Vanilla humanoid pivots in Java coordinates are head/body `(0,0,0)`, right/left
+arm `(-5,2,0)`/`(5,2,0)`, right/left leg `(-1.9,12,0)`/`(1.9,12,0)`. Cube inflation belongs
+in the file: use the Java model's outer deformation for helmets, chestplates and boots,
+and inner deformation for leggings. Horizon does not add another inflation. Conventionally
+`metal.geo.json` is the outer model and `metal_inner.geo.json` is the inner model.
+
+Helmet slots draw the `head` tree; chestplates draw `body` and both arms; leggings draw both
+legs and the `body` tree only when explicitly present in the inner geometry; boots draw both
+legs. No missing bone falls back to a vanilla box. Custom layers currently skip dye and
+trims. Armour stand and enchanted humanoid mob layers retain armour glint; player layers
+retain the existing player glint limitations. First person continues to draw the bare/skin
+hand, with no armour geometry. The original cube-and-horn helmet under
+`crates/horizon-client/tests/fixtures/armor-geo/` is a standalone content mod for testing.
 
 ```json
 {
