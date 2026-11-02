@@ -17,7 +17,7 @@ use winit::{
     dpi::PhysicalSize,
     event::{DeviceEvent, DeviceId, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS},
+    platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS, WindowExtIOS},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -75,9 +75,29 @@ fn log_resize(size: PhysicalSize<u32>) {
     );
 }
 
+/// Publish keyboard occlusion independently of the drawable size. Every HudBatch (drawing,
+/// hit testing, gui_size and agent snapshots) then uses the same visible layout and scale.
+fn sync_keyboard_layout(window: &Window) {
+    let inset = (window.keyboard_bottom_inset() * window.scale_factor()).ceil() as u32;
+    if horizon_client::hud::set_keyboard_bottom_inset(inset) {
+        let size = window.inner_size();
+        let batch = horizon_client::hud::HudBatch::new([size.width, size.height]);
+        log::info!(
+            "Horizon: iOS keyboard inset={inset} px, surface={}x{}, GUI={}x{} at scale={}: {}",
+            size.width,
+            size.height,
+            batch.width,
+            batch.height,
+            batch.scale,
+            horizon_ios::describe_window(window)
+        );
+    }
+}
+
 /// The window's size when the surface (`surface`, in pixels) no longer has it: a `Resized` lost
 /// around a rotation would otherwise leave the picture stretched over the screen.
 pub(super) fn size_change(window: &Window, surface: [u32; 2]) -> Option<PhysicalSize<u32>> {
+    sync_keyboard_layout(window);
     let size = window.inner_size();
     if size.width == 0 || size.height == 0 || [size.width, size.height] == surface {
         return None;
@@ -165,6 +185,11 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        WINDOW.with_borrow(|window| {
+            if let Some(window) = window.as_ref().filter(|window| window.id() == id) {
+                sync_keyboard_layout(window);
+            }
+        });
         if let WindowEvent::Resized(size) = &event {
             log_resize(*size);
         }

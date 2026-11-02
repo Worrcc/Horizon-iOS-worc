@@ -10,6 +10,23 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+// UIKit-independent geometry is also compiled by desktop unit tests.
+#[cfg(any(target_os = "ios", test))]
+#[path = "hud_ios_keyboard.rs"]
+mod ios_keyboard;
+
+#[cfg(target_os = "ios")]
+thread_local! {
+    // Per UI thread: an integrated server must not inherit the window's keyboard inset.
+    static KEYBOARD_BOTTOM_INSET: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Updates the iOS GUI's occluded bottom edge in physical pixels; the surface stays full size.
+#[cfg(target_os = "ios")]
+pub fn set_keyboard_bottom_inset(inset: u32) -> bool {
+    KEYBOARD_BOTTOM_INSET.with(|value| value.replace(inset) != inset)
+}
+
 /// A sprite's atlas region, and its size in GUI pixels: the size of the
 /// default resources' texture of that name, whatever the resolution of the
 /// pack that replaced it (vanilla's GUI code draws in those units: `blit`
@@ -703,11 +720,19 @@ impl HudBatch {
         {
             scale += 1;
         }
+        let (scale, width, height) = (
+            scale as f32,
+            (window[0] as f32 / scale as f32).ceil(),
+            (window[1] as f32 / scale as f32).ceil(),
+        );
+        #[cfg(target_os = "ios")]
+        let (scale, width, height) = KEYBOARD_BOTTOM_INSET
+            .with(|inset| ios_keyboard::layout(window, inset.get(), (scale, width, height)));
         Self {
             vertices: Vec::new(),
-            scale: scale as f32,
-            width: (window[0] as f32 / scale as f32).ceil(),
-            height: (window[1] as f32 / scale as f32).ceil(),
+            scale,
+            width,
+            height,
             patches: Vec::new(),
             blends: Vec::new(),
             end_portal: EndPortalFill::default(),

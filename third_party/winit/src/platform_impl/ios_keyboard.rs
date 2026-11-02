@@ -20,9 +20,14 @@ pub(super) fn keyboard_offset(field: [f64; 4], keyboard: [f64; 4]) -> f64 {
     (y + height - ky).max(0.0)
 }
 
+/// Portion of a viewport hidden below the keyboard top, bounded by its own height.
+pub(super) fn visible_bottom_inset(view: [f64; 4], keyboard: [f64; 4]) -> f64 {
+    keyboard_offset(view, keyboard).min(view[3].max(0.0))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::keyboard_offset;
+    use super::{keyboard_offset, visible_bottom_inset};
 
     #[test]
     fn covered_field_moves_just_above_keyboard() {
@@ -49,13 +54,40 @@ mod tests {
     }
 
     #[test]
-    fn viewport_reserves_space_above_docked_and_floating_keyboards() {
-        let viewport = [20.0, 40.0, 800.0, 600.0];
-        assert_eq!(keyboard_offset(viewport, [0.0, 400.0, 900.0, 240.0]), 240.0);
+    fn viewport_inset_tracks_local_origin_and_restores_after_dismissal() {
+        // A view at screen y=40 sees a screen keyboard at y=400 at local y=360.
         assert_eq!(
-            keyboard_offset(viewport, [100.0, 400.0, 300.0, 100.0]),
+            visible_bottom_inset([0.0, 0.0, 800.0, 600.0], [-20.0, 360.0, 900.0, 240.0]),
             240.0
         );
-        assert_eq!(keyboard_offset(viewport, [0.0, 0.0, 900.0, 700.0]), 640.0);
+        let view = [0.0, 0.0, 800.0, 600.0];
+        for keyboard in [
+            [0.0, 600.0, 800.0, 300.0],
+            [800.0, 200.0, 100.0, 100.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ] {
+            assert_eq!(visible_bottom_inset(view, keyboard), 0.0);
+        }
+        assert_eq!(
+            visible_bottom_inset(view, [0.0, -100.0, 900.0, 800.0]),
+            600.0
+        );
+    }
+
+    #[test]
+    fn viewport_reserves_space_above_docked_and_floating_keyboards() {
+        let viewport = [20.0, 40.0, 800.0, 600.0];
+        assert_eq!(
+            visible_bottom_inset(viewport, [0.0, 400.0, 900.0, 240.0]),
+            240.0
+        );
+        assert_eq!(
+            visible_bottom_inset(viewport, [100.0, 400.0, 300.0, 100.0]),
+            240.0
+        );
+        assert_eq!(
+            visible_bottom_inset(viewport, [0.0, 0.0, 900.0, 700.0]),
+            600.0
+        );
     }
 }
