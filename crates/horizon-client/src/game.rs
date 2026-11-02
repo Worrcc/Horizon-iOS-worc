@@ -4428,7 +4428,7 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
-        if !on_block && &*stack.item == "minecraft:bow" {
+        if !on_block && self.res.items().behavior(&stack.item) == "minecraft:bow" {
             if self.using.is_none()
                 && (self.creative || self.projectile_slot("minecraft:bow").is_some())
             {
@@ -4679,15 +4679,15 @@ impl Game<'_> {
         if self.tick_drinking(slot, ticks, &stack) {
             return;
         }
-        if &*stack.item == "minecraft:bow" {
+        if self.res.items().behavior(&stack.item) == "minecraft:bow" {
             self.using = Some((slot, ticks + 1));
             return;
         }
-        if &*stack.item == "minecraft:crossbow" {
+        if self.res.items().behavior(&stack.item) == "minecraft:crossbow" {
             self.tick_crossbow(slot, ticks, &stack);
             return;
         }
-        if &*stack.item == "minecraft:trident" {
+        if self.res.items().behavior(&stack.item) == "minecraft:trident" {
             self.using = Some((slot, ticks + 1));
             return;
         }
@@ -4789,7 +4789,7 @@ impl Game<'_> {
     /// used for `ticks`, its hand acting: a bow or a trident lets go (not
     /// when its hand changed), a spyglass stops scoping.
     pub(super) fn release_used_item(&mut self, stack: &ItemStack, ticks: u32, hand_changed: bool) {
-        match &*stack.item {
+        match self.res.items().behavior(&stack.item) {
             "minecraft:bow" if !hand_changed => self.release_bow(ticks),
             "minecraft:trident" if !hand_changed => self.release_trident(ticks),
             "minecraft:spyglass" => self.stop_spyglass(),
@@ -10669,7 +10669,7 @@ impl Game<'_> {
                     time_held: ticks_used,
                     ticks_since_hit: self.kinetic_hit_ticks(a),
                 });
-            let pose = match &*stack.item {
+            let pose = match self.res.items().behavior(&stack.item) {
                 _ if let Some(pose) = spear => pose,
                 "minecraft:bow" if using => ItemPose::Bow { ticks_used },
                 "minecraft:crossbow" => {

@@ -93,14 +93,14 @@ impl Game<'_> {
     pub(super) fn trigger_feels(&self) -> (gamepad::TriggerFeel, gamepad::TriggerFeel) {
         let using = match self.using {
             Some((slot, ticks)) => match self.stack_in(slot) {
-                Some(s) if &*s.item == "minecraft:bow" => {
+                Some(s) if self.res.items().behavior(&s.item) == "minecraft:bow" => {
                     gamepad::TriggerFeel::Draw(gamepad::bow_power(ticks))
                 }
                 // TridentItem.THROW_THRESHOLD_TIME.
-                Some(s) if &*s.item == "minecraft:trident" => {
+                Some(s) if self.res.items().behavior(&s.item) == "minecraft:trident" => {
                     gamepad::TriggerFeel::Draw(ticks as f32 / 10.0)
                 }
-                Some(s) if &*s.item == "minecraft:crossbow" => {
+                Some(s) if self.res.items().behavior(&s.item) == "minecraft:crossbow" => {
                     gamepad::TriggerFeel::Draw(ticks as f32 / Self::charge_ticks(s).max(1) as f32)
                 }
                 Some(s) if self.blocks_attacks(s).is_some() => gamepad::TriggerFeel::Brace,
@@ -129,7 +129,7 @@ impl Game<'_> {
             .and_then(|id| self.mobs.iter().find(|m| m.id == id));
         let mount = mount.map_or("", |m| m.kind.id.as_str());
         let feel = |stack: Option<&horizon_client::items::ItemStack>| match stack
-            .map(|s| (s, &*s.item))
+            .map(|s| (s, self.res.items().behavior(&s.item)))
         {
             Some((s, "minecraft:crossbow")) if s.data().is_some_and(|d| !d.charged.is_empty()) => {
                 gamepad::TriggerFeel::Click

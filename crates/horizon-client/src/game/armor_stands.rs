@@ -32,6 +32,42 @@ pub(super) struct ArmorStandAssets {
     /// The resources the trim textures are made from.
     pub root: PathBuf,
 }
+/// Equipment assets use resource locations, including nested paths and mod namespaces.
+fn equipment_files(root: &std::path::Path) -> Vec<(String, PathBuf)> {
+    fn walk(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        ns: &str,
+        out: &mut Vec<(String, PathBuf)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, base, ns, out);
+            } else if path.extension().is_some_and(|e| e == "json") {
+                let name = path
+                    .strip_prefix(base)
+                    .expect("equipment path")
+                    .with_extension("")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((format!("{ns}:{name}"), path));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(namespaces) = std::fs::read_dir(root.join("assets")) {
+        for ns in namespaces.flatten() {
+            let dir = ns.path().join("equipment");
+            walk(&dir, &dir, &ns.file_name().to_string_lossy(), &mut out);
+        }
+    }
+    out
+}
+
 impl ArmorStandAssets {
     pub fn load(
         root: &std::path::Path,
@@ -55,37 +91,36 @@ impl ArmorStandAssets {
         }
         let mut equipment = HashMap::new();
         let mut trim_overrides = HashMap::new();
-        if let Ok(entries) = std::fs::read_dir(root.join("assets/minecraft/equipment")) {
-            for e in entries.flatten() {
-                let path = e.path();
-                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                let Ok(v) =
-                    std::fs::read(&path).map(|b| serde_json::from_slice::<serde_json::Value>(&b))
-                else {
-                    continue;
-                };
-                let Ok(v) = v else { continue };
-                let mut kinds = HashMap::new();
-                for kind in ["humanoid", "humanoid_leggings", "wings"] {
-                    if let Some(layer) = v["layers"][kind].get(0) {
-                        let tex = layer["texture"]
-                            .as_str()
-                            .unwrap_or(name)
-                            .trim_start_matches("minecraft:");
-                        let undyed = layer["dyeable"]["color_when_undyed"]
-                            .as_i64()
-                            .map(|c| c as u32 & 0xFF_FFFF);
-                        kinds.insert(
-                            kind.to_owned(),
-                            (format!("entity/equipment/{kind}/{tex}"), undyed),
-                        );
-                    }
+        for (asset, path) in equipment_files(root) {
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let mut kinds = HashMap::new();
+            for kind in ["humanoid", "humanoid_leggings", "wings"] {
+                if let Some(layer) = v["layers"][kind].get(0) {
+                    let Some(tex) = layer["texture"].as_str() else {
+                        continue;
+                    };
+                    let (ns, tex) = tex.split_once(':').unwrap_or(("minecraft", tex));
+                    let prefix = if ns == "minecraft" {
+                        String::new()
+                    } else {
+                        format!("{ns}:")
+                    };
+                    let undyed = layer["dyeable"]["color_when_undyed"]
+                        .as_i64()
+                        .map(|c| c as u32 & 0xFF_FFFF);
+                    kinds.insert(
+                        kind.to_owned(),
+                        (format!("{prefix}entity/equipment/{kind}/{tex}"), undyed),
+                    );
                 }
-                trim_overrides.insert(format!("minecraft:{name}"), TrimOverride::list(&v));
-                equipment.insert(format!("minecraft:{name}"), kinds);
             }
+            trim_overrides.insert(asset.clone(), TrimOverride::list(&v));
+            equipment.insert(asset, kinds);
         }
         Self {
             main: load("minecraft:armor_stand#main"),

@@ -15,7 +15,7 @@
 //! The loaders need no mod code, vanilla state ids never move, and with no
 //! content mod the root is the base root itself.
 use crate::{Result, blocks::MAP_COLORS};
-use horizon_mods::content::{Block, Content, Entity, Rarity};
+use horizon_mods::content::{Block, Content, Entity, Item, Rarity};
 use horizon_world::nbt::{self, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
@@ -231,15 +231,19 @@ struct NewBlock<'a> {
     item: Option<String>,
 }
 /// An item being added (declared, or a block's).
-struct NewItem {
+struct NewItem<'a> {
     rename: Rename,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    decl: Option<&'a Item>,
 }
+
+#[path = "mod_content_items.rs"]
+mod item_properties;
 
 struct Plan<'a> {
     blocks: Vec<NewBlock<'a>>,
-    items: Vec<NewItem>,
+    items: Vec<NewItem<'a>>,
     /// Mod entities, mods and entities in id order.
     entities: Vec<&'a Entity>,
     /// Vanilla's state count (the tables' length before).
@@ -358,15 +362,17 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
                     rarity: None,
+                    decl: None,
                 });
             }
         }
         for m in &sorted {
             for i in &m.content.items {
                 items.push(NewItem {
-                    rename: Rename::new(&i.template, &i.id),
+                    rename: Rename::new(&item_properties::template(i), &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
+                    decl: Some(i),
                 });
             }
         }
@@ -559,6 +565,7 @@ impl<'a> Plan<'a> {
             let mut v = v.clone();
             v.rename(&i.rename, false);
             if components {
+                i.components(&mut v);
                 if let Some(n) = i.max_stack_size {
                     v.set("minecraft:max_stack_size", J::Num(n.into()));
                 }
@@ -1193,6 +1200,22 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     tables(base, &plan, &overlay)?;
     // Mod files, and every tag addition gathered per tag file.
     let mut tags: BTreeMap<String, TagMerge> = BTreeMap::new();
+    // Item classes use tags too (enchantments, swords, projectile weapons, ...).
+    // Resolve nested vanilla tags before adding the template's new names.
+    for (tag, members) in crate::items::load_tags(base, "item")? {
+        let (ns, path) = tag.split_once(':').ok_or("item tag without namespace")?;
+        let values: Vec<_> = plan
+            .items
+            .iter()
+            .filter(|i| members.contains(&i.rename.from))
+            .map(|i| J::Str(i.rename.to.clone()))
+            .collect();
+        if !values.is_empty() {
+            tags.entry(format!("data/{ns}/tags/item/{path}.json"))
+                .or_default()
+                .values = values;
+        }
+    }
     let mut warnings = Vec::new();
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();

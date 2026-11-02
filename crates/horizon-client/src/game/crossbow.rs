@@ -77,7 +77,7 @@ impl Game<'_> {
     }
     /// `CrossbowItem.use`: shoot when charged, else start charging.
     pub(super) fn use_crossbow(&mut self, stack: &ItemStack) -> bool {
-        if &*stack.item != CROSSBOW {
+        if self.res.items().behavior(&stack.item) != CROSSBOW {
             return false;
         }
         // Use is not re-triggered while the crossbow is still held charging.

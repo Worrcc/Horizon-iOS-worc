@@ -969,3 +969,199 @@ fn mod_entities_copy_their_template_row() {
     );
     assert!(plan.json("entity-types.json", &mut doc).is_err());
 }
+
+/// A small exported-table fixture exercises the complete content root and the
+/// real component/tag loaders without requiring the player's prepared game.
+#[test]
+fn declared_equipment_and_charged_templates_load_into_the_catalog() {
+    use serde_json::{Value, json};
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-item-components-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    let write = |name: &str, value: Value| {
+        let path = base.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    };
+    write(
+        "facts.json",
+        json!({"states":[["minecraft:air"]],"defaults":{"minecraft:air":0}}),
+    );
+    write(
+        "gameplay-facts.json",
+        json!({"states":[{"name":"minecraft:air","item":"minecraft:air"}]}),
+    );
+    fs::create_dir_all(base.join("data/minecraft/loot_table")).unwrap();
+    let mut vanilla = json!({"minecraft:stick":{"minecraft:max_stack_size":64}});
+    let mut declarations: Vec<(String, String)> =
+        vec![("horizon-mod.toml".into(), manifest("gear", ""))];
+    for (slot, suffix) in [
+        ("head", "helmet"),
+        ("chest", "chestplate"),
+        ("legs", "leggings"),
+        ("feet", "boots"),
+    ] {
+        vanilla[format!("minecraft:iron_{suffix}")] = json!({
+            "minecraft:item_model":format!("minecraft:iron_{suffix}"),
+            "minecraft:max_damage":165,"minecraft:max_stack_size":1,
+            "minecraft:equippable":{"slot":slot,"asset_id":"minecraft:iron","equip_sound":"minecraft:item.armor.equip_iron"}
+        });
+        declarations.push((format!("data/gear/horizon/item/{suffix}.json"), json!({
+            "template":"minecraft:stick",
+            "armor":{"slot":slot,"defense":7,"toughness":6,"knockback_resistance":0.1,"durability":1760,"texture":"gear:metal"},
+            "properties":{"enchantability":30,"repair_item":"gear:ingot","fire_resistant":true}
+        }).to_string()));
+    }
+    for kind in ["sword", "pickaxe", "axe", "shovel", "hoe"] {
+        let id = format!("minecraft:iron_{kind}");
+        vanilla[&id] = json!({
+            "minecraft:item_model":id,"minecraft:max_damage":250,"minecraft:max_stack_size":1,
+            "minecraft:tool":{"rules":[{"blocks":"minecraft:cobweb","speed":15,"correct_for_drops":true}],"damage_per_block":2,"can_destroy_blocks_in_creative":false},
+            "minecraft:weapon":{"item_damage_per_attack":1},
+            "minecraft:block_transformer":format!("minecraft:{kind}")
+        });
+        declarations.push((format!("data/gear/horizon/item/{kind}.json"), json!({
+            "template":"minecraft:stick",
+            "tool":{"kind":kind,"attack_damage":27,"attack_speed":-2.4,"mining_speed":10,"durability":8000,
+                    "incorrect_blocks_for_drops":"minecraft:incorrect_for_wooden_tool","enchantability":21,"repair_item":"gear:ingot"}
+        }).to_string()));
+        write(
+            &format!("data/minecraft/tags/item/enchantable/{kind}.json"),
+            json!({"values":[id]}),
+        );
+        write(
+            &format!("data/minecraft/tags/block/mineable/{kind}.json"),
+            json!({"values":["minecraft:stone","minecraft:obsidian"]}),
+        );
+    }
+    write(
+        "data/minecraft/tags/block/incorrect_for_wooden_tool.json",
+        json!({"values":["minecraft:obsidian"]}),
+    );
+    for kind in ["bow", "crossbow", "trident"] {
+        let id = format!("minecraft:{kind}");
+        vanilla[&id] = json!({"minecraft:item_model":id,"minecraft:max_damage":384,"minecraft:max_stack_size":1,
+                             "minecraft:use_effects":{"speed_multiplier":0.2}});
+        declarations.push((
+            format!("data/gear/horizon/item/{kind}.json"),
+            json!({
+                "template":id,"properties":{"max_damage":584,"attack_damage":12,"attack_speed":-2.9}
+            })
+            .to_string(),
+        ));
+        write(
+            &format!("data/minecraft/tags/item/enchantable/{kind}.json"),
+            json!({"values":[id]}),
+        );
+    }
+    vanilla["minecraft:netherite_helmet"] = json!({
+        "minecraft:equippable":{"slot":"head","asset_id":"minecraft:netherite"},
+        "minecraft:max_damage":407,"minecraft:max_stack_size":1,
+        "minecraft:enchantable":{"value":15},
+        "minecraft:damage_resistant":{"types":"#minecraft:is_fire"}
+    });
+    declarations.push(("data/gear/horizon/item/plain_helmet.json".into(), json!({
+        "template":"minecraft:netherite_helmet",
+        "properties":{"max_damage":123,"enchantability":0,"fire_resistant":false,"rarity":"epic"}
+    }).to_string()));
+    // Root-level legacy overrides still load and retain their meaning.
+    declarations.push((
+        "data/gear/horizon/item/ingot.json".into(),
+        json!({"template":"minecraft:stick","max_stack_size":16,"rarity":"rare"}).to_string(),
+    ));
+    write("items.json", vanilla.clone());
+    let borrowed: Vec<_> = declarations
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let m = folder_mod(&scratch.join("gear"), &borrowed);
+    let out = scratch.join("root");
+    build(&base, &[m], &out).unwrap();
+    let items = Items::catalog(&out).unwrap();
+    for (slot, suffix) in [
+        ("head", "helmet"),
+        ("chest", "chestplate"),
+        ("legs", "leggings"),
+        ("feet", "boots"),
+    ] {
+        let id = format!("gear:{suffix}");
+        let i = items.get(&id).unwrap();
+        assert_eq!(i.equip_slot.as_deref(), Some(slot));
+        assert_eq!(i.equip_asset.as_deref(), Some("gear:metal"));
+        assert_eq!(
+            (i.max_stack, i.max_damage, i.fire_resistant),
+            (1, 1760, true)
+        );
+        assert_eq!(
+            i.equip_sound.as_deref(),
+            Some("minecraft:item.armor.equip_iron")
+        );
+        for (attribute, amount) in [
+            ("armor", 7.0),
+            ("armor_toughness", 6.0),
+            ("knockback_resistance", 0.1),
+        ] {
+            assert!(i.modifiers.iter().any(|(a, _, n, op, s)| a
+                == &format!("minecraft:{attribute}")
+                && *n == amount
+                && op == "add_value"
+                && s == slot));
+        }
+        assert_eq!(items.enchantments.enchantable(&id), 30);
+        assert_eq!(
+            items.enchantments.props(&id).unwrap().repairable,
+            ["gear:ingot"]
+        );
+    }
+    for kind in ["sword", "pickaxe", "axe", "shovel", "hoe"] {
+        let id = format!("gear:{kind}");
+        let i = items.get(&id).unwrap();
+        assert_eq!(
+            (i.attack_damage, i.attack_speed, i.max_damage),
+            (27.0, -2.4, 8000)
+        );
+        assert_eq!(i.weapon_damage, Some(1));
+        assert_eq!(
+            i.block_transformer.as_deref(),
+            Some(format!("minecraft:{kind}").as_str())
+        );
+        assert!(items.item_tags[&format!("minecraft:enchantable/{kind}")].contains(&id));
+        let held = crate::items::ItemStack::new(&id, 1);
+        if kind == "sword" {
+            assert_eq!(items.mining_speed(Some(&held), "minecraft:cobweb"), 15.0);
+            assert!(!items.can_destroy_block(Some(&held), true));
+        } else {
+            assert_eq!(items.mining_speed(Some(&held), "minecraft:stone"), 10.0);
+            assert!(items.correct_for_drops(Some(&held), "minecraft:stone"));
+            assert!(!items.correct_for_drops(Some(&held), "minecraft:obsidian"));
+        }
+    }
+    for kind in ["bow", "crossbow", "trident"] {
+        let id = format!("gear:{kind}");
+        let i = items.get(&id).unwrap();
+        assert_eq!(items.behavior(&id), format!("minecraft:{kind}"));
+        assert_eq!(i.id.as_ref(), id);
+        assert_eq!(i.model, id);
+        assert_eq!(i.max_damage, 584);
+        assert_eq!((i.attack_damage, i.attack_speed), (12.0, -2.9));
+        assert!(items.item_tags[&format!("minecraft:enchantable/{kind}")].contains(&id));
+    }
+    let plain = items.get("gear:plain_helmet").unwrap();
+    assert_eq!(plain.max_damage, 123);
+    assert_eq!(plain.equip_slot.as_deref(), Some("head"));
+    assert!(!plain.fire_resistant);
+    assert_eq!(items.enchantments.enchantable("gear:plain_helmet"), 0);
+    assert_eq!(items.behavior("gear:unknown"), "gear:unknown");
+    assert_eq!(items.get("gear:ingot").unwrap().max_stack, 16);
+    // Source tables and their vanilla rows are never changed.
+    let source: Value =
+        serde_json::from_slice(&fs::read(base.join("items.json")).unwrap()).unwrap();
+    let overlay: Value =
+        serde_json::from_slice(&fs::read(out.join("items.json")).unwrap()).unwrap();
+    assert_eq!(source, vanilla);
+    for (id, components) in vanilla.as_object().unwrap() {
+        assert_eq!(&overlay[id], components);
+    }
+    fs::remove_dir_all(scratch).unwrap();
+}

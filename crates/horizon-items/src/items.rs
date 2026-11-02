@@ -63,6 +63,8 @@ pub enum ConsumeEffect {
 pub struct ItemInfo {
     pub fire_resistant: bool,
     pub id: Arc<str>,
+    /// Vanilla item class for charged content templates; the stack keeps its own id.
+    pub behavior: Arc<str>,
     pub max_stack: u32,
     pub max_damage: u32,
     pub block: Option<BlockStateId>,
@@ -384,7 +386,24 @@ fn entity_spec(tags: &HashMap<String, HashSet<String>>, spec: &str) -> HashSet<S
         None => HashSet::from([spec.to_owned()]),
     }
 }
+/// Charged template classes for renderers that do not load the full item catalog.
+pub fn load_item_templates(root: &Path) -> HashMap<String, String> {
+    fs::read(root.join("items.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<BTreeMap<String, Value>>(&b).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, c)| Some((id, c["horizon:template"].as_str()?.to_owned())))
+        .collect()
+}
+
 impl Items {
+    /// The vanilla charged-item class selected by a content template.
+    /// Unknown ids and ordinary vanilla items retain their registry id.
+    pub fn behavior<'a>(&'a self, id: &'a str) -> &'a str {
+        self.get(id).map_or(id, |info| &info.behavior)
+    }
+
     pub fn resists_fire(&self, stack: &ItemStack, source: &str) -> bool {
         if let Some(data) = stack.data()
             && let Some((_, v)) = data
@@ -585,6 +604,7 @@ impl Items {
                     fire_resistant: c["minecraft:damage_resistant"]["types"].as_str()
                         == Some("#minecraft:is_fire"),
                     id: id.clone(),
+                    behavior: Arc::from(c["horizon:template"].as_str().unwrap_or(name)),
                     max_stack: c["minecraft:max_stack_size"].as_u64().unwrap_or(64) as u32,
                     max_damage: c["minecraft:max_damage"].as_u64().unwrap_or(0) as u32,
                     block: block_for_item.get(name.as_str()).copied(),

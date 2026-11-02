@@ -161,7 +161,7 @@ fn segment_box(from: Vec3, d: Vec3, b: Aabb) -> Option<f64> {
 impl Game<'_> {
     /// `TridentItem.use`: start the throw unless one more use would break it.
     pub(super) fn use_trident(&mut self, stack: &ItemStack) -> bool {
-        if &*stack.item != "minecraft:trident" {
+        if self.res.items().behavior(&stack.item) != "minecraft:trident" {
             return false;
         }
         let max = self

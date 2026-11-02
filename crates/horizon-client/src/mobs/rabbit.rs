@@ -240,6 +240,7 @@ mod tests {
             &json!({"children": {"head": {}, "left_hind_foot": {}}}),
         ));
         let kind = Arc::new(MobType {
+            item_templates: Default::default(),
             id: "minecraft:rabbit".into(),
             species: Species::Rabbit,
             width: 0.4,

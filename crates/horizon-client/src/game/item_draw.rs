@@ -178,7 +178,8 @@ fn use_duration(components: &Components) -> i32 {
         return 72_000;
     }
     let item_model = components
-        .get("minecraft:item_model")
+        .get("horizon:template")
+        .or_else(|| components.get("minecraft:item_model"))
         .and_then(Value::as_str)
         .unwrap_or("");
     match item_model {
@@ -458,6 +459,24 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn charged_content_templates_keep_use_time_with_their_own_model() {
+        for kind in ["bow", "crossbow", "trident"] {
+            let components = Components::from([
+                (
+                    "horizon:template".into(),
+                    serde_json::json!(format!("minecraft:{kind}")),
+                ),
+                (
+                    "minecraft:item_model".into(),
+                    serde_json::json!(format!("gear:{kind}")),
+                ),
+            ]);
+            assert_eq!(use_duration(&components), 72_000);
+        }
+        assert_eq!(use_duration(&Components::new()), 0);
+    }
 
     #[test]
     fn civil_dates_follow_the_gregorian_calendar() {
