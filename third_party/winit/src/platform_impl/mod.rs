@@ -5,6 +5,9 @@ use crate::window::Fullscreen as RootFullscreen;
 mod android;
 #[cfg(ios_platform)]
 mod ios;
+// Horizon: exercise the UIKit-independent keyboard geometry on desktop too.
+#[cfg(any(ios_platform, test))]
+mod ios_keyboard;
 #[cfg(any(x11_platform, wayland_platform))]
 mod linux;
 #[cfg(macos_platform)]
