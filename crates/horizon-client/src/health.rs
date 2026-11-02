@@ -389,6 +389,11 @@ impl PlayerMotion {
         if self.hurt_log.len() >= HURT_LOG {
             self.hurt_log.remove(0);
         }
+        #[cfg(feature = "mods")]
+        if outcome.hurt && before > after && self.mod_hurts.len() < 256 {
+            self.mod_hurts
+                .push((before - after, source_name.clone(), None));
+        }
         self.hurt_log.push(HurtRecord {
             game_time: h.game_time,
             source: source_name,
@@ -878,6 +883,15 @@ mod tests {
         // A weaker one doesn't hurt at all.
         let third = hit(1.5);
         assert!(!third.hurt && !third.knockback);
+        #[cfg(feature = "mods")]
+        {
+            assert_eq!(player.mod_hurts.len(), 2);
+            assert_eq!(
+                player.mod_hurts[0],
+                (1.0, "minecraft:mob_attack".into(), None)
+            );
+            assert_eq!(player.mod_hurts[1].0, 1.0);
+        }
     }
 
     /// #2141: an arrow that takes the last of the player's health must kill

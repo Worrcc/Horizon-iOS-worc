@@ -390,6 +390,9 @@ pub struct PlayerMotion {
     /// The last hurts taken (`hurt_blocking`), newest last, for tests and
     /// the control socket's `hurtlog`.
     pub hurt_log: Vec<crate::health::HurtRecord>,
+    /// Pending server-mod observations: actual loss, damage type, causing mob.
+    #[cfg(feature = "mods")]
+    pub mod_hurts: Vec<(f32, String, Option<u32>)>,
     /// The last melee attacks made on mobs, newest last.
     pub attack_log: Vec<crate::health::AttackRecord>,
     /// The level's world border, whose walls stop the player's movement
@@ -557,6 +560,8 @@ impl PlayerMotion {
             block_effects: true,
             powder_snow_entered: Vec::new(),
             hurt_log: Vec::new(),
+            #[cfg(feature = "mods")]
+            mod_hurts: Vec::new(),
             attack_log: Vec::new(),
             border: None,
         })

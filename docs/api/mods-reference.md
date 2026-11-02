@@ -639,6 +639,39 @@ Access: capability `players`.
 
 Capability `players`, server mods only (manifest `api = "0.3"`, experimental): the players on the server, and messages to them.
 
+### record `player-damage`
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` |  |
+| `amount` | `f32` | Health plus absorption actually lost, after armor/effects. |
+| `source-kind` | `string` | Registered damage type id. |
+| `attacker-mob` | `option<u32>` |  |
+
+### record `point`
+
+A vector or position in blocks, with finite components.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `equipment-slots`
+
+Registry ids, none for an empty slot. Distinct name from equipment (WIT).
+
+| Field | Type | |
+| --- | --- | --- |
+| `head` | `option<string>` |  |
+| `chest` | `option<string>` |  |
+| `legs` | `option<string>` |  |
+| `feet` | `option<string>` |  |
+| `main-hand` | `option<string>` |  |
+| `off-hand` | `option<string>` |  |
+| `hotbar` | `list<option<string>>` | Exactly nine hotbar slots, in order. |
+
 ### enum `game-mode`
 
 | Case | |
@@ -703,6 +736,12 @@ The block a player clicked, and its face (down, up, north, south, west, east).
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `damage-taken` | `func() -> list<player-damage>` | Last tick's accepted damage, at most 256. Reading does not consume it. |
+| `heal` | `func(player: string, amount: f32) -> result<_, string>` | Restore health (0..1024), capped by max health; never revive a dead player. |
+| `equipment` | `func(player: string) -> option<equipment-slots>` | The online player's authoritative equipment, including changes by inventory calls. |
+| `damage-item` | `func(player: string, hand: string, amount: u32) -> result<_, string>` | ItemStack.hurtAndBreak on main_hand or off_hand, including Unbreaking, creative immunity, inventory sync and the item's break sound/particles. |
+| `knockback` | `func(player: string, strength: f32, dx: f64, dz: f64) -> result<_, string>` | LivingEntity knockback; dx/dz point away from the attacker. Strength 0..4. The game applies the player's knockback resistance. |
+| `push` | `func(player: string, velocity: point) -> result<_, string>` | Add velocity in blocks per tick, each axis -4..4; clients receive the motion. |
 | `online` | `func() -> list<player>` | The players online, in the order they joined. |
 | `facing` | `func(player: string) -> option<look>` | Where an online player looks, by UUID; none when no such player is online. |
 | `item-uses` | `func() -> list<item-use>` | Item right clicks during the last tick, oldest first, at most 256. The game's own use of each item still happens. Reading does not consume them. |
@@ -718,6 +757,16 @@ The block a player clicked, and its face (down, up, north, south, west, east).
 Access: capability `world`.
 
 Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the blocks of the server's loaded chunks, and changes to them through the server's own block updates.
+
+### record `point`
+
+A vector or position in blocks, with finite components.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
 
 ### record `block-change`
 
@@ -759,6 +808,9 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `spawn-item` | `func(dimension: string, at: point, item: string, count: u32) -> result<_, string>` | Drop a plain stack in this dimension, count 1..max stack size. At most 16 successful requests per tick per mod, across all hook calls. |
+| `block-has-tag` | `func(block: string, tag: string) -> bool` | Whether a block id or state belongs to a loaded block tag (without #). Unknown blocks and tags return false. |
+| `play-sound` | `func(dimension: string, at: point, name: string, volume: f32, pitch: f32) -> result<_, string>` | A registered vanilla or loaded content sound in this dimension. |
 | `generated-chunks` | `func() -> list<chunk-pos>` | The chunks the server generated for the first time during the last tick (never ones loaded from the save), at most 256, oldest first: where a mod places its own structures, once per chunk. They are loaded now, so `get-block` reads them and `set-blocks` changes them. |
 | `time` | `func(dimension: string) -> world-time` | Time and weather in a dimension. Unknown dimensions return zero times and false flags; known dimensions need not have loaded chunks. |
 | `can-see-sky` | `func(dimension: string, x: s32, y: s32, z: s32) -> bool` | Level.canSeeSky: sky light 15, independent of time, sky darkening or block light. False for unknown/unloaded chunks and dimensions without skylight. |
@@ -778,6 +830,30 @@ A plain item stack; components are not carried by this API.
 Access: capability `entities`.
 
 Capability `entities`, server mods only (manifest `api = "0.3"`, experimental): the mobs on the server, and orders to the content mods' own (docs/modpacks.md, entities): where to walk, where to look, how to fly, which of their animations to play, and whom their breath hurts.
+
+### record `hurt-event`
+
+Accepted damage to content mobs during the last tick.
+
+| Field | Type | |
+| --- | --- | --- |
+| `victim` | `u32` |  |
+| `kind` | `string` |  |
+| `attacker-mob` | `option<u32>` |  |
+| `attacker-player` | `option<string>` |  |
+| `amount` | `f32` |  |
+
+### record `death`
+
+Content mob's position when it died, before corpse movement/removal.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `kind` | `string` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
 
 ### record `rider`
 
@@ -833,6 +909,20 @@ Seat a player on a mob.
 | `x` | `f64` |  |
 | `y` | `f64` |  |
 | `z` | `f64` |  |
+
+### record `strike-hit`
+
+A filtered hurt-area, in the source mob's dimension. WIT requires a distinct record name from the strike function.
+
+| Field | Type | |
+| --- | --- | --- |
+| `center` | `point` |  |
+| `radius` | `f64` |  |
+| `amount` | `f32` |  |
+| `fire` | `u32` |  |
+| `skip-kinds` | `list<string>` |  |
+| `knockback` | `f32` | Extra vanilla knockback, away from the source mob, strength 0..4. |
+| `credit-player` | `option<string>` | Online player's UUID: player attack and kill credit; that player is spared. |
 
 ### record `walk`
 
@@ -933,6 +1023,12 @@ Whom a mob attacks.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `hurt-events` | `func() -> list<hurt-event>` | Polled last-tick events, at most 256; reading does not consume them. |
+| `deaths` | `func() -> list<death>` | Content mobs that died last tick, at most 256; reading does not consume them. |
+| `effect` | `func(mob: u32, change: effect-change) -> result<_, string>` | Status effects on any loaded mob, including vanilla ones. Zero seconds removes. |
+| `push` | `func(mob: u32, velocity: point) -> result<_, string>` | Set any loaded mob's velocity, as the push order does; each axis -4..4. |
+| `tame` | `func(mob: u32, owner: option<string>) -> result<_, string>` | Mark any loaded tameable mob (including vanilla horses) tame. Optional owner is a UUID, including an offline player's; none preserves its owner. |
+| `strike` | `func(mob: u32, hit: strike-hit) -> result<_, string>` | Source must be a loaded content mob. Radius <=16, damage <=1024, fire <=30 seconds; skips source and the listed entity types. |
 | `mobs` | `func() -> list<entity>` | The loaded mobs of content mods' kinds (any namespace but `minecraft`), as at the start of the tick, at most 1024. |
 | `near` | `func(dimension: string, at: point, radius: f64) -> list<entity>` | Every loaded mob within `radius` (at most 64) blocks of a point in a dimension, nearest first, at most 256. Players are `players.online`'s. |
 | `interactions` | `func() -> list<interaction>` | The right clicks players made on content mods' mobs during the last tick, in order, at most 256: feeding, taming, mounting are the mod's to decide. The game's own use of the click (a lead, a name tag) still happens. |

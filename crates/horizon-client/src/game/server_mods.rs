@@ -141,6 +141,8 @@ pub(super) mod run {
     /// of the game for the call and back after it (no copy).
     struct LentWorld {
         registry: &'static BlockRegistry,
+        block_tags:
+            std::sync::Arc<std::collections::HashMap<String, std::collections::HashSet<String>>>,
         biomes: std::sync::Arc<horizon_client::biome::Biomes>,
         dims: Vec<(&'static str, ChunkMap)>,
         containers: super::super::server_mod_world::ContainerSnapshot,
@@ -149,6 +151,17 @@ pub(super) mod run {
         world_root: std::path::PathBuf,
     }
     impl WorldView for LentWorld {
+        fn block_has_tag(&self, block: &str, tag: &str) -> bool {
+            let Ok(state) = crate::game::render_control::parse_state(self.registry, block) else {
+                return false;
+            };
+            let Some(state) = self.registry.state(state) else {
+                return false;
+            };
+            self.block_tags
+                .get(tag)
+                .is_some_and(|t| t.contains(&state.name))
+        }
         fn container(
             &self,
             dimension: &str,
@@ -390,8 +403,22 @@ pub(super) mod run {
                 self.mods.item_uses.clear();
                 self.mods.use_fallbacks.clear();
                 self.mods.attacks.clear();
+                self.mods.hurt_events.clear();
+                self.mods.deaths.clear();
+                self.mods.player_damage.clear();
+                if let Some(p) = self.player.as_mut() {
+                    p.mod_hurts.clear();
+                }
                 return;
             }
+            if let Some(p) = self.player.as_mut() {
+                let events = std::mem::take(&mut p.mod_hurts);
+                let id = self.player_uuid_string();
+                self.collect_mod_player_damage(&id, events);
+            }
+            self.mods.last_hurt_events = std::mem::take(&mut self.mods.hurt_events).into();
+            self.mods.last_deaths = std::mem::take(&mut self.mods.deaths).into();
+            self.mods.last_player_damage = std::mem::take(&mut self.mods.player_damage).into();
             self.mods.last_item_uses = std::mem::take(&mut self.mods.item_uses).into();
             self.mods.use_fallbacks.clear();
             self.mods.last_attacks = std::mem::take(&mut self.mods.attacks).into();
@@ -506,6 +533,11 @@ pub(super) mod run {
             let biomes = self.res.biomes().clone();
             self.mods.mods.lend_world(Box::new(LentWorld {
                 registry,
+                block_tags: self
+                    .mods
+                    .block_tags
+                    .get_or_insert_with(|| std::sync::Arc::new(self.res.items().block_tags.clone()))
+                    .clone(),
                 biomes,
                 dims,
                 containers,
@@ -563,6 +595,14 @@ pub(super) mod run {
                     all.extend(alive.map(|m| mod_entity(m, dim.id(), riders.get(&m.id))));
                 }
                 snapshot.entities = all.into();
+                snapshot.tamable_mobs = self
+                    .mobs
+                    .iter()
+                    .chain(self.levels.parked_mobs().flat_map(|(_, ms)| ms.iter()))
+                    .filter(|m| m.alive() && !m.removed && horizon_client::mobs::tame::can_tame(m))
+                    .map(|m| m.id)
+                    .collect::<Vec<_>>()
+                    .into();
                 let mut vehicles: Vec<(u32, u32)> = (self.mobs.iter())
                     .filter_map(|m| Some((m.id, m.extra.mount?)))
                     .collect();
@@ -570,6 +610,11 @@ pub(super) mod run {
                     vehicles.extend(mobs.iter().filter_map(|m| Some((m.id, m.extra.mount?))));
                 }
                 snapshot.vehicles = vehicles.into();
+                let kinds = self.res.mob_types().keys();
+                let kinds = kinds.filter(|k| !k.starts_with("minecraft:")).cloned();
+                snapshot.mob_kinds = kinds.collect::<Vec<_>>().into();
+            }
+            if self.mods.entities || self.mods.world {
                 let root = &self.options.resources;
                 if self
                     .mods
@@ -618,9 +663,6 @@ pub(super) mod run {
                         Some((root.clone(), std::sync::Arc::new(resources)));
                 }
                 snapshot.entity_resources = self.mods.entity_resources.as_ref().unwrap().1.clone();
-                let kinds = self.res.mob_types().keys();
-                let kinds = kinds.filter(|k| !k.starts_with("minecraft:")).cloned();
-                snapshot.mob_kinds = kinds.collect::<Vec<_>>().into();
             }
             snapshot
         }
@@ -630,9 +672,7 @@ pub(super) mod run {
         pub(in crate::game) fn apply_mod_orders(&mut self) {
             self.apply_mod_item_drops();
             self.apply_mod_spawns();
-            if self.mods.mob_orders.is_empty() {
-                return;
-            }
+            self.apply_mod_entity_operations();
             let orders = std::mem::take(&mut self.mods.mob_orders);
             let parked: std::collections::HashSet<u32> = (self.levels.parked_mobs())
                 .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
@@ -646,6 +686,55 @@ pub(super) mod run {
             }
             self.apply_mod_seatings();
             self.apply_mod_rides();
+        }
+
+        fn apply_mod_entity_operations(&mut self) {
+            let parked: std::collections::HashSet<u32> = self
+                .levels
+                .parked_mobs()
+                .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
+                .collect();
+            for op in std::mem::take(&mut self.mods.entity_operations) {
+                let id = match &op {
+                    Output::Strike { mob, .. }
+                    | Output::Tame { mob, .. }
+                    | Output::MobEffect { mob, .. }
+                    | Output::MobPush { mob, .. } => *mob,
+                    _ => continue,
+                };
+                if self
+                    .mobs
+                    .iter()
+                    .any(|m| m.id == id && m.alive() && !m.removed)
+                {
+                    match op {
+                        Output::Strike { mob, hit } => self.mod_strike(mob, &hit),
+                        Output::MobEffect { mob, change } => {
+                            if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
+                                self.apply_mod_order(i, EntityOrder::Effect(change));
+                            }
+                        }
+                        Output::MobPush { mob, velocity } => {
+                            if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
+                                self.apply_mod_order(i, EntityOrder::Push(velocity));
+                            }
+                        }
+                        Output::Tame { mob, owner } => {
+                            let owner = owner
+                                .and_then(|s| u128::from_str_radix(&s.replace('-', ""), 16).ok())
+                                .map(horizon_client::lan::playerdata::uuid_ints);
+                            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
+                                && horizon_client::mobs::tame::can_tame(m)
+                            {
+                                horizon_client::mobs::tame::tame_with_owner(m, owner);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                } else if parked.contains(&id) {
+                    self.mods.entity_operations.push(op);
+                }
+            }
         }
 
         /// `entities.ride`: as `/ride` (`Entity.startRiding`/`stopRiding`), for mobs of
@@ -840,26 +929,7 @@ pub(super) mod run {
                 EntityOrder::Texture(name) => m.orders.texture = name.map(std::sync::Arc::from),
                 EntityOrder::Sound(sound) => {
                     let at = [m.position.x, m.position.y, m.position.z];
-                    if let Some(host) = &self.lan {
-                        let source = horizon_client::settings::sound_source(&sound.name) as i32;
-                        host.hub
-                            .sound(&sound.name, at, sound.volume, sound.pitch, source, None);
-                    }
-                    if self.options.execution_role.is_client()
-                        && self.remote.is_none()
-                        && self.player.as_ref().is_some_and(|p| {
-                            let d = [
-                                p.position.x - at[0],
-                                p.position.y - at[1],
-                                p.position.z - at[2],
-                            ];
-                            d.iter().map(|d| d * d).sum::<f64>()
-                                <= (f64::from(sound.volume.max(1.0)) * 16.0).powi(2)
-                        })
-                    {
-                        self.audio
-                            .play_unshared(&sound.name, Some(at), sound.volume, sound.pitch);
-                    }
+                    self.mod_play_sound(at, &sound);
                 }
                 EntityOrder::Particles(p) => self.mod_particles(&p),
                 EntityOrder::Animate(name) => {
@@ -921,6 +991,29 @@ pub(super) mod run {
             }
         }
 
+        fn mod_play_sound(&mut self, at: [f64; 3], sound: &horizon_mods::EntitySound) {
+            if let Some(host) = &self.lan {
+                let source = horizon_client::settings::sound_source(&sound.name) as i32;
+                host.hub
+                    .sound(&sound.name, at, sound.volume, sound.pitch, source, None);
+            }
+            if self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && self.player.as_ref().is_some_and(|p| {
+                    let d = [
+                        p.position.x - at[0],
+                        p.position.y - at[1],
+                        p.position.z - at[2],
+                    ];
+                    d.iter().map(|d| d * d).sum::<f64>()
+                        <= (f64::from(sound.volume.max(1.0)) * 16.0).powi(2)
+                })
+            {
+                self.audio
+                    .play_unshared(&sound.name, Some(at), sound.volume, sound.pitch);
+            }
+        }
+
         fn mod_particles(&mut self, p: &horizon_mods::EntityParticles) {
             use horizon_client::particles::{ParticleOptions, ParticleType};
             let Some((_, resources)) = &self.mods.entity_resources else {
@@ -966,40 +1059,111 @@ pub(super) mod run {
         /// mob's attack (`mob_attack`), then burns: mobs of the level, the player and the
         /// level's other players.
         fn mod_hurt_area(&mut self, source: u32, area: &EntityArea) {
+            self.mod_strike_from(
+                source,
+                &horizon_mods::StrikeHit {
+                    center: area.center,
+                    radius: area.radius,
+                    amount: area.amount,
+                    fire: area.fire,
+                    skip_kinds: vec![],
+                    knockback: 0.0,
+                    credit_player: None,
+                },
+                [area.center.x, area.center.y, area.center.z],
+            );
+        }
+
+        fn mod_strike(&mut self, source: u32, area: &horizon_mods::StrikeHit) {
+            let Some(source_pos) = self
+                .mobs
+                .iter()
+                .find(|m| m.id == source)
+                .map(|m| [m.position.x, m.position.y, m.position.z])
+            else {
+                return;
+            };
+            self.mod_strike_from(source, area, source_pos);
+        }
+        fn mod_strike_from(
+            &mut self,
+            source: u32,
+            area: &horizon_mods::StrikeHit,
+            source_pos: [f64; 3],
+        ) {
+            // A queued player credit is never silently changed into a mob attack.
+            let credit = area.credit_player.as_deref();
+            if credit.is_some_and(|id| !self.server_players(None).iter().any(|p| p.id == id)) {
+                return;
+            }
+            let killer = credit.and_then(|id| {
+                self.lan
+                    .as_ref()?
+                    .hub
+                    .guests
+                    .iter()
+                    .find(|g| uuid_string(g.uuid) == id)
+                    .map(|g| g.conn)
+            });
             let center = [area.center.x, area.center.y, area.center.z];
-            let r2 = area.radius * area.radius;
-            // The nearest point of a box to the centre is within the radius.
-            let reaches = move |feet: [f64; 3], half: f64, height: f64| {
-                let lo = [feet[0] - half, feet[1], feet[2] - half];
-                let hi = [feet[0] + half, feet[1] + height, feet[2] + half];
-                let d2: f64 = (0..3)
-                    .map(|i| (center[i].clamp(lo[i], hi[i]) - center[i]).powi(2))
-                    .sum();
-                d2 <= r2
+            let reaches = |feet, half, height| {
+                horizon_client::mobs::orders::area_reaches(center, area.radius, feet, half, height)
             };
             let (amount, fire) = (area.amount, area.fire as i32 * 20);
             let mut mobs = std::mem::take(&mut self.mobs);
-            for m in mobs.iter_mut().filter(|m| m.alive() && m.id != source) {
+            for m in mobs.iter_mut().filter(|m| {
+                m.alive() && !m.removed && m.id != source && !area.skip_kinds.contains(&m.kind.id)
+            }) {
                 let (w, h, _) = m.dims();
                 if !reaches([m.position.x, m.position.y, m.position.z], w / 2.0, h) {
                     continue;
                 }
                 if amount > 0.0 {
-                    m.damage(
+                    let landed = m.damage(
                         amount,
                         Damage {
-                            kind: DamageKind::MobAttack,
-                            attacker: Some(MobWho::Mob(source)),
-                            from: Some(center),
+                            kind: if credit.is_some() {
+                                DamageKind::PlayerAttack
+                            } else {
+                                DamageKind::MobAttack
+                            },
+                            attacker: Some(if credit.is_some() {
+                                MobWho::Player
+                            } else {
+                                MobWho::Mob(source)
+                            }),
+                            from: Some(source_pos),
                         },
                     );
+                    if landed && credit.is_some() {
+                        self.last_hurt_by_player.insert(m.id, killer);
+                        if let Some(player) = credit {
+                            m.credit_mod_hurts(player);
+                        }
+                    }
+                }
+                if area.knockback > 0.0 {
+                    m.knockback(
+                        f64::from(area.knockback),
+                        source_pos[0] - m.position.x,
+                        source_pos[2] - m.position.z,
+                    );
+                    m.needs_sync = true;
                 }
                 if fire > 0 {
                     m.ignite_for_ticks(fire);
                 }
             }
             self.mobs = mobs;
-            let hurt = move |g: &mut Self| {
+            let hurt = |g: &mut Self| {
+                let id = g
+                    .lan_acting_uuid
+                    .map_or_else(|| g.player_uuid_string(), uuid_string);
+                if credit == Some(id.as_str())
+                    || area.skip_kinds.iter().any(|k| k == "minecraft:player")
+                {
+                    return;
+                }
                 let Some(p) = g.player.as_ref().map(|p| p.position) else {
                     return;
                 };
@@ -1009,10 +1173,24 @@ pub(super) mod run {
                 if amount > 0.0 {
                     g.hurt_player_from(
                         amount,
-                        Some(center),
-                        "minecraft:mob_attack",
-                        Some(Some(source)),
+                        Some(source_pos),
+                        if credit.is_some() {
+                            "minecraft:player_attack"
+                        } else {
+                            "minecraft:mob_attack"
+                        },
+                        Some(if credit.is_some() { None } else { Some(source) }),
                     );
+                }
+                if area.knockback > 0.0 {
+                    g.knock_back_player(
+                        f64::from(area.knockback),
+                        source_pos[0] - p.x,
+                        source_pos[2] - p.z,
+                    );
+                    if let Some(p) = g.player.as_mut() {
+                        p.health.sync_velocity = true;
+                    }
                 }
                 if fire > 0
                     && let Some(p) = g.player.as_mut()
@@ -1046,12 +1224,29 @@ pub(super) mod run {
                 .partition(|op| match op {
                     Output::SetContainer { dimension, .. }
                     | Output::PlaceStructure { dimension, .. }
-                    | Output::SetSpawner { dimension, .. } => dimension == dim,
+                    | Output::SetSpawner { dimension, .. }
+                    | Output::PlaySound { dimension, .. }
+                    | Output::SpawnItem { dimension, .. } => dimension == dim,
                     _ => false,
                 });
             self.mods.world_operations = later;
             for op in now {
                 let result = match op {
+                    Output::SpawnItem {
+                        at, item, count, ..
+                    } => {
+                        self.spawn_item(
+                            horizon_client::items::ItemStack::new(&item, count),
+                            [at.x, at.y, at.z],
+                            [0.0, 0.1, 0.0],
+                            10,
+                        );
+                        Ok(())
+                    }
+                    Output::PlaySound { at, sound, .. } => {
+                        self.mod_play_sound([at.x, at.y, at.z], &sound);
+                        Ok(())
+                    }
                     Output::SetContainer { pos, slots, .. } => self.apply_mod_container(pos, slots),
                     Output::PlaceStructure {
                         id,
@@ -1327,12 +1522,59 @@ pub(super) mod run {
                         self.tell_server_player(host.as_deref_mut(), &p.id, line);
                     }
                 }
+                Output::PlayerHeal { player, amount } => {
+                    self.with_mod_player(host, &player, |g| {
+                        g.apply_effect_action(horizon_client::effects::EffectAction::Heal(amount))
+                    });
+                }
+                Output::DamageItem {
+                    player,
+                    hand,
+                    amount,
+                } => {
+                    self.apply_mod_damage_item(host, &player, &hand, amount);
+                }
+                Output::PlayerKnockback {
+                    player,
+                    strength,
+                    dx,
+                    dz,
+                } => {
+                    self.with_mod_player(host, &player, |g| {
+                        g.knock_back_player(f64::from(strength), -dx, -dz);
+                        if let Some(p) = g.player.as_mut() {
+                            p.health.sync_velocity = true;
+                        }
+                    });
+                }
+                Output::PlayerPush { player, velocity } => {
+                    self.with_mod_player(host, &player, |g| {
+                        if let Some(p) = g.player.as_mut() {
+                            p.velocity = Vec3::new(
+                                p.velocity.x + velocity.x,
+                                p.velocity.y + velocity.y,
+                                p.velocity.z + velocity.z,
+                            );
+                            p.health.sync_velocity = true;
+                        }
+                    });
+                }
+                op @ (Output::Strike { .. }
+                | Output::Tame { .. }
+                | Output::MobEffect { .. }
+                | Output::MobPush { .. }) => {
+                    if self.mods.entity_operations.len() < MAX_QUEUED_ORDERS {
+                        self.mods.entity_operations.push(op);
+                    }
+                }
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
                 operation @ (Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
-                | Output::SetSpawner { .. }) => {
+                | Output::SetSpawner { .. }
+                | Output::PlaySound { .. }
+                | Output::SpawnItem { .. }) => {
                     if self.mods.world_operations.len() < MAX_QUEUED_WRITES {
                         self.mods.world_operations.push(operation);
                     }

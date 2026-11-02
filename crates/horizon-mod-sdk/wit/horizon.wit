@@ -634,6 +634,41 @@ interface browser {
 /// Capability `players`, server mods only (manifest `api = "0.3"`,
 /// experimental): the players on the server, and messages to them.
 interface players {
+    record player-damage {
+        player: string,
+        /// Health plus absorption actually lost, after armor/effects.
+        amount: f32,
+        /// Registered damage type id.
+        source-kind: string,
+        attacker-mob: option<u32>,
+    }
+    /// Last tick's accepted damage, at most 256. Reading does not consume it.
+    damage-taken: func() -> list<player-damage>;
+    /// Restore health (0..1024), capped by max health; never revive a dead player.
+    heal: func(player: string, amount: f32) -> result<_, string>;
+    /// A vector or position in blocks, with finite components.
+    record point { x: f64, y: f64, z: f64 }
+    /// Registry ids, none for an empty slot. Distinct name from equipment (WIT).
+    record equipment-slots {
+        head: option<string>,
+        chest: option<string>,
+        legs: option<string>,
+        feet: option<string>,
+        main-hand: option<string>,
+        off-hand: option<string>,
+        /// Exactly nine hotbar slots, in order.
+        hotbar: list<option<string>>,
+    }
+    /// The online player's authoritative equipment, including changes by inventory calls.
+    equipment: func(player: string) -> option<equipment-slots>;
+    /// ItemStack.hurtAndBreak on main_hand or off_hand, including Unbreaking,
+    /// creative immunity, inventory sync and the item's break sound/particles.
+    damage-item: func(player: string, hand: string, amount: u32) -> result<_, string>;
+    /// LivingEntity knockback; dx/dz point away from the attacker. Strength 0..4.
+    /// The game applies the player's knockback resistance.
+    knockback: func(player: string, strength: f32, dx: f64, dz: f64) -> result<_, string>;
+    /// Add velocity in blocks per tick, each axis -4..4; clients receive the motion.
+    push: func(player: string, velocity: point) -> result<_, string>;
     enum game-mode {
         survival,
         creative,
@@ -718,6 +753,16 @@ interface players {
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    /// A vector or position in blocks, with finite components.
+    record point { x: f64, y: f64, z: f64 }
+    /// Drop a plain stack in this dimension, count 1..max stack size.
+    /// At most 16 successful requests per tick per mod, across all hook calls.
+    spawn-item: func(dimension: string, at: point, item: string, count: u32) -> result<_, string>;
+    /// Whether a block id or state belongs to a loaded block tag (without #).
+    /// Unknown blocks and tags return false.
+    block-has-tag: func(block: string, tag: string) -> bool;
+    /// A registered vanilla or loaded content sound in this dimension.
+    play-sound: func(dimension: string, at: point, name: string, volume: f32, pitch: f32) -> result<_, string>;
     record block-change {
         x: s32,
         y: s32,
@@ -804,6 +849,43 @@ interface %world {
 /// own (docs/modpacks.md, entities): where to walk, where to look, how to
 /// fly, which of their animations to play, and whom their breath hurts.
 interface entities {
+    /// Accepted damage to content mobs during the last tick.
+    record hurt-event {
+        victim: u32,
+        kind: string,
+        attacker-mob: option<u32>,
+        attacker-player: option<string>,
+        amount: f32,
+    }
+    /// Content mob's position when it died, before corpse movement/removal.
+    record death { id: u32, kind: string, x: f64, y: f64, z: f64 }
+    /// Polled last-tick events, at most 256; reading does not consume them.
+    hurt-events: func() -> list<hurt-event>;
+    /// Content mobs that died last tick, at most 256; reading does not consume them.
+    deaths: func() -> list<death>;
+    /// Status effects on any loaded mob, including vanilla ones. Zero seconds removes.
+    effect: func(mob: u32, change: effect-change) -> result<_, string>;
+    /// Set any loaded mob's velocity, as the push order does; each axis -4..4.
+    push: func(mob: u32, velocity: point) -> result<_, string>;
+    /// Mark any loaded tameable mob (including vanilla horses) tame.
+    /// Optional owner is a UUID, including an offline player's; none preserves its owner.
+    tame: func(mob: u32, owner: option<string>) -> result<_, string>;
+    /// A filtered hurt-area, in the source mob's dimension. WIT requires a
+    /// distinct record name from the strike function.
+    record strike-hit {
+        center: point,
+        radius: f64,
+        amount: f32,
+        fire: u32,
+        skip-kinds: list<string>,
+        /// Extra vanilla knockback, away from the source mob, strength 0..4.
+        knockback: f32,
+        /// Online player's UUID: player attack and kill credit; that player is spared.
+        credit-player: option<string>,
+    }
+    /// Source must be a loaded content mob. Radius <=16, damage <=1024,
+    /// fire <=30 seconds; skips source and the listed entity types.
+    strike: func(mob: u32, hit: strike-hit) -> result<_, string>;
     record entity {
         /// The mob's id on this server while it is loaded.
         id: u32,

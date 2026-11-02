@@ -89,6 +89,9 @@ pub(super) struct ModsState {
     /// carried out after the tick's other orders.
     #[cfg(feature = "mods")]
     pub(super) seatings: Vec<(u32, Option<String>)>,
+    /// Mob function writes, deferred until the mob's level ticks.
+    #[cfg(feature = "mods")]
+    pub(super) entity_operations: Vec<horizon_mods::Output>,
     /// Server mods' `entities.ride`: rider and vehicle (none: off), after the seatings.
     #[cfg(feature = "mods")]
     pub(super) rides: Vec<(u32, Option<u32>)>,
@@ -111,11 +114,27 @@ pub(super) struct ModsState {
     pub(super) use_fallbacks: std::collections::HashMap<(String, String), String>,
     #[cfg(feature = "mods")]
     pub(super) attacks: Vec<horizon_mods::PlayerAttack>,
+    #[cfg(feature = "mods")]
+    pub(super) hurt_events: Vec<horizon_mods::HurtEvent>,
+    #[cfg(feature = "mods")]
+    pub(super) deaths: Vec<horizon_mods::Death>,
+    #[cfg(feature = "mods")]
+    pub(super) player_damage: Vec<horizon_mods::PlayerDamage>,
+    #[cfg(feature = "mods")]
+    pub(super) last_hurt_events: std::sync::Arc<[horizon_mods::HurtEvent]>,
+    #[cfg(feature = "mods")]
+    pub(super) last_deaths: std::sync::Arc<[horizon_mods::Death]>,
+    #[cfg(feature = "mods")]
+    pub(super) last_player_damage: std::sync::Arc<[horizon_mods::PlayerDamage]>,
     /// Published actions remain visible to commands until the next tick.
     #[cfg(feature = "mods")]
     pub(super) last_item_uses: std::sync::Arc<[horizon_mods::PlayerItemUse]>,
     #[cfg(feature = "mods")]
     pub(super) last_attacks: std::sync::Arc<[horizon_mods::PlayerAttack]>,
+    #[cfg(feature = "mods")]
+    pub(super) block_tags: Option<
+        std::sync::Arc<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    >,
     /// World operations run after the tick's block writes, in request order.
     #[cfg(feature = "mods")]
     pub(super) world_operations: Vec<horizon_mods::Output>,
@@ -604,10 +623,14 @@ impl Game<'_> {
             entities: Default::default(),
             mob_kinds: Default::default(),
             vehicles: Default::default(),
+            tamable_mobs: Default::default(),
             entity_resources: Default::default(),
             interactions: Default::default(),
             item_uses: self.mods.last_item_uses.clone(),
             attacks: self.mods.last_attacks.clone(),
+            hurt_events: self.mods.last_hurt_events.clone(),
+            deaths: self.mods.last_deaths.clone(),
+            player_damage: self.mods.last_player_damage.clone(),
             effect_ids: horizon_client::brewing::EFFECTS
                 .iter()
                 .map(|e| format!("minecraft:{}", e.id))
@@ -850,6 +873,16 @@ impl Game<'_> {
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
                 | Output::SetSpawner { .. }
+                | Output::Tame { .. }
+                | Output::DamageItem { .. }
+                | Output::Strike { .. }
+                | Output::PlayerKnockback { .. }
+                | Output::PlayerPush { .. }
+                | Output::PlaySound { .. }
+                | Output::MobEffect { .. }
+                | Output::MobPush { .. }
+                | Output::PlayerHeal { .. }
+                | Output::SpawnItem { .. }
                 | Output::Ride { .. }
                 | Output::PlayerEffect { .. }
                 | Output::Orders { .. }

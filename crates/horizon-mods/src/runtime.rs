@@ -56,16 +56,20 @@ pub use server_bindings::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
     },
     horizon::mods::entities::{
-        Area as EntityArea, AttributeChange as EntityAttributeChange, EffectChange,
-        Entity as ModEntity, Interaction as EntityInteraction, Mount as EntityMount,
+        Area as EntityArea, AttributeChange as EntityAttributeChange, Death, EffectChange,
+        Entity as ModEntity, HurtEvent, Interaction as EntityInteraction, Mount as EntityMount,
         Order as EntityOrder, Particles as EntityParticles, Point as EntityPoint,
-        Rider as EntityRider, Sound as EntitySound, Target as EntityTarget, Walk as EntityWalk,
+        Rider as EntityRider, Sound as EntitySound, StrikeHit, Target as EntityTarget,
+        Walk as EntityWalk,
     },
     horizon::mods::players::{
-        Attack as PlayerAttack, BlockHit as PlayerBlockHit, GameMode, ItemUse as PlayerItemUse,
-        Look as PlayerLook, Player as ServerPlayer,
+        Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
+        ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer, PlayerDamage,
+        Point as PlayerPoint,
     },
-    horizon::mods::world::{BlockChange, ChunkPos, ItemStack as ContainerItemStack, WorldTime},
+    horizon::mods::world::{
+        BlockChange, ChunkPos, ItemStack as ContainerItemStack, Point as WorldPoint, WorldTime,
+    },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
@@ -207,6 +211,8 @@ pub struct Snapshot {
     /// Loaded mobs riding something: (rider, vehicle), for `entities.vehicle`
     /// and `entities.ride`; filled with [`Snapshot::entities`].
     pub vehicles: Arc<[(u32, u32)]>,
+    /// Loaded mobs whose runtime species can be tamed (including content templates).
+    pub tamable_mobs: Arc<[u32]>,
     /// Loaded resources used to check texture, sound and particle orders.
     pub entity_resources: Arc<EntityResources>,
     /// Players' right clicks on content mods' mobs during the last tick, for
@@ -215,6 +221,9 @@ pub struct Snapshot {
     /// Item right clicks and landed melee hits during the last tick.
     pub item_uses: Arc<[PlayerItemUse]>,
     pub attacks: Arc<[PlayerAttack]>,
+    pub hurt_events: Arc<[HurtEvent]>,
+    pub deaths: Arc<[Death]>,
+    pub player_damage: Arc<[PlayerDamage]>,
     /// Status effects from the game registry, including for players-only mods.
     pub effect_ids: Arc<std::collections::HashSet<String>>,
     /// Where each online server player looks, by UUID, for `players.facing`.
@@ -266,17 +275,31 @@ impl Runs {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
     /// `chat.show`: a line after the mod's name.
-    Chat { name: String, text: String },
+    Chat {
+        name: String,
+        text: String,
+    },
     /// A mod command's feedback, red when `error`.
-    Feedback { text: String, error: bool },
+    Feedback {
+        text: String,
+        error: bool,
+    },
     /// `command.run`: a vanilla command line, without its slash, to run as
     /// the player.
-    Command { line: String },
+    Command {
+        line: String,
+    },
     /// `command.run-quiet`: vanilla command lines to run as the player with
     /// nothing in the chat (`horizon_protocol::quiet` on a server).
-    QuietCommands { mod_id: String, lines: Vec<String> },
+    QuietCommands {
+        mod_id: String,
+        lines: Vec<String>,
+    },
     /// The mod was turned off: it trapped, overran or failed to start.
-    Stopped { name: String, reason: String },
+    Stopped {
+        name: String,
+        reason: String,
+    },
     /// `players.tell`: a line after the mod's name, to the player with this id.
     Tell {
         name: String,
@@ -284,7 +307,10 @@ pub enum Output {
         text: String,
     },
     /// `players.broadcast`: a line after the mod's name, to every player.
-    Broadcast { name: String, text: String },
+    Broadcast {
+        name: String,
+        text: String,
+    },
     /// A server mod command's feedback, to the player who typed it.
     Reply {
         player: String,
@@ -323,9 +349,58 @@ pub enum Output {
         rotation: u32,
         mirror: bool,
     },
+    MobEffect {
+        mob: u32,
+        change: EffectChange,
+    },
+    MobPush {
+        mob: u32,
+        velocity: EntityPoint,
+    },
+    PlayerHeal {
+        player: String,
+        amount: f32,
+    },
+    SpawnItem {
+        dimension: String,
+        at: EntityPoint,
+        item: String,
+        count: u32,
+    },
+    Tame {
+        mob: u32,
+        owner: Option<String>,
+    },
+    DamageItem {
+        player: String,
+        hand: String,
+        amount: u32,
+    },
+    Strike {
+        mob: u32,
+        hit: StrikeHit,
+    },
+    PlayerKnockback {
+        player: String,
+        strength: f32,
+        dx: f64,
+        dz: f64,
+    },
+    PlayerPush {
+        player: String,
+        velocity: EntityPoint,
+    },
+    PlaySound {
+        dimension: String,
+        at: EntityPoint,
+        sound: EntitySound,
+    },
     /// `entities.ride`: a content mod's mob onto another mob, or off (none), with the
     /// tick's orders.
-    Ride { rider: u32, vehicle: Option<u32> },
+    Ride {
+        rider: u32,
+        vehicle: Option<u32>,
+    },
     /// `world.set-spawner`: a monster spawner's mob, after the tick's block writes.
     SetSpawner {
         dimension: String,
@@ -349,14 +424,24 @@ pub enum Output {
     },
     /// `ui.open-screen`: the mod's entry in `entries()`; what it shows is
     /// [`Mods::screen`].
-    OpenScreen { owner: usize },
+    OpenScreen {
+        owner: usize,
+    },
     /// `ui.close-screen`: the mod closed its own screen (no `closed` back).
-    CloseScreen { owner: usize },
+    CloseScreen {
+        owner: usize,
+    },
     /// `render.shake`: strength 0 to 1, fading out over `seconds` (≤ 10).
-    Shake { strength: f32, seconds: f32 },
+    Shake {
+        strength: f32,
+        seconds: f32,
+    },
     /// `recipes.place`: the recipe book's click on this display id, all of
     /// it when `all`.
-    PlaceRecipe { book_id: i32, all: bool },
+    PlaceRecipe {
+        book_id: i32,
+        all: bool,
+    },
     /// `recipes.give`: a stack for a creative player.
     Give {
         item: String,
@@ -368,6 +453,9 @@ pub enum Output {
 /// The game's world as capability `world` reads it during a call: the
 /// game lends one with [`Mods::lend_world`] and takes it back after.
 pub trait WorldView: std::any::Any + Send {
+    fn block_has_tag(&self, _block: &str, _tag: &str) -> bool {
+        false
+    }
     /// The block state at a position, `minecraft:oak_log[axis=y]`; `None`
     /// where no chunk of that dimension is loaded.
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
@@ -411,6 +499,9 @@ type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
 /// The real server inventories lent during mod hooks, shared between all mods.
 /// Implementations validate item ids and preserve stack components on removal.
 pub trait PlayerInventories: std::any::Any + Send {
+    fn equipment(&self, _player: &str) -> Option<EquipmentSlots> {
+        None
+    }
     fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String>;
     fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String>;
 }
@@ -575,6 +666,8 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    /// Tick of the last item spawn, and successful requests in that tick.
+    item_spawn_budget: (Option<u64>, u32),
     limits: StoreLimits,
     world: WorldSlot,
     inventories: InventoriesSlot,
@@ -843,6 +936,7 @@ impl Mods {
             browser: BrowserState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
+            item_spawn_budget: (None, 0),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -1781,6 +1875,89 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn spawn_item(
+        &mut self,
+        dimension: String,
+        at: WorldPoint,
+        item: String,
+        count: u32,
+    ) -> Result<(), String> {
+        let at = EntityPoint {
+            x: at.x,
+            y: at.y,
+            z: at.z,
+        };
+        if !finite(&at) {
+            return Err("spawn-item needs a finite point".into());
+        }
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let view = view.as_ref().ok_or("world unavailable")?;
+        if !view.has_dimension(&dimension) {
+            return Err(format!("no dimension {dimension}"));
+        }
+        view.check_item_stack(&item, count)?;
+        let tick = self.snapshot.clock.as_ref().map(|c| c.game_time);
+        if self.item_spawn_budget.0 != tick {
+            self.item_spawn_budget = (tick, 0);
+        }
+        if self.item_spawn_budget.1 >= 16 {
+            return Err("at most 16 item spawns per tick per mod".into());
+        }
+        self.item_spawn_budget.1 += 1;
+        self.out.push(Output::SpawnItem {
+            dimension,
+            at,
+            item,
+            count,
+        });
+        Ok(())
+    }
+    fn block_has_tag(&mut self, block: String, tag: String) -> bool {
+        self.world
+            .lock()
+            .ok()
+            .and_then(|v| v.as_ref().map(|v| v.block_has_tag(&block, &tag)))
+            .unwrap_or(false)
+    }
+    fn play_sound(
+        &mut self,
+        dimension: String,
+        at: WorldPoint,
+        name: String,
+        volume: f32,
+        pitch: f32,
+    ) -> Result<(), String> {
+        let at = EntityPoint {
+            x: at.x,
+            y: at.y,
+            z: at.z,
+        };
+        if !finite(&at) {
+            return Err("sound needs a finite point".into());
+        }
+        let sound = EntitySound {
+            name,
+            volume,
+            pitch,
+        };
+        let order = EntityOrder::Sound(sound.clone());
+        check_order(&order)?;
+        check_order_names(&order, &self.snapshot)?;
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        if !view
+            .as_ref()
+            .ok_or("world unavailable")?
+            .has_dimension(&dimension)
+        {
+            return Err(format!("no dimension {dimension}"));
+        }
+        self.out.push(Output::PlaySound {
+            dimension,
+            at,
+            sound,
+        });
+        Ok(())
+    }
     fn container(
         &mut self,
         dimension: String,
@@ -2072,6 +2249,24 @@ fn check_effect(effect: &EffectChange, snapshot: &Snapshot) -> Result<(), String
 fn own_kind(kind: &str) -> bool {
     !kind.starts_with("minecraft:")
 }
+impl From<EntityPoint> for WorldPoint {
+    fn from(p: EntityPoint) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
+impl From<EntityPoint> for PlayerPoint {
+    fn from(p: EntityPoint) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
 fn finite(p: &EntityPoint) -> bool {
     p.x.is_finite() && p.y.is_finite() && p.z.is_finite()
 }
@@ -2185,6 +2380,78 @@ fn check_order_names(order: &EntityOrder, snapshot: &Snapshot) -> Result<(), Str
     }
 }
 impl entities::Host for State {
+    fn hurt_events(&mut self) -> Vec<HurtEvent> {
+        self.snapshot
+            .hurt_events
+            .iter()
+            .take(256)
+            .cloned()
+            .collect()
+    }
+    fn deaths(&mut self) -> Vec<Death> {
+        self.snapshot.deaths.iter().take(256).cloned().collect()
+    }
+    fn effect(&mut self, mob: u32, change: EffectChange) -> Result<(), String> {
+        if !self.snapshot.entities.iter().any(|e| e.id == mob) {
+            return Err(format!("no mob {mob} is loaded"));
+        }
+        check_effect(&change, &self.snapshot)?;
+        self.out.push(Output::MobEffect { mob, change });
+        Ok(())
+    }
+    fn push(&mut self, mob: u32, velocity: EntityPoint) -> Result<(), String> {
+        if !self.snapshot.entities.iter().any(|e| e.id == mob) {
+            return Err(format!("no mob {mob} is loaded"));
+        }
+        check_order(&EntityOrder::Push(velocity))?;
+        self.out.push(Output::MobPush { mob, velocity });
+        Ok(())
+    }
+    fn tame(&mut self, mob: u32, owner: Option<String>) -> Result<(), String> {
+        if !self.snapshot.entities.iter().any(|e| e.id == mob) {
+            return Err(format!("no mob {mob} is loaded"));
+        }
+        if !self.snapshot.tamable_mobs.contains(&mob) {
+            return Err(format!("mob {mob} cannot be tamed"));
+        }
+        if let Some(id) = &owner
+            && (id.len() != 36
+                || [8, 13, 18, 23].iter().any(|&i| id.as_bytes()[i] != b'-')
+                || u128::from_str_radix(&id.replace('-', ""), 16).is_err())
+        {
+            return Err("owner must be a UUID".into());
+        }
+        self.out.push(Output::Tame { mob, owner });
+        Ok(())
+    }
+    fn strike(&mut self, mob: u32, hit: StrikeHit) -> Result<(), String> {
+        let e = self
+            .snapshot
+            .entities
+            .iter()
+            .find(|e| e.id == mob)
+            .ok_or_else(|| format!("no mob {mob} is loaded"))?;
+        if !own_kind(&e.kind) {
+            return Err(format!("mob {mob} is not a content mod's"));
+        }
+        check_order(&EntityOrder::HurtArea(EntityArea {
+            center: hit.center,
+            radius: hit.radius,
+            amount: hit.amount,
+            fire: hit.fire,
+        }))?;
+        if !(0.0..=4.0).contains(&hit.knockback)
+            || hit.skip_kinds.len() > 256
+            || hit.skip_kinds.iter().any(|k| !resource_id(k))
+        {
+            return Err("strike needs knockback 0..4 and at most 256 entity type ids".into());
+        }
+        if let Some(id) = &hit.credit_player {
+            self.online_player(id)?;
+        }
+        self.out.push(Output::Strike { mob, hit });
+        Ok(())
+    }
     fn mobs(&mut self) -> Vec<ModEntity> {
         let own = self.snapshot.entities.iter().filter(|e| own_kind(&e.kind));
         own.take(OWN_ENTITIES).cloned().collect()
@@ -2322,7 +2589,71 @@ impl entities::Host for State {
         Ok(())
     }
 }
+impl State {
+    fn online_player(&self, player: &str) -> Result<(), String> {
+        if self.snapshot.players.iter().any(|p| p.id == player) {
+            Ok(())
+        } else {
+            Err(format!("no online player {player}"))
+        }
+    }
+}
 impl players::Host for State {
+    fn damage_taken(&mut self) -> Vec<PlayerDamage> {
+        self.snapshot
+            .player_damage
+            .iter()
+            .take(256)
+            .cloned()
+            .collect()
+    }
+    fn heal(&mut self, player: String, amount: f32) -> Result<(), String> {
+        self.online_player(&player)?;
+        if !(0.0..=1024.0).contains(&amount) {
+            return Err("heal amount is 0..1024".into());
+        }
+        self.out.push(Output::PlayerHeal { player, amount });
+        Ok(())
+    }
+    fn equipment(&mut self, player: String) -> Option<EquipmentSlots> {
+        self.inventories.lock().ok()?.as_ref()?.equipment(&player)
+    }
+    fn damage_item(&mut self, player: String, hand: String, amount: u32) -> Result<(), String> {
+        self.online_player(&player)?;
+        if !matches!(hand.as_str(), "main_hand" | "off_hand") {
+            return Err("hand is main_hand or off_hand".into());
+        }
+        self.out.push(Output::DamageItem {
+            player,
+            hand,
+            amount,
+        });
+        Ok(())
+    }
+    fn knockback(&mut self, player: String, strength: f32, dx: f64, dz: f64) -> Result<(), String> {
+        self.online_player(&player)?;
+        if !(0.0..=4.0).contains(&strength) || !dx.is_finite() || !dz.is_finite() {
+            return Err("knockback needs strength 0..4 and a finite direction".into());
+        }
+        self.out.push(Output::PlayerKnockback {
+            player,
+            strength,
+            dx,
+            dz,
+        });
+        Ok(())
+    }
+    fn push(&mut self, player: String, velocity: PlayerPoint) -> Result<(), String> {
+        self.online_player(&player)?;
+        let velocity = EntityPoint {
+            x: velocity.x,
+            y: velocity.y,
+            z: velocity.z,
+        };
+        check_order(&EntityOrder::Push(velocity))?;
+        self.out.push(Output::PlayerPush { player, velocity });
+        Ok(())
+    }
     fn item_uses(&mut self) -> Vec<PlayerItemUse> {
         self.snapshot
             .item_uses
@@ -2778,6 +3109,7 @@ mod entity_tests {
             browser: BrowserState::default(),
             data_dir: PathBuf::new(),
             storage_budget: STORAGE_WRITE_BUDGET,
+            item_spawn_budget: (None, 0),
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
             inventories: InventoriesSlot::default(),
@@ -2869,9 +3201,12 @@ mod entity_tests {
                 Some("world") => &["container", "set-container", "place-structure"],
                 _ => &[],
             };
-            interface
-                .functions
-                .retain(|name, _| !additions.contains(&name.as_str()));
+            let prefix = interface.name.clone().unwrap_or_default();
+            interface.functions.retain(|name, _| {
+                !additions.contains(&name.as_str())
+                    && crate::api_level::level_of(&format!("{prefix}.{name}"))
+                        .is_none_or(|l| l < 12)
+            });
         }
         for (_, ty) in resolve.types.iter_mut() {
             if ty.name.as_deref() == Some("order")
@@ -3301,6 +3636,457 @@ mod entity_tests {
                 }
             }
         }
+    }
+
+    struct Api15World;
+    impl WorldView for Api15World {
+        fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+            (item == "minecraft:stick" && (1..=64).contains(&count))
+                .then_some(())
+                .ok_or("invalid stack".into())
+        }
+        fn block_has_tag(&self, block: &str, tag: &str) -> bool {
+            block == "minecraft:stone" && tag == "minecraft:stone_ore_replaceables"
+        }
+
+        fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn has_dimension(&self, d: &str) -> bool {
+            d == "minecraft:overworld"
+        }
+        fn check_state(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn api15_sound_checks_registry_dimension_and_finite_values() {
+        let mut s = api15_state();
+        *s.world.lock().unwrap() = Some(Box::new(Api15World));
+        for (d, name, v, pitch, x) in [
+            ("missing", "ruby:roar", 1.0, 1.0, 0.0),
+            ("minecraft:overworld", "ruby:missing", 1.0, 1.0, 0.0),
+            ("minecraft:overworld", "ruby:roar", -1.0, 1.0, 0.0),
+            ("minecraft:overworld", "ruby:roar", 1.0, f32::NAN, 0.0),
+            ("minecraft:overworld", "ruby:roar", 1.0, 1.0, f64::INFINITY),
+        ] {
+            assert!(
+                mod_world::Host::play_sound(
+                    &mut s,
+                    d.into(),
+                    point(x, 64.0, 0.0).into(),
+                    name.into(),
+                    v,
+                    pitch
+                )
+                .is_err()
+            );
+        }
+        assert!(s.out.is_empty());
+        for name in ["ruby:roar", "minecraft:entity.zombie.ambient"] {
+            mod_world::Host::play_sound(
+                &mut s,
+                "minecraft:overworld".into(),
+                point(0.0, 64.0, 0.0).into(),
+                name.into(),
+                1.0,
+                2.0,
+            )
+            .unwrap();
+        }
+        assert_eq!(s.out.len(), 2);
+    }
+
+    fn api15_state() -> State {
+        let mut s = state();
+        let mob = |id, kind: &str| ModEntity {
+            id,
+            kind: kind.into(),
+            dimension: "minecraft:overworld".into(),
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+            on_ground: true,
+            target: None,
+            target_player: false,
+            scale: 1.0,
+            data: vec![],
+            age: 0,
+            animation: None,
+            texture: None,
+            rider: None,
+        };
+        s.snapshot = Arc::new(Snapshot {
+            players: vec![ServerPlayer {
+                id: "alice".into(),
+                name: "Alice".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            tamable_mobs: vec![2].into(),
+            entities: vec![
+                mob(1, "ruby:knight"),
+                mob(2, "minecraft:horse"),
+                mob(3, "minecraft:zombie"),
+            ]
+            .into(),
+            entity_resources: Arc::new(EntityResources {
+                sounds: ["ruby:roar".into(), "minecraft:entity.zombie.ambient".into()].into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        s
+    }
+
+    #[test]
+    fn api15_tame_and_damage_item_validate_before_queueing() {
+        let mut s = api15_state();
+        for mob in [1, 3, 999] {
+            assert!(entities::Host::tame(&mut s, mob, None).is_err());
+        }
+        assert!(entities::Host::tame(&mut s, 2, Some("bad owner".into())).is_err());
+        assert!(
+            players::Host::damage_item(&mut s, "offline".into(), "main_hand".into(), 1).is_err()
+        );
+        assert!(players::Host::damage_item(&mut s, "alice".into(), "head".into(), 1).is_err());
+        assert!(s.out.is_empty());
+        entities::Host::tame(&mut s, 2, None).unwrap();
+        entities::Host::tame(
+            &mut s,
+            2,
+            Some("01234567-89ab-cdef-0123-456789abcdef".into()),
+        )
+        .unwrap();
+        for hand in ["main_hand", "off_hand"] {
+            players::Host::damage_item(&mut s, "alice".into(), hand.into(), u32::MAX).unwrap();
+        }
+        assert_eq!(s.out.len(), 4);
+        assert!(matches!(
+            &s.out[0],
+            Output::Tame {
+                mob: 2,
+                owner: None
+            }
+        ));
+    }
+
+    #[test]
+    fn api15_block_tags_require_a_world_and_use_its_tables() {
+        let mut s = api15_state();
+        assert!(!mod_world::Host::block_has_tag(
+            &mut s,
+            "minecraft:stone".into(),
+            "minecraft:stone_ore_replaceables".into()
+        ));
+        *s.world.lock().unwrap() = Some(Box::new(Api15World));
+        assert!(mod_world::Host::block_has_tag(
+            &mut s,
+            "minecraft:stone".into(),
+            "minecraft:stone_ore_replaceables".into()
+        ));
+        assert!(!mod_world::Host::block_has_tag(
+            &mut s,
+            "missing".into(),
+            "minecraft:stone_ore_replaceables".into()
+        ));
+        assert!(!mod_world::Host::block_has_tag(
+            &mut s,
+            "minecraft:stone".into(),
+            "#minecraft:stone_ore_replaceables".into()
+        ));
+    }
+
+    #[test]
+    fn api15_item_spawns_validate_stacks_and_budget_across_hooks() {
+        let mut s = api15_state();
+        *s.world.lock().unwrap() = Some(Box::new(Api15World));
+        let spawn = |s: &mut State, d: &str, item: &str, count| {
+            mod_world::Host::spawn_item(
+                s,
+                d.into(),
+                point(0.0, 64.0, 0.0).into(),
+                item.into(),
+                count,
+            )
+        };
+        assert!(spawn(&mut s, "missing", "minecraft:stick", 1).is_err());
+        for (item, count) in [
+            ("missing", 1),
+            ("minecraft:stick", 0),
+            ("minecraft:stick", 65),
+        ] {
+            assert!(spawn(&mut s, "minecraft:overworld", item, count).is_err());
+        }
+        assert!(s.out.is_empty());
+        for _ in 0..16 {
+            spawn(&mut s, "minecraft:overworld", "minecraft:stick", 64).unwrap();
+        }
+        // Draining output between hooks must not reset a per-tick budget.
+        s.out.clear();
+        assert!(spawn(&mut s, "minecraft:overworld", "minecraft:stick", 1).is_err());
+        Arc::make_mut(&mut s.snapshot).clock = Some(Clock {
+            game_time: 1,
+            day_time: 1,
+        });
+        spawn(&mut s, "minecraft:overworld", "minecraft:stick", 1).unwrap();
+        assert_eq!(s.out.len(), 1);
+    }
+    #[test]
+    fn api15_equipment_reads_the_lent_server_inventory() {
+        struct Gear;
+        impl PlayerInventories for Gear {
+            fn take_item(&mut self, _: &str, _: &str, _: u32) -> Result<u32, String> {
+                Ok(0)
+            }
+            fn give_item(&mut self, _: &str, _: &str, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn equipment(&self, p: &str) -> Option<EquipmentSlots> {
+                (p == "alice").then(|| EquipmentSlots {
+                    head: Some("ruby:helmet".into()),
+                    chest: None,
+                    legs: None,
+                    feet: None,
+                    main_hand: None,
+                    off_hand: None,
+                    hotbar: vec![None; 9],
+                })
+            }
+        }
+        let mut s = api15_state();
+        assert!(players::Host::equipment(&mut s, "alice".into()).is_none());
+        *s.inventories.lock().unwrap() = Some(Box::new(Gear));
+        assert_eq!(
+            players::Host::equipment(&mut s, "alice".into())
+                .unwrap()
+                .head
+                .as_deref(),
+            Some("ruby:helmet")
+        );
+        assert!(players::Host::equipment(&mut s, "offline".into()).is_none());
+        assert!(s.out.is_empty());
+    }
+
+    #[test]
+    fn api15_effect_push_and_heal_validate_and_include_vanilla_mobs() {
+        let mut s = api15_state();
+        Arc::make_mut(&mut s.snapshot).effect_ids = Arc::new(["minecraft:poison".into()].into());
+        let effect = EffectChange {
+            id: "minecraft:poison".into(),
+            seconds: 10,
+            amplifier: 1,
+        };
+        assert!(entities::Host::effect(&mut s, 999, effect.clone()).is_err());
+        assert!(
+            entities::Host::effect(
+                &mut s,
+                2,
+                EffectChange {
+                    id: "missing".into(),
+                    ..effect.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            entities::Host::effect(
+                &mut s,
+                2,
+                EffectChange {
+                    seconds: u32::MAX,
+                    ..effect.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(entities::Host::push(&mut s, 999, point(0.0, 0.0, 0.0)).is_err());
+        assert!(entities::Host::push(&mut s, 2, point(0.0, f64::NAN, 0.0)).is_err());
+        for amount in [-1.0, f32::NAN, 1025.0] {
+            assert!(players::Host::heal(&mut s, "alice".into(), amount).is_err());
+        }
+        assert!(players::Host::heal(&mut s, "offline".into(), 1.0).is_err());
+        assert!(s.out.is_empty());
+        for mob in [1, 2, 3] {
+            entities::Host::effect(&mut s, mob, effect.clone()).unwrap();
+            entities::Host::push(&mut s, mob, point(0.0, 1.0, 0.0)).unwrap();
+        }
+        players::Host::heal(&mut s, "alice".into(), 1024.0).unwrap();
+        assert_eq!(s.out.len(), 7);
+    }
+    #[test]
+    fn api15_damage_lists_are_bounded_shared_and_replaced_each_tick() {
+        let mut s = api15_state();
+        let snapshot = Arc::make_mut(&mut s.snapshot);
+        snapshot.hurt_events = (0..300)
+            .map(|i| HurtEvent {
+                victim: i,
+                kind: "ruby:knight".into(),
+                attacker_mob: Some(7),
+                attacker_player: None,
+                amount: 2.0,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        snapshot.deaths = (0..300)
+            .map(|id| Death {
+                id,
+                kind: "ruby:knight".into(),
+                x: 1.0,
+                y: 64.0,
+                z: 2.0,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        snapshot.player_damage = (0..300)
+            .map(|_| PlayerDamage {
+                player: "alice".into(),
+                amount: 2.0,
+                source_kind: "minecraft:arrow".into(),
+                attacker_mob: Some(7),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        for _ in 0..2 {
+            let hurts = entities::Host::hurt_events(&mut s);
+            assert_eq!(hurts.len(), 256);
+            assert_eq!(hurts[255].victim, 255);
+            assert_eq!(hurts[0].attacker_mob, Some(7));
+            assert_eq!(entities::Host::deaths(&mut s).len(), 256);
+            let damage = players::Host::damage_taken(&mut s);
+            assert_eq!(damage.len(), 256);
+            assert_eq!(damage[0].source_kind, "minecraft:arrow");
+        }
+        s.snapshot = Arc::new(Snapshot::default());
+        assert!(entities::Host::hurt_events(&mut s).is_empty());
+        assert!(entities::Host::deaths(&mut s).is_empty());
+        assert!(players::Host::damage_taken(&mut s).is_empty());
+    }
+
+    #[test]
+    fn api15_players_and_world_imports_do_not_require_entities_capability() {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        for interface in ["players", "world"] {
+            let mut resolve = Resolve::default();
+            let package = resolve
+                .push_str(
+                    "horizon.wit",
+                    include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+                )
+                .unwrap();
+            let world = resolve
+                .select_world(&[package], Some("horizon-server-mod"))
+                .unwrap();
+            resolve.worlds[world].exports.clear();
+            let interfaces = &resolve.interfaces;
+            resolve.worlds[world].imports.retain(|_, item| matches!(item, wit_parser::WorldItem::Interface { id, .. } if interfaces[*id].name.as_deref() == Some(interface)));
+            let mut module =
+                wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+            wit_component::embed_component_metadata(
+                &mut module,
+                &resolve,
+                world,
+                wit_component::StringEncoding::UTF8,
+            )
+            .unwrap();
+            let wasm = wit_component::ComponentEncoder::default()
+                .module(&module)
+                .unwrap()
+                .encode()
+                .unwrap();
+            let imports = crate::manifest::component_imports(&wasm).unwrap();
+            assert!(
+                imports
+                    .iter()
+                    .all(|i| i.starts_with(&format!("horizon:mods/{interface}@"))),
+                "{imports:?}"
+            );
+            let manifest = Manifest::parse(&format!("id = \"api15\"\nname = \"Api15\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"{interface}\"]\n")).unwrap();
+            manifest
+                .check_imports(imports.iter().map(String::as_str))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn api15_strike_validates_before_queueing() {
+        let mut s = api15_state();
+        let hit = StrikeHit {
+            center: point(0.0, 64.0, 0.0),
+            radius: 16.0,
+            amount: 1024.0,
+            fire: 30,
+            skip_kinds: vec!["ruby:knight".into()],
+            knockback: 0.25,
+            credit_player: Some("alice".into()),
+        };
+        for mob in [2, 999] {
+            assert!(entities::Host::strike(&mut s, mob, hit.clone()).is_err());
+        }
+        for bad in [
+            StrikeHit {
+                radius: f64::NAN,
+                ..hit.clone()
+            },
+            StrikeHit {
+                amount: 1025.0,
+                ..hit.clone()
+            },
+            StrikeHit {
+                fire: 31,
+                ..hit.clone()
+            },
+            StrikeHit {
+                knockback: f32::INFINITY,
+                ..hit.clone()
+            },
+            StrikeHit {
+                skip_kinds: vec!["bad id".into()],
+                ..hit.clone()
+            },
+            StrikeHit {
+                credit_player: Some("offline".into()),
+                ..hit.clone()
+            },
+        ] {
+            assert!(entities::Host::strike(&mut s, 1, bad).is_err());
+        }
+        assert!(s.out.is_empty());
+        entities::Host::strike(&mut s, 1, hit.clone()).unwrap();
+        assert_eq!(s.out, vec![Output::Strike { mob: 1, hit }]);
+    }
+
+    #[test]
+    fn api15_player_motion_requires_online_finite_bounded_inputs() {
+        let mut s = api15_state();
+        assert!(
+            players::Host::push(&mut s, "offline".into(), point(0.0, 0.0, 0.0).into()).is_err()
+        );
+        assert!(
+            players::Host::push(&mut s, "alice".into(), point(f64::NAN, 0.0, 0.0).into()).is_err()
+        );
+        assert!(players::Host::push(&mut s, "alice".into(), point(4.1, 0.0, 0.0).into()).is_err());
+        assert!(players::Host::knockback(&mut s, "alice".into(), -1.0, 1.0, 0.0).is_err());
+        assert!(
+            players::Host::knockback(&mut s, "alice".into(), 0.25, f64::INFINITY, 0.0).is_err()
+        );
+        assert!(s.out.is_empty());
+        players::Host::push(&mut s, "alice".into(), point(1.0, 0.5, 0.0).into()).unwrap();
+        players::Host::knockback(&mut s, "alice".into(), 0.25, 1.0, 0.0).unwrap();
+        assert!(matches!(
+            &s.out[..],
+            [Output::PlayerPush { .. }, Output::PlayerKnockback { .. }]
+        ));
     }
 
     #[test]

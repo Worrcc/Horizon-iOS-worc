@@ -414,9 +414,19 @@ impl Game<'_> {
         let Some(index) = self.mobs.iter().position(|m| m.id == attacker && m.alive()) else {
             return;
         };
+        #[cfg(feature = "mods")]
+        let mod_player = super::server_mods::run::uuid_string(
+            horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid()),
+        );
         for damage in self.thorns_damage() {
             let m = &mut self.mobs[index];
-            m.hurt(damage, None, &mut self.world.random);
+            let hurt = m.hurt(damage, None, &mut self.world.random);
+            #[cfg(feature = "mods")]
+            if hurt {
+                m.credit_last_mod_hurt(&mod_player);
+            }
+            #[cfg(not(feature = "mods"))]
+            let _ = hurt;
             let center = [m.position.x, m.position.y, m.position.z];
             self.audio
                 .play("minecraft:enchant.thorns.hit", Some(center), 1.0, 1.0);

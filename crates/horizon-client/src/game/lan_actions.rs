@@ -683,6 +683,11 @@ impl Game<'_> {
         self.eye = eye.1;
         std::mem::swap(&mut self.player, &mut player);
         if let Some(mut m) = player {
+            #[cfg(feature = "mods")]
+            self.collect_mod_player_damage(
+                &super::server_mods::run::uuid_string(g.uuid),
+                std::mem::take(&mut m.mod_hurts),
+            );
             g.health = m.health.health();
             g.food = m.health.food.food;
             g.saturation = m.health.food.saturation;

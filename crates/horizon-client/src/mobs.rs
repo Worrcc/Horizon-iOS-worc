@@ -1056,6 +1056,8 @@ pub struct Mob {
     /// from the game), handed over with the next tick's events or drained
     /// by the game.
     pub outbox: Vec<MobEvent>,
+    #[cfg(feature = "mods")]
+    pub mod_death_reported: bool,
     /// The skin texture of a player mob (`PlayerInfo.getSkin`), which
     /// replaces the type's default when its download is ready.
     pub skin: Option<String>,
@@ -1068,6 +1070,13 @@ pub struct Mob {
 /// Events a mob tick asks the game to act on.
 #[derive(Clone, Debug)]
 pub enum MobEvent {
+    /// Server-mod observation, captured when accepted damage changes this mob.
+    #[cfg(feature = "mods")]
+    ModHurt {
+        event: horizon_mods::HurtEvent,
+        death: Option<horizon_mods::Death>,
+        by_player: bool,
+    },
     /// Squid.handleEntityEvent(19), resetting the remote tentacle cycle.
     SquidCycle {
         mob: u32,
@@ -2032,6 +2041,8 @@ impl Mob {
             anim: anim::AnimState::default(),
             rider: None,
             outbox: Vec::new(),
+            #[cfg(feature = "mods")]
+            mod_death_reported: false,
             skin: None,
             slim: false,
             profile: None,
@@ -2164,6 +2175,8 @@ impl Mob {
         if !self.alive() || self.removed || self.invulnerable_flag {
             return false;
         }
+        #[cfg(feature = "mods")]
+        let mod_health_before = self.health;
         // Ghast.isReflectedFireball: a fireball a player turned back is
         // no fire to it, and kills it (Ghast.hurtServer: 1000 damage).
         let reflected = vanilla_id(&self.kind.id) == "minecraft:ghast"
@@ -2268,6 +2281,41 @@ impl Mob {
         if self.health <= 0.0 {
             self.health = 0.0;
         }
+        #[cfg(feature = "mods")]
+        if !self.kind.id.starts_with("minecraft:") {
+            let death = (!self.alive()).then(|| horizon_mods::Death {
+                id: self.id,
+                kind: self.kind.id.clone(),
+                x: self.position.x,
+                y: self.position.y,
+                z: self.position.z,
+            });
+            self.mod_death_reported |= death.is_some();
+            // Bounded independently of sounds and other vanilla events.
+            if self
+                .outbox
+                .iter()
+                .filter(|e| matches!(e, MobEvent::ModHurt { .. }))
+                .count()
+                < 256
+                || death.is_some()
+            {
+                self.outbox.push(MobEvent::ModHurt {
+                    event: horizon_mods::HurtEvent {
+                        victim: self.id,
+                        kind: self.kind.id.clone(),
+                        attacker_mob: match source.attacker {
+                            Some(Who::Mob(id)) => Some(id),
+                            _ => None,
+                        },
+                        attacker_player: None,
+                        amount: (mod_health_before - self.health).max(0.0),
+                    },
+                    death,
+                    by_player: source.attacker == Some(Who::Player),
+                });
+            }
+        }
         if knock {
             // playHurtSound (Mob: also resets the ambient sound clock) or the
             // death sound: makeSound draws the voice pitch whenever there is a sound.
@@ -2300,6 +2348,36 @@ impl Mob {
             aquatic::spawn_ink(self);
         }
         true
+    }
+    /// Fill player attribution before the damage events leave the actor's turn.
+    #[cfg(feature = "mods")]
+    pub fn credit_mod_hurts(&mut self, player: &str) {
+        if let Some(MobEvent::ModHurt {
+            event,
+            by_player: true,
+            ..
+        }) = self
+            .outbox
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, MobEvent::ModHurt { .. }))
+            && event.attacker_player.is_none()
+        {
+            event.attacker_player = Some(player.to_owned());
+        }
+    }
+    /// A caller with a known player cause can attribute otherwise generic native damage.
+    #[cfg(feature = "mods")]
+    pub fn credit_last_mod_hurt(&mut self, player: &str) {
+        if let Some(MobEvent::ModHurt { event, .. }) = self
+            .outbox
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, MobEvent::ModHurt { .. }))
+        {
+            event.attacker_mob = None;
+            event.attacker_player = Some(player.to_owned());
+        }
     }
     /// `Wolf.canArmorAbsorb`: it wears wolf armor and the damage type is not
     /// in `#bypasses_wolf_armor` (drowning, magic, thorns, in a wall, out of
@@ -3313,5 +3391,100 @@ mod mod_type_tests {
         assert_eq!(t.attributes["minecraft:max_health"], 60.0);
         assert_eq!(t.texture, "ruby:entity/cow");
         assert!(!out.contains_key("ruby:orphan"));
+    }
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod api15_tests {
+    use super::*;
+    #[test]
+    fn content_damage_observations_keep_attacker_actual_loss_and_death_position() {
+        let mut kind = (*super::sensor_scan_tests::kind()).clone();
+        kind.id = "ruby:knight".into();
+        let mut m = Mob::new(42, Arc::new(kind), Vec3::new(1.0, 64.0, 2.0), 0.0);
+        assert!(m.damage(3.0, Damage::mob(9, [-1.0, 64.0, 2.0])));
+        assert!(!m.damage(2.0, Damage::mob(8, [-1.0, 64.0, 2.0])));
+        let events: Vec<_> = m
+            .outbox
+            .iter()
+            .filter_map(|e| {
+                if let MobEvent::ModHurt { event, .. } = e {
+                    Some(event)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].attacker_mob, Some(9));
+        assert_eq!(events[0].victim, 42);
+        assert_eq!(events[0].amount, 3.0);
+        m.invulnerable = 0;
+        let remaining = m.health;
+        assert!(m.damage(1024.0, Damage::player([0.0, 64.0, 0.0])));
+        m.credit_mod_hurts("guest-uuid");
+        m.position = Vec3::ZERO;
+        let (event, death) = m
+            .outbox
+            .iter()
+            .find_map(|e| match e {
+                MobEvent::ModHurt {
+                    event,
+                    death: Some(death),
+                    ..
+                } => Some((event, death)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(event.attacker_player.as_deref(), Some("guest-uuid"));
+        assert_eq!(event.amount, remaining);
+        assert_eq!(death.id, 42);
+        assert_eq!([death.x, death.y, death.z], [1.0, 64.0, 2.0]);
+        assert!(m.mod_death_reported);
+        let mut vanilla = Mob::new(7, super::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        vanilla.damage(1.0, Damage::of(DamageKind::Generic));
+        assert!(
+            !vanilla
+                .outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ModHurt { .. }))
+        );
+    }
+    #[test]
+    fn attribution_only_changes_the_just_accepted_hit() {
+        let mut kind = (*super::sensor_scan_tests::kind()).clone();
+        kind.id = "ruby:knight".into();
+        let mut m = Mob::new(42, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.damage(1.0, Damage::player([1.0, 0.0, 0.0]));
+        m.invulnerable = 0;
+        m.damage(1.0, Damage::player([1.0, 0.0, 0.0]));
+        m.credit_mod_hurts("second-player");
+        m.invulnerable = 0;
+        m.damage(1.0, Damage::of(DamageKind::Generic));
+        m.credit_last_mod_hurt("thorns-player");
+        let events: Vec<_> = m
+            .outbox
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::ModHurt { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events[0].attacker_player, None);
+        assert_eq!(events[1].attacker_player.as_deref(), Some("second-player"));
+        assert_eq!(events[2].attacker_player.as_deref(), Some("thorns-player"));
+        assert_eq!(events[2].attacker_mob, None);
+    }
+    #[test]
+    fn vanilla_knockback_scales_resistance_and_points_away_from_source() {
+        let mut m = Mob::new(1, super::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        m.on_ground = true;
+        m.attrs.knockback_resistance = 0.5;
+        m.knockback(0.25, -1.0, 0.0);
+        assert_eq!(m.velocity, Vec3::new(0.125, 0.125, 0.0));
+        m.attrs.knockback_resistance = 1.0;
+        let before = m.velocity;
+        m.knockback(1.0, -1.0, 0.0);
+        assert_eq!(m.velocity, before);
     }
 }

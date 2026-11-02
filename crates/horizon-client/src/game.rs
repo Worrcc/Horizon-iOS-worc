@@ -8609,6 +8609,8 @@ impl Game<'_> {
                 self.mobs[i].knockback(0.4, xd, zd);
                 self.last_hurt_by_player
                     .insert(self.mobs[i].id, self.lan_acting);
+                #[cfg(feature = "mods")]
+                self.mod_credit_player_hurts(self.mobs[i].id);
             }
         }
         // `getEntitiesOfClass(LivingEntity.class)` takes the other players too.
@@ -8803,6 +8805,8 @@ impl Game<'_> {
             }
             self.last_hurt_by_player
                 .insert(self.mobs[index].id, self.lan_acting);
+            #[cfg(feature = "mods")]
+            self.mod_credit_player_hurts(self.mobs[index].id);
             let sound = if crit {
                 "minecraft:entity.player.attack.crit"
             } else if scale > 0.9 {
@@ -9588,7 +9592,7 @@ impl Game<'_> {
                 && let Some(info) = self.res.items().get(&stack.item)
                 && info.max_damage > 0
             {
-                stack.damage += amount;
+                stack.damage = stack.damage.saturating_add(amount);
                 if stack.damage >= info.max_damage {
                     *slot = None;
                     broke = true;

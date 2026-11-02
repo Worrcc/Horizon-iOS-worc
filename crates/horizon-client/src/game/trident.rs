@@ -496,6 +496,18 @@ impl Game<'_> {
                     );
                     t.dealt_damage = true;
                     let mut hurt_at = None;
+                    #[cfg(feature = "mods")]
+                    let mod_player = match t.guest {
+                        Some(conn) if self.lan_acting == Some(conn) => self
+                            .lan_acting_uuid
+                            .map(super::server_mods::run::uuid_string),
+                        Some(conn) => self
+                            .lan
+                            .as_ref()
+                            .and_then(|h| h.hub.guest(conn))
+                            .map(|g| super::server_mods::run::uuid_string(g.uuid)),
+                        None => Some(self.player_uuid_string()),
+                    };
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         let from = Some([t.position.x, t.position.y, t.position.z]);
                         let hurt = m.damage(
@@ -507,6 +519,10 @@ impl Game<'_> {
                             },
                         );
                         if hurt {
+                            #[cfg(feature = "mods")]
+                            if let Some(player) = &mod_player {
+                                m.credit_mod_hurts(player);
+                            }
                             hurt_at = Some([m.position.x, m.position.y, m.position.z]);
                         }
                     }

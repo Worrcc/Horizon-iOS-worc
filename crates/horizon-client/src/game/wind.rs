@@ -136,6 +136,8 @@ impl Game<'_> {
                 }
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                    #[cfg(feature = "mods")]
+                    self.mod_credit_player_hurts(id);
                 }
             }
         }

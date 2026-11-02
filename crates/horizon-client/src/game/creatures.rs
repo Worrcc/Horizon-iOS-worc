@@ -808,6 +808,16 @@ impl Game<'_> {
     }
     /// LivingEntity.die / dropAllDeathLoot.
     fn mob_died(&mut self, m: &Mob) {
+        #[cfg(feature = "mods")]
+        if !m.mod_death_reported && !m.kind.id.starts_with("minecraft:") {
+            self.mod_record_death(horizon_mods::Death {
+                id: m.id,
+                kind: m.kind.id.clone(),
+                x: m.position.x,
+                y: m.position.y,
+                z: m.position.z,
+            });
+        }
         let killer = self.last_hurt_by_player.remove(&m.id);
         let by_player = killer.is_some() || m.ai.last_hurt_by_player > 0;
         let mut dying = m.clone();
@@ -1091,6 +1101,15 @@ impl Game<'_> {
     pub(super) fn handle_mob_events(&mut self, events: Vec<MobEvent>) -> Result<()> {
         for e in events {
             match e {
+                #[cfg(feature = "mods")]
+                MobEvent::ModHurt { event, death, .. } => {
+                    if self.mods.server && self.mods.hurt_events.len() < 256 {
+                        self.mods.hurt_events.push(event);
+                    }
+                    if let Some(death) = death {
+                        self.mod_record_death(death);
+                    }
+                }
                 MobEvent::SquidCycle { mob, at } => self.lan_entity_event(mob as i32, 19, at),
                 MobEvent::RabbitHop { mob, at } => self.lan_entity_event(mob as i32, 1, at),
                 MobEvent::Drown { mob, at } => {
@@ -2073,6 +2092,8 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        #[cfg(feature = "mods")]
+        let mod_hurts_before = self.player.as_ref().map_or(0, |p| p.mod_hurts.len());
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             return false;
@@ -2170,6 +2191,12 @@ impl Game<'_> {
         }
         if raised {
             self.after_block(outcome, amount, attacker, projectile);
+        }
+        #[cfg(feature = "mods")]
+        if let Some(p) = self.player.as_mut() {
+            for event in p.mod_hurts.iter_mut().skip(mod_hurts_before) {
+                event.2 = attacker.or(owner);
+            }
         }
         outcome.hurt
     }
@@ -2878,6 +2905,10 @@ impl Game<'_> {
                             .is_some_and(|m| m.damage(amount, source));
                         if p.owner == Some(Who::Player) {
                             self.last_hurt_by_player.insert(id, self.lan_acting);
+                            #[cfg(feature = "mods")]
+                            if hurt {
+                                self.mod_credit_player_hurts(id);
+                            }
                             if hurt && let Some(m) = self.mobs.iter().find(|m| m.id == id) {
                                 // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
                                 let victim = self.mob_entity(m);
@@ -3781,6 +3812,8 @@ impl Game<'_> {
                 // The feeder gets the kill, as for a normal player attack.
                 if hurt {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                    #[cfg(feature = "mods")]
+                    self.mod_credit_player_hurts(id);
                 }
             }
             // Parrot.mobInteract: parrot food may tame a wild one (one time in

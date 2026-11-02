@@ -671,6 +671,8 @@ impl Game<'_> {
                         m.damage(amount, horizon_client::mobs::Damage::player(at));
                     }
                     self.last_hurt_by_player.insert(id, self.lan_acting);
+                    #[cfg(feature = "mods")]
+                    self.mod_credit_player_hurts(id);
                 }
                 "set" => {
                     let n = |i: usize| words[i].parse::<i32>().unwrap_or(0);

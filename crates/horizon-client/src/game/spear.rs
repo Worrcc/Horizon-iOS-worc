@@ -282,6 +282,8 @@ impl Game<'_> {
         }
         if hurt {
             self.last_hurt_by_player.insert(id, self.lan_acting);
+            #[cfg(feature = "mods")]
+            self.mod_credit_player_hurts(id);
         }
         if let Some(p) = self.player.as_mut()
             && !self.creative

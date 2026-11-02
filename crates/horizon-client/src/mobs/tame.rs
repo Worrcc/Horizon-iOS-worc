@@ -156,6 +156,31 @@ fn angry_at_player(m: &Mob, _: &MobWorld) -> bool {
 pub fn angry(m: &Mob) -> bool {
     m.extra.anger > 0
 }
+/// Runtime species eligible for the server mod tame function. Content mobs use
+/// their template's species, exactly as their normal interactions do.
+pub fn can_tame(m: &Mob) -> bool {
+    super::equine::is_equine(m.species())
+        || matches!(
+            m.species(),
+            Species::Wolf
+                | Species::Cat
+                | Species::Parrot
+                | Species::Nautilus
+                | Species::ZombieNautilus
+        )
+}
+pub fn tame_with_owner(m: &mut Mob, owner: Option<[i32; 4]>) {
+    if m.species() == Species::Wolf && !m.extra.tame {
+        set_tame(m, true);
+    }
+    m.extra.tame = true;
+    if let Some(owner) = owner {
+        m.extra.owner = Some(owner);
+    }
+    m.persistent = true;
+    m.needs_sync = true;
+}
+
 /// `TamableAnimal.applyTamingSideEffects` for wolves: 40 health when tame.
 pub fn set_tame(m: &mut Mob, tame: bool) {
     m.extra.tame = tame;
@@ -1383,5 +1408,36 @@ pub fn feline(p: &mut Poses, s: &State, st: &Feline) {
     if relax > 0.0 {
         let hx = p.get("head")[3];
         p.xrot("head", rot_lerp(relax, hx, -0.581_776_44));
+    }
+}
+
+#[cfg(test)]
+mod api15_tests {
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    #[test]
+    fn taming_horses_wolves_and_content_templates_preserves_owner_and_syncs() {
+        for (id, species) in [
+            ("minecraft:horse", Species::Horse),
+            ("ruby:horse", Species::Horse),
+            ("minecraft:wolf", Species::Wolf),
+            ("minecraft:cat", Species::Cat),
+            ("minecraft:nautilus", Species::Nautilus),
+        ] {
+            let mut kind = (*super::super::sensor_scan_tests::kind()).clone();
+            kind.id = id.into();
+            kind.species = species;
+            let mut m = Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0);
+            assert!(can_tame(&m));
+            tame_with_owner(&mut m, Some([1, 2, 3, 4]));
+            assert!(m.extra.tame && m.persistent && m.needs_sync);
+            assert_eq!(m.extra.owner, Some([1, 2, 3, 4]));
+            m.health = 2.0;
+            tame_with_owner(&mut m, None);
+            assert_eq!(m.health, 2.0, "repeated tame must not heal");
+            assert_eq!(m.extra.owner, Some([1, 2, 3, 4]));
+        }
+        let cow = Mob::new(1, super::super::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        assert!(!can_tame(&cow));
     }
 }

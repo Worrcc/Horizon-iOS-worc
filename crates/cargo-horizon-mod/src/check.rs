@@ -319,6 +319,18 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                     pos.2
                 )
             }
+            Output::MobEffect { mob, change } => format!("effect {} on mob {mob}", change.id),
+            Output::MobPush { mob, .. } => format!("pushed mob {mob}"),
+            Output::PlayerHeal { player, amount } => format!("healed {player} by {amount}"),
+            Output::SpawnItem { item, count, .. } => format!("dropped {count} {item}"),
+            Output::Tame { mob, .. } => format!("tamed mob {mob}"),
+            Output::DamageItem { player, amount, .. } => {
+                format!("damaged {player}'s held item by {amount}")
+            }
+            Output::Strike { mob, .. } => format!("strike from mob {mob}"),
+            Output::PlayerKnockback { player, .. } => format!("knockback on {player}"),
+            Output::PlayerPush { player, .. } => format!("pushed {player}"),
+            Output::PlaySound { sound, .. } => format!("played {}", sound.name),
             Output::Ride { rider, vehicle } => match vehicle {
                 Some(v) => format!("seated mob {rider} on mob {v}"),
                 None => format!("let mob {rider} off its vehicle"),

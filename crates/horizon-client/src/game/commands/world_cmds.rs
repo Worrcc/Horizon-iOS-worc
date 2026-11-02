@@ -184,10 +184,31 @@ impl Game<'_> {
                     attacker,
                     from,
                 };
-                self.mobs
+                #[cfg(feature = "mods")]
+                let mod_player = match cause.or(by) {
+                    Some(Target::Player) => Some(super::super::server_mods::run::uuid_string(
+                        horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid()),
+                    )),
+                    Some(Target::Guest(conn)) => self
+                        .lan
+                        .as_ref()
+                        .and_then(|h| h.hub.guest(conn))
+                        .map(|g| super::super::server_mods::run::uuid_string(g.uuid)),
+                    _ => None,
+                };
+                let hurt = self
+                    .mobs
                     .iter_mut()
                     .find(|m| m.id == id)
-                    .is_some_and(|m| m.damage(amount, damage))
+                    .is_some_and(|m| m.damage(amount, damage));
+                #[cfg(feature = "mods")]
+                if hurt
+                    && let Some(player) = mod_player
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                {
+                    m.credit_last_mod_hurt(&player);
+                }
+                hurt
             }
             _ => false,
         };

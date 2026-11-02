@@ -111,6 +111,186 @@ impl Game<'_> {
         record_attack(&mut self.mods, event);
     }
 
+    pub(super) fn mod_record_death(&mut self, death: horizon_mods::Death) {
+        if self.mods.server
+            && self.mods.deaths.len() < 256
+            && !self.mods.deaths.iter().any(|d| d.id == death.id)
+        {
+            self.mods.deaths.push(death);
+        }
+    }
+    pub(super) fn collect_mod_player_damage(
+        &mut self,
+        player: &str,
+        events: Vec<(f32, String, Option<u32>)>,
+    ) {
+        if !self.mods.server {
+            return;
+        }
+        let room = 256usize.saturating_sub(self.mods.player_damage.len());
+        self.mods
+            .player_damage
+            .extend(
+                events
+                    .into_iter()
+                    .take(room)
+                    .map(
+                        |(amount, source_kind, attacker_mob)| horizon_mods::PlayerDamage {
+                            player: player.into(),
+                            amount,
+                            source_kind,
+                            attacker_mob,
+                        },
+                    ),
+            );
+    }
+    pub(super) fn mod_credit_player_hurts(&mut self, mob: u32) {
+        let player = self
+            .lan_acting_uuid
+            .map_or_else(|| self.player_uuid_string(), uuid_string);
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+            m.credit_mod_hurts(&player);
+        }
+    }
+
+    pub(super) fn apply_mod_damage_item(
+        &mut self,
+        mut host: Option<&mut LanHost>,
+        player: &str,
+        hand: &str,
+        amount: u32,
+    ) {
+        let hand = if hand == "off_hand" {
+            Hand::Off
+        } else {
+            Hand::Main
+        };
+        let mut broken = None;
+        self.with_mod_player(host.as_deref_mut(), player, |g| {
+            g.with_hand(hand, |g| {
+                let before = g.held().cloned();
+                if before.as_ref().is_none_or(|stack| {
+                    !horizon_client::stations::is_damageable(g.res.items(), stack)
+                }) {
+                    return;
+                }
+                g.damage_held(amount);
+                if let Some(stack) = before
+                    && g.held().is_none()
+                {
+                    g.eat_particles(&stack, 5);
+                    if let Some(eye) = g.eye_position() {
+                        broken = Some((stack, eye));
+                    }
+                }
+            });
+        });
+        if let Some(host) = host.or(self.lan.as_mut()) {
+            let guest = host
+                .hub
+                .guests
+                .iter()
+                .position(|g| g.placed && uuid_string(g.uuid) == player);
+            if let Some(i) = guest {
+                host.hub.send_inventory(i);
+            }
+            if let Some((stack, at)) = broken {
+                let dimension = guest
+                    .map(|i| host.hub.guests[i].dimension.clone())
+                    .unwrap_or_else(|| self.dim.id().into());
+                if let Some(stack) = host.hub.stack(&Some(stack)) {
+                    use horizon_protocol::{
+                        entity_data::{Particle, ParticleData},
+                        packets::play::{self, Clientbound as C},
+                    };
+                    let packet = C::LevelParticles(play::LevelParticles {
+                        particle: Particle {
+                            id: 57,
+                            data: Some(ParticleData::Item(stack)),
+                        },
+                        override_limiter: false,
+                        always_show: false,
+                        pos: at,
+                        dist: [0.15; 3],
+                        max_speed: [0.1; 3],
+                        count: 5,
+                        randomization: 0,
+                    })
+                    .encode();
+                    for g in host.hub.guests.iter().filter(|g| {
+                        g.placed
+                            && g.dimension == dimension
+                            && (0..3).map(|k| (g.position[k] - at[k]).powi(2)).sum::<f64>()
+                                < 32.0 * 32.0
+                    }) {
+                        g.sender.send(packet.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run as the real server player, including the integrated server's guest.
+    pub(super) fn with_mod_player(
+        &mut self,
+        host: Option<&mut LanHost>,
+        player: &str,
+        f: impl FnOnce(&mut Self),
+    ) {
+        if self.player.is_some()
+            && (self
+                .lan_acting_uuid
+                .is_some_and(|id| uuid_string(id) == player)
+                || (self.options.execution_role.is_client()
+                    && self.remote.is_none()
+                    && self.player_uuid_string() == player))
+        {
+            f(self);
+        } else if let Some(host) = host {
+            self.with_mod_guest(host, player, f);
+        } else if let Some(mut host) = self.lan.take() {
+            self.with_mod_guest(&mut host, player, f);
+            self.lan = Some(host);
+        }
+    }
+    fn with_mod_guest(&mut self, host: &mut LanHost, player: &str, f: impl FnOnce(&mut Self)) {
+        if let Some(conn) = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && uuid_string(g.uuid) == player)
+            .map(|g| g.conn)
+        {
+            let back = self.dim;
+            let dimension = host
+                .hub
+                .guest(conn)
+                .map(|g| super::Dim::from_id(&g.dimension));
+            if let Some(dim) = dimension
+                && let Err(e) = self.enter_level(Some(host), dim)
+            {
+                log::warn!("server mod player level: {e}");
+                return;
+            }
+            let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
+            self.as_guest(host, conn, f);
+            // Capture only this operation's sounds, while its dimension is in place.
+            // Older queued sounds still belong to the level we will return to.
+            if let Some(capture) = self.audio.capture.as_mut() {
+                let from = heard.min(capture.len());
+                for (name, at, volume, pitch) in capture.drain(from..) {
+                    let source = horizon_client::settings::sound_source(&name) as i32;
+                    host.hub.sound(&name, at, volume, pitch, source, None);
+                }
+            }
+            if self.dim != back
+                && let Err(e) = self.enter_level(Some(host), back)
+            {
+                log::warn!("server mod restoring level: {e}");
+            }
+        }
+    }
+
     pub(super) fn apply_mod_player_effect(
         &mut self,
         host: Option<&mut LanHost>,

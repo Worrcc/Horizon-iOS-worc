@@ -33,6 +33,23 @@ impl Inventories {
     }
 }
 impl PlayerInventories for Inventories {
+    fn equipment(&self, player: &str) -> Option<horizon_mods::EquipmentSlots> {
+        let inv = self.players.get(player)?;
+        let id = |slot: &Option<ItemStack>| {
+            slot.as_ref()
+                .filter(|s| s.count > 0)
+                .map(|s| s.item.to_string())
+        };
+        Some(horizon_mods::EquipmentSlots {
+            head: id(&inv.armor[0]),
+            chest: id(&inv.armor[1]),
+            legs: id(&inv.armor[2]),
+            feet: id(&inv.armor[3]),
+            main_hand: inv.main.get(inv.selected).and_then(id),
+            off_hand: id(&inv.offhand),
+            hotbar: (0..9).map(|i| inv.main.get(i).and_then(id)).collect(),
+        })
+    }
     fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String> {
         let (inv, _) = self.checked(player, item)?;
         if inv.creative {
@@ -167,6 +184,40 @@ mod tests {
             ]
             .into(),
         }
+    }
+    #[test]
+    fn equipment_reads_guest_armor_selected_hand_offhand_and_nine_slots() {
+        let mut inv = inventories();
+        let a = inv.players.get_mut(ALICE).unwrap();
+        for (i, id) in ["ruby:helmet", "ruby:chest", "ruby:legs", "ruby:feet"]
+            .iter()
+            .enumerate()
+        {
+            a.armor[i] = Some(ItemStack::new(id, 1));
+        }
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 2));
+        a.main[8] = Some(ItemStack::new("ruby:scale", 1));
+        a.offhand = Some(ItemStack::new("minecraft:stone", 1));
+        let gear = inv.equipment(ALICE).unwrap();
+        assert_eq!(gear.head.as_deref(), Some("ruby:helmet"));
+        assert_eq!(gear.chest.as_deref(), Some("ruby:chest"));
+        assert_eq!(gear.legs.as_deref(), Some("ruby:legs"));
+        assert_eq!(gear.feet.as_deref(), Some("ruby:feet"));
+        assert_eq!(gear.main_hand.as_deref(), Some("minecraft:beef"));
+        assert_eq!(gear.off_hand.as_deref(), Some("minecraft:stone"));
+        assert_eq!(gear.hotbar.len(), 9);
+        assert_eq!(gear.hotbar[8].as_deref(), Some("ruby:scale"));
+        assert!(gear.hotbar[0].is_none());
+        inv.take_item(ALICE, "minecraft:beef", 2).unwrap();
+        assert!(inv.equipment(ALICE).unwrap().main_hand.is_none());
+        assert!(inv.equipment("offline").is_none());
+        assert!(
+            inv.equipment(BOB)
+                .unwrap()
+                .hotbar
+                .iter()
+                .all(Option::is_none)
+        );
     }
     #[test]
     fn taking_prefers_main_hand_then_rest_preserves_components_and_never_double_spends() {

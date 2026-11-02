@@ -39,6 +39,8 @@ pub(super) struct ThrownPotion {
     /// `Projectile.getOwner`'s display name: the player who threw it (none
     /// for a dispenser's).
     owner: Option<Text>,
+    /// Retain the thrower's identity even after they leave the server.
+    owner_uuid: Option<[i32; 4]>,
 }
 /// `AreaEffectCloud` wait time set by `ThrownLingeringPotion.onHitAsPotion`.
 pub(super) const LINGERING_WAIT: i32 = 10;
@@ -61,6 +63,7 @@ pub(super) struct PotionCloud {
     /// Who its instant damage names (`indirectMagic(cloud, owner)`): the
     /// thrower, else the cloud.
     source: Text,
+    owner_uuid: Option<[i32; 4]>,
 }
 impl PotionCloud {
     /// `AreaEffectCloud.updateParticle`: an entity effect in the potion's colour.
@@ -291,6 +294,7 @@ impl Game<'_> {
         velocity: Vec3,
         owner: Option<Text>,
     ) {
+        let owner_uuid = owner.as_ref().map(|_| self.acting_player_uuid());
         self.potions.thrown.push(ThrownPotion {
             id: 0,
             stack,
@@ -299,6 +303,7 @@ impl Game<'_> {
             velocity,
             age: 0,
             owner,
+            owner_uuid,
         });
     }
 }
@@ -380,6 +385,7 @@ impl PotionState {
             velocity,
             age: 0,
             owner: None,
+            owner_uuid: None,
         });
     }
     /// ThrowableItemProjectile.DATA_ITEM_STACK: the potion it shows.
@@ -819,15 +825,22 @@ impl Game<'_> {
                 }
             }
             if let Some((p, mob)) = hit {
-                landed.push((t.stack.clone(), p, mob, t.age, t.owner.clone()));
+                landed.push((
+                    t.stack.clone(),
+                    p,
+                    mob,
+                    t.age,
+                    t.owner.clone(),
+                    t.owner_uuid,
+                ));
                 return false;
             }
             t.position = next;
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;
-        for (stack, at, mob, age, owner) in landed {
-            self.splash(&stack, at, mob, age, owner);
+        for (stack, at, mob, age, owner, owner_uuid) in landed {
+            self.splash(&stack, at, mob, age, owner, owner_uuid);
         }
     }
     /// `AreaEffectCloud.tick` for the lingering potions' clouds: the client
@@ -908,7 +921,7 @@ impl Game<'_> {
                 continue;
             }
             potion.victims.push((victim, c.age + REAPPLICATION_DELAY));
-            self.cloud_affect(victim, effects, c.at, &potion.source);
+            self.cloud_affect(victim, effects, c.at, &potion.source, potion.owner_uuid);
             // setRadiusOnUse(-0.5).
             c.radius -= 0.5;
             if c.radius < 0.5 {
@@ -926,7 +939,10 @@ impl Game<'_> {
         effects: &'static [(&'static str, i32, i32)],
         at: [f64; 3],
         source: &Text,
+        owner_uuid: Option<[i32; 4]>,
     ) {
+        #[cfg(not(feature = "mods"))]
+        let _ = owner_uuid;
         let scaled = |duration: i32| ((f64::from(duration) * 0.25) as i32).max(1);
         match victim {
             Victim::Player(who) => self.as_fight_player(who, |g| {
@@ -959,7 +975,15 @@ impl Game<'_> {
                             let amount =
                                 |base: i32| (0.5 * f64::from(base << amp) + 0.5) as i32 as f32;
                             if (*id == "instant_damage") != inverted {
-                                m.hurt(amount(6), Some(at), &mut self.world.random);
+                                let hurt = m.hurt(amount(6), Some(at), &mut self.world.random);
+                                #[cfg(feature = "mods")]
+                                if hurt && let Some(uuid) = owner_uuid {
+                                    m.credit_mod_hurts(&super::server_mods::run::uuid_string(
+                                        horizon_client::lan::playerdata::ints_uuid(uuid),
+                                    ));
+                                }
+                                #[cfg(not(feature = "mods"))]
+                                let _ = hurt;
                             } else {
                                 m.health = (m.health + amount(4)).min(m.kind.max_health);
                             }
@@ -1136,6 +1160,7 @@ impl Game<'_> {
         mob: Option<Vec3>,
         age: u32,
         owner: Option<Text>,
+        owner_uuid: Option<[i32; 4]>,
     ) {
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
         if &*stack.item == "minecraft:experience_bottle" {
@@ -1177,6 +1202,7 @@ impl Game<'_> {
                     duration: 600,
                     from_dragon: false,
                     potion: Some(PotionCloud {
+                        owner_uuid,
                         effects: def.effects,
                         color,
                         victims: Vec::new(),
@@ -1227,11 +1253,19 @@ impl Game<'_> {
                 };
                 let m = &mut self.mobs[i];
                 if harm {
-                    m.hurt(
+                    let hurt = m.hurt(
                         (intensity * f64::from(6 << amp) + 0.5) as i32 as f32,
                         Some([at.x, at.y, at.z]),
                         &mut self.world.random,
                     );
+                    #[cfg(feature = "mods")]
+                    if hurt && let Some(uuid) = owner_uuid {
+                        m.credit_mod_hurts(&super::server_mods::run::uuid_string(
+                            horizon_client::lan::playerdata::ints_uuid(uuid),
+                        ));
+                    }
+                    #[cfg(not(feature = "mods"))]
+                    let _ = hurt;
                 } else {
                     m.health = (m.health + (intensity * f64::from(4 << amp) + 0.5) as i32 as f32)
                         .min(m.kind.max_health);

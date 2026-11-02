@@ -645,6 +645,60 @@ the same tick, as a Java structure processor rewrites a template spawner's `Spaw
 spawner keeps its delays, spawn count and ranges; players see the new mob in it. No spawner
 there then, or an unknown type: the write is skipped and logged.
 
+**API level 15: combat, players and world helpers.** All additions are functions;
+existing hooks and records keep their ABI. `entities.strike(mob, hit)` extends hurt-area
+with skipped entity types, extra knockback (0..4, applying resistance), and optional online
+player attack/kill credit. It hits living mobs and players in the ball, sparing its source
+(a content mob), skipped types and credited player. Radius <=16, damage <=1024, fire <=30 s;
+at most 256 skipped type ids. WIT requires distinct function/type names: the record is
+`strike-hit`. Knockback and fire also apply when damage is zero, as with hurt-area's fire.
+`players.knockback(player, strength, dx, dz)` applies vanilla knockback with resistance;
+the direction points away from the attacker. `players.push(player, velocity)` **adds**
+velocity, each component -4..4 blocks/tick (the mob push order sets it).
+`world.play-sound(dimension, at, name, volume, pitch)` plays a registered vanilla or
+loaded content sound; positions, nonnegative volume and pitch must be finite. World
+writes wait for their dimension; mob writes wait for their mob's level. Player calls run
+as the server player and sync motion to clients. Capabilities are `entities`, `players`
+and `world`, respectively; existing manifest rules apply. Each interface owns its
+point record so importing `players` or `world` does not also require `entities`;
+the Rust SDK re-exports these as `PlayerPoint` and `WorldPoint`.
+`players.damage-item(player, hand, amount)` uses held-item durability with Unbreaking
+and creative immunity; `hand` is `main_hand` or `off_hand`. Empty or nondamageable
+items do nothing. Broken items disappear, with break sound and item particles, and
+server inventories sync. Durability comes from the item's registered max_damage;
+this function does not give durability to a plain stick template.
+`entities.tame(mob, owner)` accepts any loaded tameable runtime species, including
+content templates: equines, wolves, cats, parrots and nautiluses. An optional owner
+is a UUID (need not be online); none keeps the current owner. Other mobs error.
+`world.block-has-tag(block, tag)` reads the game's loaded block tag tables. A block
+id or valid state string is accepted; unknown blocks/tags or a tag prefixed by #
+return false.
+`players.equipment(player)` reads authoritative armor, selected hand, off hand and
+exactly nine hotbar slots as optional registry ids; offline players return none.
+The new record is `equipment-slots` because WIT forbids sharing a function's name.
+`world.spawn-item(dimension, at, item, count)` queues a dropped plain stack for that
+level. The item must exist, count must be 1..its maximum stack size, and the point
+must be finite. Each mod can queue at most 16 per game tick across all hooks;
+invalid requests do not spend its budget. Drops use the normal pickup delay.
+`entities.effect(mob, change)` and `entities.push(mob, velocity)` accept **any** loaded
+mob id from `near`, including vanilla mobs. They use the effect/push order behavior:
+registered effect ids, zero seconds removes, and push **sets** velocity (-4..4/axis).
+`entities.hurt-events()` and `entities.deaths()` return shared, nonconsuming lists
+from the last tick, at most 256 of each, with content mobs as victims only. Hurt
+amount is actual health lost after armor and hurt cooldown; hurt events name the
+victim's type and a causing mob id or attacking player's UUID. Player attribution
+includes melee, projectiles, thorns and command damage; thrown and lingering potions
+retain the thrower's UUID even after that player leaves. Sources without a native
+owner return none. Death positions are
+captured on lethal damage, before corpse movement; other native deaths are recorded
+when the game's death dispatcher observes them. Discard is not a death.
+`players.damage-taken()` similarly returns at most 256 actual health-plus-absorption
+losses after armor/effects, with damage type id and causing mob when known. Events
+include environmental damage and server guests; every mod sees the same tick.
+There was no existing player heal import. `players.heal(player, amount)` reuses the
+game's potion healing action, capped at max health and never reviving the dead;
+amount must be finite, 0..1024. These are polling functions, with no new hooks.
+
 **API level 14: mobs riding mobs.** `entities.ride(rider, vehicle) -> result<_, string>` seats a
 content mod's mob on another loaded mob, vanilla's or a mod's (`Entity.startRiding`, as `/ride`
 does), and `ride(rider, none)` lets it off (`stopRiding`). The call checks that both are loaded
