@@ -1,8 +1,8 @@
 //! Horizon's official block info, in the spirit of the "what am I looking at" tooltip mods
 //! (Jade, WTHIT), written for Horizon's API: the block under the crosshair (`game.raycast`), its
 //! item's icon and name in the player's language (`recipes.items`), and its namespace as the
-//! game or mod it comes from, in a box at the top of the screen. Entities wait for the planned
-//! `target` interface (docs/mods.md).
+//! game or mod it comes from, in a box at the top of the screen. Living entities show their
+//! display name and current/maximum health through `game.raycast-entity`.
 use horizon_mod_sdk::{
     Mod, Registration, game, recipes,
     render::{self, Corner, FillShape, ItemShape, Point, Rect, Shape, TextShape},
@@ -32,7 +32,7 @@ const PLACES: [(Place, &str, &str); 3] = [
     (Place::Corner(Corner::TopLeft), "top_left", "Top left"),
     (Place::Corner(Corner::TopRight), "top_right", "Top right"),
 ];
-/// Blocks: survival reach, or farther.
+/// Targets: survival block reach, or farther.
 const REACHES: [(f32, &str); 3] = [(4.5, "Reach"), (16.0, "16 blocks"), (64.0, "64 blocks")];
 
 /// Settings page buttons.
@@ -139,12 +139,43 @@ impl BlockInfo {
         }
     }
 
+    fn entity_lines(&self, hit: &game::EntityHit) -> Vec<(String, u32)> {
+        let (namespace, path) = hit.kind.split_once(':').unwrap_or(("minecraft", &hit.kind));
+        let name = if hit.name.is_empty()
+            || hit.name == format!("entity.{}", hit.kind.replace(':', "."))
+        {
+            pretty(path)
+        } else {
+            hit.name.clone()
+        };
+        let mut lines = vec![
+            (name, NAME),
+            (
+                format!("Health: {} / {}", hit.health, hit.max_health),
+                DETAIL,
+            ),
+        ];
+        if self.coords {
+            lines.push((
+                format!("{}, {}, {}", hit.x.floor(), hit.y.floor(), hit.z.floor()),
+                DETAIL,
+            ));
+        }
+        if self.source {
+            lines.push((source_name(namespace), SOURCE));
+        }
+        lines
+    }
+
     fn draw(&mut self) {
-        let Some(hit) = game::raycast(REACHES[self.reach].0) else {
+        let distance = REACHES[self.reach].0;
+        let target = game::raycast_entity(distance)
+            .map(|hit| (None, self.entity_lines(&hit)))
+            .or_else(|| game::raycast(distance).map(|hit| self.lines(&hit)));
+        let Some((item, lines)) = target else {
             self.clear();
             return;
         };
-        let (item, lines) = self.lines(&hit);
         let key: Vec<String> = item
             .iter()
             .cloned()
@@ -333,6 +364,47 @@ horizon_mod_sdk::export_mod!(BlockInfo);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_lines_show_live_health_and_settings() {
+        let mut info = BlockInfo {
+            place: 0,
+            reach: 0,
+            source: true,
+            coords: false,
+            names: None,
+            shown: None,
+        };
+        let mut hit = game::EntityHit {
+            kind: "ruby:ruby_golem".into(),
+            name: "Ruby Guardian".into(),
+            health: 37.5,
+            max_health: 80.0,
+            x: -0.5,
+            y: 64.0,
+            z: 3.0,
+        };
+        assert_eq!(
+            info.entity_lines(&hit),
+            vec![
+                ("Ruby Guardian".into(), NAME),
+                ("Health: 37.5 / 80".into(), DETAIL),
+                ("Ruby".into(), SOURCE),
+            ]
+        );
+        hit.health = 12.0;
+        hit.name = "entity.ruby.ruby_golem".into();
+        info.source = false;
+        info.coords = true;
+        assert_eq!(
+            info.entity_lines(&hit),
+            vec![
+                ("Ruby Golem".into(), NAME),
+                ("Health: 12 / 80".into(), DETAIL),
+                ("-1, 64, 3".into(), DETAIL),
+            ]
+        );
+    }
 
     #[test]
     fn names_for_blocks_without_items() {

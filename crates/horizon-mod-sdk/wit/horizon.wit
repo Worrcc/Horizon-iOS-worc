@@ -19,7 +19,7 @@ interface log {
 }
 
 /// Capability `game-read`: the local player, the world clock and the block
-/// the player looks at.
+/// or living entity the player looks at.
 interface game {
     record player {
         /// Feet position, in blocks.
@@ -65,6 +65,24 @@ interface game {
     /// distant terrain when LOD Distance is on), as of this tick. None when
     /// nothing is hit, and on the title screen.
     raycast: func(distance: f32) -> option<hit>;
+    /// A living entity under the crosshair, including players and content mobs.
+    record entity-hit {
+        /// The entity type's namespaced id.
+        kind: string,
+        /// Custom name, player name, or localized type name.
+        name: string,
+        /// Current and computed maximum hit points (20 is ten hearts).
+        health: f32,
+        max-health: f32,
+        /// Feet position, in blocks.
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+    /// API level 16: nearest loaded living entity along the view, before
+    /// any block, within distance (at most 1024). None outside a world.
+    /// Health is the real value known to this client as of this tick.
+    raycast-entity: func(distance: f32) -> option<entity-hit>;
 }
 
 /// Capability `chat`: messages only the local player sees.

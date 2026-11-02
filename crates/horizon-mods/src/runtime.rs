@@ -43,7 +43,7 @@ mod ui_bindings {
     });
 }
 pub use bindings::horizon::mods::{
-    game::{Clock, Hit, Player},
+    game::{Clock, EntityHit, Hit, Player},
     hud::{Corner, Line},
 };
 use bindings::{
@@ -234,6 +234,8 @@ pub struct Snapshot {
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
     pub view_hit: Option<(f32, Hit)>,
+    /// Nearest living entity along the view and its distance from the eye.
+    pub view_entity: Option<(f32, EntityHit)>,
     /// Every item and recipe, for capability `recipes`; the game makes them
     /// once, and only while a mod reads them ([`Mods::wants_recipes`]).
     pub recipes: Option<Arc<Recipes>>,
@@ -557,6 +559,8 @@ struct Running {
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
+    /// It imports `game.raycast-entity`.
+    entity_raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
 }
@@ -997,7 +1001,10 @@ impl Mods {
             store,
             ui,
             hooks,
-            raycasts: functions.iter().any(|f| f == "game.raycast"),
+            raycasts: functions
+                .iter()
+                .any(|f| f == "game.raycast" || f == "game.raycast-entity"),
+            entity_raycasts: functions.iter().any(|f| f == "game.raycast-entity"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
         }))
     }
@@ -1274,12 +1281,18 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref()?.store.data().corner.as_ref())
     }
-    /// Some running mod calls `game.raycast`: the snapshot needs a
+    /// Some running mod calls `game.raycast` or `game.raycast-entity`: the snapshot needs a
     /// [`Snapshot::view_hit`].
     pub fn wants_raycast(&self) -> bool {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.raycasts))
+    }
+    /// Some running mod reads the living entity under the crosshair.
+    pub fn wants_entity_raycast(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.entity_raycasts))
     }
     /// The panel beside container screens (`browser.set-items`): the first
     /// running mod with items or recipes, its index, the panel's version and
@@ -1725,6 +1738,17 @@ impl game::Host for State {
         let (at, hit) = self.snapshot.view_hit.as_ref()?;
         // NaN compares false: no hit.
         (*at <= distance.min(RAYCAST_MAX) && !distance.is_nan()).then(|| hit.clone())
+    }
+    fn raycast_entity(&mut self, distance: f32) -> Option<EntityHit> {
+        let (at, hit) = self.snapshot.view_entity.as_ref()?;
+        (*at <= distance.min(RAYCAST_MAX)
+            && !distance.is_nan()
+            && self
+                .snapshot
+                .view_hit
+                .as_ref()
+                .is_none_or(|(block, _)| at < block))
+        .then(|| hit.clone())
     }
 }
 impl browser::Host for State {
@@ -3114,6 +3138,106 @@ mod entity_tests {
             world: WorldSlot::default(),
             inventories: InventoriesSlot::default(),
         }
+    }
+
+    #[test]
+    fn entity_raycast_respects_distance_blocks_and_live_snapshot() {
+        let mut s = state();
+        assert!(game::Host::raycast_entity(&mut s, 64.0).is_none());
+        let snapshot = Arc::make_mut(&mut s.snapshot);
+        snapshot.view_entity = Some((
+            4.0,
+            EntityHit {
+                kind: "ruby:golem".into(),
+                name: "Ruby Golem".into(),
+                health: 37.5,
+                max_health: 80.0,
+                x: 0.0,
+                y: 64.0,
+                z: 4.0,
+            },
+        ));
+        for distance in [-1.0, 3.9, f32::NAN] {
+            assert!(game::Host::raycast_entity(&mut s, distance).is_none());
+        }
+        let hit = game::Host::raycast_entity(&mut s, 4.0).unwrap();
+        assert_eq!((hit.health, hit.max_health), (37.5, 80.0));
+        Arc::make_mut(&mut s.snapshot).view_hit = Some((
+            3.0,
+            Hit {
+                block_x: 0,
+                block_y: 64,
+                block_z: 3,
+                x: 0.0,
+                y: 64.0,
+                z: 3.0,
+                block: "minecraft:stone".into(),
+            },
+        ));
+        assert!(game::Host::raycast_entity(&mut s, 64.0).is_none());
+        assert!(game::Host::raycast(&mut s, 64.0).is_some());
+        let snapshot = Arc::make_mut(&mut s.snapshot);
+        snapshot.view_hit = None;
+        snapshot.view_entity.as_mut().unwrap().1.health = 12.0;
+        assert_eq!(
+            game::Host::raycast_entity(&mut s, 64.0).unwrap().health,
+            12.0
+        );
+        Arc::make_mut(&mut s.snapshot)
+            .view_entity
+            .as_mut()
+            .unwrap()
+            .0 = RAYCAST_MAX + 1.0;
+        assert!(game::Host::raycast_entity(&mut s, f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn pre_level_16_game_components_still_link() {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        let mut resolve = Resolve::default();
+        let package = resolve
+            .push_str(
+                "horizon.wit",
+                include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+            )
+            .unwrap();
+        for (_, interface) in resolve.interfaces.iter_mut() {
+            if interface.name.as_deref() == Some("game") {
+                interface
+                    .functions
+                    .retain(|name, _| name != "raycast-entity");
+            }
+        }
+        let world = resolve
+            .select_world(&[package], Some("horizon-mod"))
+            .unwrap();
+        resolve.worlds[world].exports.clear();
+        let interfaces = &resolve.interfaces;
+        resolve.worlds[world].imports.retain(|_, item| matches!(item, wit_parser::WorldItem::Interface { id, .. } if interfaces[*id].name.as_deref() == Some("game")));
+        let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
+        let wasm = wit_component::ComponentEncoder::default()
+            .module(&module)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let functions = crate::api_level::imports(&wasm).unwrap();
+        assert_eq!(
+            crate::api_level::needed(functions.iter().map(String::as_str)).0,
+            2
+        );
+        let mut mods = Mods::default();
+        let (engine, linker) = mods.engine().unwrap();
+        let component = Component::new(engine, wasm).unwrap();
+        let mut store = Store::new(engine, state());
+        store.set_fuel(FUEL_INIT).unwrap();
+        linker.instantiate(&mut store, &component).unwrap();
     }
 
     #[test]

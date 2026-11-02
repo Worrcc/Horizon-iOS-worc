@@ -122,6 +122,8 @@ mod mod_players;
 #[cfg(feature = "mods")]
 mod mod_recipes;
 mod mod_render;
+#[cfg(feature = "mods")]
+mod mod_target;
 mod mods;
 mod mount_menu;
 mod mounts;

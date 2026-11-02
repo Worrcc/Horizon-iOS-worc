@@ -4,7 +4,7 @@ version = "1.0.0"
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Horizon's official block info: what the crosshair is on, its icon, name and where it comes from, in a box at the top of the screen."
+description = "Horizon's official block info: crosshair blocks and living entities, their name, health and source."
 
 [lib]
 crate-type = ["cdylib"]

@@ -86,7 +86,7 @@ The mod's log, in the game's log under the mod's id. Always granted.
 
 Access: capability `game-read`.
 
-Capability `game-read`: the local player, the world clock and the block the player looks at.
+Capability `game-read`: the local player, the world clock and the block or living entity the player looks at.
 
 ### record `player`
 
@@ -122,11 +122,26 @@ A block along the player's view.
 | `z` | `f64` |  |
 | `block` | `string` | `minecraft:stone`, ... |
 
+### record `entity-hit`
+
+A living entity under the crosshair, including players and content mobs.
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `string` | The entity type's namespaced id. |
+| `name` | `string` | Custom name, player name, or localized type name. |
+| `health` | `f32` | Current and computed maximum hit points (20 is ten hearts). |
+| `max-health` | `f32` |  |
+| `x` | `f64` | Feet position, in blocks. |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
+| `raycast-entity` | `func(distance: f32) -> option<entity-hit>` | API level 16: nearest loaded living entity along the view, before any block, within distance (at most 1024). None outside a world. Health is the real value known to this client as of this tick. |
 
 ## `chat`
 

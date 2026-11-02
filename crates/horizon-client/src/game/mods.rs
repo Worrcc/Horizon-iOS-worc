@@ -639,6 +639,7 @@ impl Game<'_> {
             player_looks: Default::default(),
             generated_chunks: Default::default(),
             view_hit: self.mod_view_hit(),
+            view_entity: self.mod_view_entity(),
             recipes,
             known_recipes,
             placing: self.mod_recipe_screen(),

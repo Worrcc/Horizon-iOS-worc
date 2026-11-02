@@ -83,7 +83,7 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 | Interface | Capability | Functions |
 |---|---|---|
 | `log` | always | `write(level, message)`, in the game log as `[mod <id>]` |
-| `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id |
+| `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id; `raycast-entity(distance)` (API level 16): the nearest living entity before a block, its display name and current/max health |
 | `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call) |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
@@ -839,7 +839,19 @@ so the same rustc and `Cargo.lock` give the same file.
 | Minimap | `minimap` | Extras > Minimap | `corner`: as above, default `top_right`; `size`: `64`, `96` (default), `128`; `shape`: `square` (default), `round`; `zoom` (blocks per pixel): `0.5`, `1` (default), `2`, `4`; `rotate`: `false` (default), `true`. The game draws the map (`render.set-minimap`) |
 | Far View | `far_view` | Graphics > LOD Distance and Far Detail | `distance` (chunks): `64`, `128`, `256` (default), `512`, `1024`; `detail`: `full` (default), `reduced`. The game builds and draws the distant terrain (`render.set-far-terrain`); the player's LOD Distance, when on, wins |
 | Recipes | `recipes` | nothing (new) | `give` (a click on the item panel gives the item in creative mode: one, a stack with a right click): `false` (default), `true`. The keys are the game's: `key.recipes.recipe` (default `key.keyboard.r`) and `key.recipes.uses` (default `key.keyboard.u`) in `horizon-mods.txt`. Every item sits in the item panel (`browser`) with a search box (words in the name or id, `@namespace`, `#tag`); R or a click shows an item's recipes, U or a right click its uses, a tab per station, and + fills the grid with a recipe the player knows (`recipes.place`). On servers that are not Horizon it shows the game's own 26.3 recipes; known recipes and + follow the server's recipe book |
-| Block Info | `block_info` | nothing (new) | `position`: `top` (default, centred), `top_left`, `top_right`; `distance` (blocks): `4.5` (default, reach), `16`, `64`; `source` (the game or mod the block comes from): `true` (default), `false`; `coords`: `false` (default), `true`. What the crosshair is on, as Jade and WTHIT show it: the block's icon, its name in the player's language (`recipes.items`) and its namespace, from `game.raycast`. Entities wait for `target` |
+| Block Info | `block_info` | nothing (new) | `position`: `top` (default, centred), `top_left`, `top_right`; `distance` (blocks): `4.5` (default, reach), `16`, `64`; `source` (the game or mod the block comes from): `true` (default), `false`; `coords`: `false` (default), `true`. What the crosshair is on, as Jade and WTHIT show it: the block's icon, its name in the player's language (`recipes.items`) and its namespace, from `game.raycast`. Living entities (including players and content mobs) show their display name and current/max hit points through `game.raycast-entity`, in the same panel style |
+
+**API level 16: the entity under the crosshair.** Capability `game-read` adds
+`game.raycast-entity(distance) -> option<entity-hit>`. It reads the nearest loaded
+living entity along the view, before any block, within the requested distance
+(at most 1024 blocks). It returns none outside a world or when no entity is hit.
+The new result contains the namespaced type id, display name (player name,
+custom name, or localized type name), feet position and current/maximum hit
+points. Mobs, animals, players and content mods' mobs use their live instances;
+maximum health includes runtime attribute changes. On servers these are the
+values synchronized to the client. Existing records and `game.raycast` are
+unchanged. Block Info uses this call for entities and its existing block raycast
+for blocks; its position, distance, source and coordinate settings apply to both.
 
 ## Versions and compatibility
 
