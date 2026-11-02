@@ -4994,7 +4994,7 @@ impl Game<'_> {
             return;
         }
         let bundle = self.res.items().get(&held.item).is_some_and(|i| i.bundle);
-        let start = match &*held.item {
+        let start = match self.res.items().behavior(&held.item) {
             // BundleItem.use: always starts; the server drops the contents.
             _ if bundle => true,
             // BowItem.use: with an arrow, or in creative.
@@ -5028,7 +5028,7 @@ impl Game<'_> {
     /// crossbows, tridents, spyglasses, shields): its use only counts ticks here.
     fn held_until_released(&self, stack: &ItemStack) -> bool {
         matches!(
-            &*stack.item,
+            self.res.items().behavior(&stack.item),
             "minecraft:bow" | "minecraft:crossbow" | "minecraft:trident" | "minecraft:spyglass"
         ) || horizon_client::spear::Kinetic::of(&stack.item).is_some()
             || self.blocks_attacks(stack).is_some()
@@ -6280,7 +6280,7 @@ fn hand_id(hand: Hand) -> i32 {
 /// its hand. Tools and materials pass, and the off hand gets its turn. The
 /// server decides; this is the client's guess of whether to go on.
 fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
-    let id = info.id.trim_start_matches("minecraft:");
+    let id = info.behavior.trim_start_matches("minecraft:");
     id.ends_with("_spear")
         || info.consumable.is_some()
         || info.equip_slot.is_some()
@@ -6360,7 +6360,7 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
             && self
                 .0
                 .stack_in(slot)
-                .is_some_and(|s| &*s.item == "minecraft:trident")
+                .is_some_and(|s| self.0.res.items().behavior(&s.item) == "minecraft:trident")
         {
             self.0.with_hand(hand, |g| g.release_trident(ticks));
         }

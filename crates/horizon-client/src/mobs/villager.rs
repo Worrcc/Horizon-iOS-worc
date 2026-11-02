@@ -842,6 +842,7 @@ mod tests {
         use crate::mobs::{Anim, Brain, Flags, MobType, Part, Species};
         use std::{collections::HashMap, sync::Arc};
         let kind = Arc::new(MobType {
+            item_templates: Default::default(),
             id: "minecraft:villager".into(),
             species: Species::Villager,
             width: 0.6,

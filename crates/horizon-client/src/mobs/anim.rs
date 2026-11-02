@@ -703,7 +703,11 @@ pub fn setup(
             // trident in its main arm.
             let throwing = m.kind.anim == Anim::Drowned
                 && m.ai.aggressive
-                && m.extra.main_hand.as_deref() == Some("minecraft:trident");
+                && m.extra
+                    .main_hand
+                    .as_deref()
+                    .map(|id| m.kind.item_behavior(id))
+                    == Some("minecraft:trident");
             let main = if throwing {
                 ArmPose::ThrowTrident
             } else {
@@ -728,7 +732,12 @@ pub fn setup(
             }
         }
         Anim::Skeleton | Anim::Humanoid { zombie_arms: false } => {
-            let bow = m.extra.main_hand.as_deref() == Some("minecraft:bow");
+            let bow = m
+                .extra
+                .main_hand
+                .as_deref()
+                .map(|id| m.kind.item_behavior(id))
+                == Some("minecraft:bow");
             let player = matches!(m.kind.anim, Anim::Humanoid { .. });
             let right = if bow && m.ai.aggressive {
                 ArmPose::Bow
@@ -747,7 +756,12 @@ pub fn setup(
             let (main_spear, off_spear) =
                 (spear_in(&m.extra.main_hand), spear_in(&m.extra.off_hand));
             let pose = if player {
-                match m.extra.main_hand.as_deref() {
+                match m
+                    .extra
+                    .main_hand
+                    .as_deref()
+                    .map(|id| m.kind.item_behavior(id))
+                {
                     Some(_) if using_main && m.extra.blocking => ArmPose::Block,
                     Some("minecraft:bow") if using_main => ArmPose::Bow,
                     Some("minecraft:trident") if using_main => ArmPose::ThrowTrident,
@@ -896,6 +910,51 @@ pub fn setup(
 #[cfg(test)]
 mod flight_pose_tests {
     use super::*;
+
+    #[test]
+    fn charged_content_templates_pose_like_their_vanilla_class() {
+        use horizon_core::geometry::Vec3;
+        use std::sync::Arc;
+        for kind in ["bow", "crossbow", "trident"] {
+            for charged in [false, true] {
+                let mut ty = (*super::super::sensor_scan_tests::kind()).clone();
+                ty.anim = super::super::Anim::Humanoid { zombie_arms: false };
+                let item = format!("gear:{kind}");
+                let vanilla = format!("minecraft:{kind}");
+                ty.item_templates = Arc::new(HashMap::from([(item.clone(), vanilla.clone())]));
+                let mut m = Mob::new(1, Arc::new(ty), Vec3::ZERO, 0.0);
+                m.extra.using_item = 12;
+                m.extra.ints[5] = 25;
+                m.extra.charged = charged;
+                let pose = |m: &Mob| {
+                    let mut p = Poses {
+                        map: [
+                            "head",
+                            "hat",
+                            "body",
+                            "right_arm",
+                            "left_arm",
+                            "right_leg",
+                            "left_leg",
+                        ]
+                        .into_iter()
+                        .map(|name| (name.to_owned(), [0.0; 9]))
+                        .collect(),
+                        dummy: [0.0; 9],
+                        skipped: Default::default(),
+                        hidden: Default::default(),
+                    };
+                    setup(m, &state(m, 0.0), &mut p, &HashMap::new());
+                    p.map
+                };
+                m.extra.main_hand = Some(vanilla.into());
+                let expected = pose(&m);
+                m.extra.main_hand = Some(item.clone().into());
+                assert_eq!(pose(&m), expected, "{kind}, charged={charged}");
+                assert_eq!(m.extra.main_hand.as_deref(), Some(item.as_str()));
+            }
+        }
+    }
 
     #[test]
     fn blocking_arm_follows_the_head_with_limits_in_both_hands() {

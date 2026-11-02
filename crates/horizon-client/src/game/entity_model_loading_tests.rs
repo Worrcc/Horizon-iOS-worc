@@ -214,6 +214,17 @@ fn armor_equipment_loads_without_an_entity_model_document() {
     )
     .unwrap();
     fs::write(equipment.join("invalid.json"), b"{").unwrap();
+    let custom = root.0.join("assets/gear/equipment/metal");
+    fs::create_dir_all(&custom).unwrap();
+    fs::write(
+        custom.join("fire.json"),
+        serde_json::to_vec(&json!({"layers": {
+            "humanoid": [{"texture":"gear:metal/fire"}],
+            "humanoid_leggings": [{"texture":"gear:metal/fire_legs"}]
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
     let assets = ArmorStandAssets::load(&root.0, None);
     assert!(assets.main.is_none());
     assert!(assets.layers.is_empty());
@@ -222,6 +233,14 @@ fn armor_equipment_loads_without_an_entity_model_document() {
         ("entity/equipment/humanoid/leather".into(), Some(0x123456))
     );
     assert!(!assets.equipment.contains_key("minecraft:invalid"));
+    assert_eq!(
+        assets.equipment["gear:metal/fire"]["humanoid"].0,
+        "gear:entity/equipment/humanoid/metal/fire"
+    );
+    assert_eq!(
+        assets.equipment["gear:metal/fire"]["humanoid_leggings"].0,
+        "gear:entity/equipment/humanoid_leggings/metal/fire_legs"
+    );
 }
 
 #[test]

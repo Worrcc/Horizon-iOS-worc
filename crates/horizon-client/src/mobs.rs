@@ -339,6 +339,8 @@ pub struct Flags {
 #[derive(Clone, Debug)]
 pub struct MobType {
     pub id: String,
+    /// Shared charged-item template classes for humanoid arm poses.
+    pub item_templates: Arc<HashMap<String, String>>,
     pub species: Species,
     pub width: f64,
     pub height: f64,
@@ -389,6 +391,9 @@ pub struct MobType {
     pub own_animations: Option<Arc<geo::Animations>>,
 }
 impl MobType {
+    pub fn item_behavior<'a>(&'a self, id: &'a str) -> &'a str {
+        self.item_templates.get(id).map_or(id, String::as_str)
+    }
     pub fn layer(&self, key: &str) -> Option<&Arc<Part>> {
         self.layers.get(key)
     }
@@ -422,6 +427,7 @@ impl MobTypes {
         let bytes = fs::read(root.join("entity-types.json"))?;
         let types: Value = serde_json::from_slice(&bytes)?;
         let exact = exact_attributes(&bytes);
+        let item_templates = Arc::new(crate::items::load_item_templates(root));
         let models: Value = serde_json::from_slice(&fs::read(root.join("entity-models.json"))?)?;
         let item_tags = crate::items::load_tags(root, "item").unwrap_or_default();
         sulfur_cube::load_archetype_items(&item_tags);
@@ -466,6 +472,7 @@ impl MobTypes {
             out.insert(
                 id.clone(),
                 MobType {
+                    item_templates: Arc::clone(&item_templates),
                     species: def.species,
                     width: t["width"].as_f64().unwrap_or(0.6),
                     height: t["height"].as_f64().unwrap_or(1.8),
@@ -2906,6 +2913,7 @@ mod sensor_scan_tests {
 
     pub(super) fn kind() -> Arc<MobType> {
         Arc::new(MobType {
+            item_templates: Default::default(),
             id: "minecraft:cow".into(),
             species: Species::Cow,
             width: 0.9,

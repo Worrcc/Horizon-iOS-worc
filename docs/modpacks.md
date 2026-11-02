@@ -219,8 +219,74 @@ properties and shapes the new block takes, and overrides what differs:
 Most decoration and resource blocks are vanilla classes with other numbers: Macaw's doors are
 `DoorBlock`s, XTones are full cubes, ore sets are `DropExperienceBlock`s. So templates cover the
 data tier without code. Templates also give mod blocks every behaviour Horizon already
-implements and the harnesses already check. Items work the same way (`"template":
-"minecraft:diamond"`, overriding `max_stack_size`, `rarity` and so on).
+implements and the harnesses already check.
+
+Items copy their vanilla template's default components and item-tag memberships. The original
+item declaration supported only `template`, root-level `max_stack_size` (1–99) and `rarity`
+(`common`, `uncommon`, `rare`, `epic`), **not** arbitrary item `properties`. An armor/tool
+vanilla template already supplied its slot, attributes, mining rules, durability, enchantability,
+repair ingredient and fire resistance. Charged templates now also select the vanilla bow,
+crossbow or trident use/charge/release path on the client and server, while retaining the
+content item's id, model, stack data and durability (including thrown trident pickup).
+
+Declarations additionally accept typed `properties`, `armor` or `tool` overrides:
+
+```json
+{
+  "template": "minecraft:iron_helmet",
+  "armor": {
+    "slot": "head", "defense": 7, "toughness": 6, "knockback_resistance": 0.1,
+    "durability": 1760, "texture": "ruby:metal"
+  },
+  "properties": { "enchantability": 30, "repair_item": "ruby:ingot", "fire_resistant": true }
+}
+```
+
+`armor.slot` is `head`, `chest`, `legs` or `feet`; durability is the final value for that
+piece, not a material multiplier. Defense, toughness and knockback resistance become slotted
+`attribute_modifiers`; `equippable` provides wearing, swapping and damage on hurt. `texture`
+is an optional equipment **asset id**: `ruby:metal` names `assets/ruby/equipment/metal.json`.
+Like vanilla 26.3 equipment assets, that file declares, for example,
+`{"layers":{"humanoid":[{"texture":"ruby:metal"}],"humanoid_leggings":[{"texture":"ruby:metal"}]}}`.
+The PNGs are `assets/ruby/textures/entity/equipment/humanoid/metal.png` and
+`.../humanoid_leggings/metal.png`; leggings use the second layer. Nested asset names and mod
+texture namespaces work for players and armor stands. This uses vanilla humanoid geometry;
+custom Java armor geometry requires a separate model implementation.
+
+```json
+{
+  "template": "minecraft:iron_pickaxe",
+  "tool": {
+    "kind": "pickaxe", "attack_damage": 5, "attack_speed": -2.8,
+    "mining_speed": 8, "durability": 1561,
+    "incorrect_blocks_for_drops": "minecraft:incorrect_for_diamond_tool",
+    "enchantability": 10, "repair_item": "minecraft:diamond"
+  }
+}
+```
+
+`tool.kind` is `sword`, `pickaxe`, `axe`, `shovel` or `hoe`. Attack values are the main-hand
+**modifier amounts**, excluding the player's base 1 damage and 4 attack speed. The incorrect
+blocks tag (optional `#` prefix) is the mining tier: its false drop rule precedes the kind's
+`minecraft:mineable/<kind>` rule. Mining speed may be zero. Swords retain vanilla's fixed
+cobweb/efficient mining rules; their material mining speed is unused, as in vanilla.
+The class's weapon wear, axe shield disabling and block transformers remain inherited.
+`armor` and `tool` are mutually exclusive; they use the matching vanilla template class or,
+for an old placeholder such as a stick, the corresponding iron armor/tool class.
+
+`properties` accepts `max_damage`, `max_stack_size`, `rarity`, `enchantability` (0 disables),
+`repair_item` (an item id or `#item_tag`), `fire_resistant` (true or false), and melee
+`attack_damage`/`attack_speed`. Unset values keep the template's components; properties override
+armor/tool values. A declared durability is a positive integer and implies stack size 1;
+conflicting declared stack sizes are rejected. Root-level legacy stack size and rarity still
+load; duplicates inside `properties` must agree. Fire resistance is vanilla's
+`damage_resistant` component with `#minecraft:is_fire`.
+
+For example, `{"template":"minecraft:bow","properties":{"max_damage":584}}` draws and
+releases vanilla arrows. `minecraft:crossbow` charges, stores ammunition and fires it on the
+next use; `minecraft:trident` charges and throws the original stack, with its normal
+Riptide/Loyalty/Channeling handling. This does not add a WASM item-release event or suppress
+vanilla projectiles; a server mod implementing its own shot must account for the template's shot.
 
 How the game loads them, without touching vanilla's path:
 

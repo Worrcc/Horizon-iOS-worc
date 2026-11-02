@@ -117,6 +117,55 @@ struct ItemFile {
     template: String,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    #[serde(default)]
+    properties: ItemProperties,
+    armor: Option<Armor>,
+    tool: Option<Tool>,
+}
+
+/// Typed component overrides; omitted values retain the template's components.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ItemProperties {
+    pub max_damage: Option<u32>,
+    pub max_stack_size: Option<u8>,
+    pub rarity: Option<Rarity>,
+    /// Zero removes enchantability.
+    pub enchantability: Option<u32>,
+    /// An item id, or an item tag prefixed with `#`.
+    pub repair_item: Option<String>,
+    pub fire_resistant: Option<bool>,
+    pub attack_damage: Option<f64>,
+    pub attack_speed: Option<f64>,
+}
+
+/// Armor components applied after copying the vanilla template.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Armor {
+    pub slot: String,
+    pub defense: f64,
+    pub toughness: f64,
+    #[serde(default)]
+    pub knockback_resistance: f64,
+    pub durability: u32,
+    /// Equipment layer id, resolved under `textures/entity/equipment/`.
+    pub texture: Option<String>,
+}
+
+/// Tool components applied after copying the vanilla template.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Tool {
+    pub kind: String,
+    pub attack_damage: f64,
+    pub attack_speed: f64,
+    pub mining_speed: f64,
+    pub durability: u32,
+    /// Block tag defining blocks this tier cannot harvest; `#` is optional.
+    pub incorrect_blocks_for_drops: String,
+    pub enchantability: u32,
+    pub repair_item: String,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -128,6 +177,141 @@ pub struct Item {
     pub template: String,
     pub max_stack_size: Option<u8>,
     pub rarity: Option<Rarity>,
+    pub properties: ItemProperties,
+    pub armor: Option<Armor>,
+    pub tool: Option<Tool>,
+}
+
+fn resource_id(id: &str) -> bool {
+    id.len() <= 32767
+        && id.split_once(':').is_some_and(|(ns, path)| {
+            !ns.is_empty()
+                && ns
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
+                && check_path(&format!("assets/{ns}/{path}")).is_ok()
+        })
+}
+
+fn item_or_tag(id: &str) -> bool {
+    resource_id(id.strip_prefix('#').unwrap_or(id))
+}
+
+fn check_item(file: &ItemFile, namespaces: &[String]) -> Result<(), String> {
+    if !vanilla_id(&file.template) {
+        return Err(format!(
+            "template {:?} is not a vanilla item (minecraft:...)",
+            file.template
+        ));
+    }
+    let properties = &file.properties;
+    if file
+        .max_stack_size
+        .zip(properties.max_stack_size)
+        .is_some_and(|(a, b)| a != b)
+        || file
+            .rarity
+            .zip(properties.rarity)
+            .is_some_and(|(a, b)| a != b)
+    {
+        return Err("legacy max_stack_size/rarity contradict properties".into());
+    }
+    let stack_size = properties.max_stack_size.or(file.max_stack_size);
+    if stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
+        return Err("max_stack_size is 1 to 99".into());
+    }
+    if file.armor.is_some() && file.tool.is_some() {
+        return Err("armor and tool are mutually exclusive".into());
+    }
+    if stack_size.is_some_and(|n| n > 1)
+        && (properties.max_damage.is_some() || file.armor.is_some() || file.tool.is_some())
+    {
+        return Err("items with durability require max_stack_size 1".into());
+    }
+    let durability = |n: u32| {
+        if n == 0 || n > i32::MAX as u32 {
+            Err("durability/max_damage is 1 to 2147483647".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    let enchantability = |n: u32| {
+        if n > i32::MAX as u32 {
+            Err("enchantability is 0 to 2147483647".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    let damage = |n: f64| n.is_finite() && (0.0..=2048.0).contains(&n);
+    let speed = |n: f64| n.is_finite() && n > -4.0 && n <= 1024.0;
+    if let Some(n) = properties.max_damage {
+        durability(n)?;
+    }
+    if let Some(n) = properties.enchantability {
+        enchantability(n)?;
+    }
+    if properties
+        .repair_item
+        .as_deref()
+        .is_some_and(|id| !item_or_tag(id))
+    {
+        return Err("repair_item is a resource id or #item_tag".into());
+    }
+    if properties.attack_damage.is_some_and(|n| !damage(n)) {
+        return Err("attack_damage is finite and 0 to 2048".into());
+    }
+    if properties.attack_speed.is_some_and(|n| !speed(n)) {
+        return Err("attack_speed is finite, more than -4 and at most 1024".into());
+    }
+    if let Some(armor) = &file.armor {
+        if !["head", "chest", "legs", "feet"].contains(&armor.slot.as_str()) {
+            return Err("armor slot is head, chest, legs or feet".into());
+        }
+        for (name, n) in [("defense", armor.defense), ("toughness", armor.toughness)] {
+            if !n.is_finite() || n < 0.0 {
+                return Err(format!("armor {name} is finite and nonnegative"));
+            }
+        }
+        if !armor.knockback_resistance.is_finite()
+            || !(0.0..=1.0).contains(&armor.knockback_resistance)
+        {
+            return Err("armor knockback_resistance is 0 to 1".into());
+        }
+        durability(armor.durability)?;
+        if let Some(texture) = &armor.texture {
+            let owned = texture.split_once(':').is_some_and(|(ns, _)| {
+                ns == "minecraft" || namespaces.iter().any(|owned| owned == ns)
+            });
+            if !resource_id(texture) || !owned {
+                return Err(
+                    "armor texture is a resource id in minecraft or the mod's namespaces".into(),
+                );
+            }
+        }
+    }
+    if let Some(tool) = &file.tool {
+        if !["sword", "pickaxe", "axe", "shovel", "hoe"].contains(&tool.kind.as_str()) {
+            return Err("tool kind is sword, pickaxe, axe, shovel or hoe".into());
+        }
+        if !damage(tool.attack_damage) {
+            return Err("tool attack_damage is finite and 0 to 2048".into());
+        }
+        if !speed(tool.attack_speed) {
+            return Err("tool attack_speed is finite, more than -4 and at most 1024".into());
+        }
+        if !tool.mining_speed.is_finite() || tool.mining_speed < 0.0 {
+            return Err("tool mining_speed is finite and nonnegative".into());
+        }
+        durability(tool.durability)?;
+        enchantability(tool.enchantability)?;
+        if !item_or_tag(&tool.incorrect_blocks_for_drops) {
+            return Err("tool incorrect_blocks_for_drops is a block tag resource id".into());
+        }
+        if !item_or_tag(&tool.repair_item) {
+            return Err("tool repair_item is a resource id or #item_tag".into());
+        }
+    }
+    Ok(())
 }
 
 /// The attributes an entity may set, vanilla's names without `minecraft:`.
@@ -520,23 +704,18 @@ impl Content {
         for (item, name) in items {
             let file: ItemFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
-            if !vanilla_id(&file.template) {
-                return Err(format!(
-                    "{name}: template {:?} is not a vanilla item (minecraft:...)",
-                    file.template
-                ));
-            }
-            if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
-                return Err(format!("{name}: max_stack_size is 1 to 99"));
-            }
+            check_item(&file, &self.namespaces).map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.clone()) {
                 return Err(format!("{name}: {item} is also a block's item"));
             }
             self.items.push(Item {
                 id: item,
                 template: file.template,
-                max_stack_size: file.max_stack_size,
-                rarity: file.rarity,
+                max_stack_size: file.properties.max_stack_size.or(file.max_stack_size),
+                rarity: file.properties.rarity.or(file.rarity),
+                properties: file.properties,
+                armor: file.armor,
+                tool: file.tool,
             });
         }
         for (entity, name) in entities {
@@ -701,6 +880,188 @@ capabilities = ["registries"]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
         assert_eq!(content.items[0].rarity, Some(Rarity::Uncommon));
+    }
+
+    #[test]
+    fn item_equipment_and_properties_round_trip() {
+        let armor = br##"{"template":"minecraft:stick","properties":{
+            "max_stack_size":1,"rarity":"epic","enchantability":25,
+            "repair_item":"#ruby:ingots","fire_resistant":true},
+            "armor":{"slot":"head","defense":6,"toughness":3,
+            "knockback_resistance":0.1,"durability":800,"texture":"ruby:dragon"}}"##;
+        let tool = br#"{"template":"minecraft:iron_pickaxe","tool":{
+            "kind":"pickaxe","attack_damage":6,"attack_speed":-2.8,
+            "mining_speed":9,"durability":1800,
+            "incorrect_blocks_for_drops":"minecraft:incorrect_for_diamond_tool",
+            "enchantability":0,"repair_item":"ruby:ingot"}}"#;
+        let bow = br#"{"template":"minecraft:bow","properties":{"max_damage":500,
+            "attack_damage":4,"attack_speed":-2}}"#;
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/item/helmet.json", armor),
+            ("data/ruby/horizon/item/pickaxe.json", tool),
+            ("data/ruby/horizon/item/bow.json", bow),
+        ];
+        let content = hmod("item-equipment", MANIFEST_TEXT, files).unwrap();
+        let bow = &content.items[0];
+        assert_eq!(bow.template, "minecraft:bow");
+        assert_eq!(bow.properties.max_damage, Some(500));
+        assert_eq!(bow.properties.attack_damage, Some(4.0));
+        let helmet = &content.items[1];
+        assert_eq!(helmet.max_stack_size, Some(1));
+        assert_eq!(helmet.rarity, Some(Rarity::Epic));
+        assert_eq!(helmet.properties.fire_resistant, Some(true));
+        assert_eq!(helmet.armor.as_ref().unwrap().slot, "head");
+        assert_eq!(
+            helmet.armor.as_ref().unwrap().texture.as_deref(),
+            Some("ruby:dragon")
+        );
+        let tool = content.items[2].tool.as_ref().unwrap();
+        assert_eq!(tool.kind, "pickaxe");
+        assert_eq!(tool.attack_speed, -2.8);
+        assert_eq!(tool.enchantability, 0);
+    }
+
+    #[test]
+    fn item_properties_keep_legacy_fields_and_reject_contradictions() {
+        let parse = |json: &str| -> Result<Content, String> {
+            hmod(
+                "item-legacy",
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/item/a.json", json.as_bytes())],
+            )
+        };
+        let old =
+            parse(r#"{"template":"minecraft:stick","max_stack_size":16,"rarity":"rare"}"#).unwrap();
+        assert_eq!(old.items[0].max_stack_size, Some(16));
+        assert_eq!(old.items[0].rarity, Some(Rarity::Rare));
+        assert_eq!(old.items[0].properties, ItemProperties::default());
+        parse(r#"{"template":"minecraft:stick","max_stack_size":16,"properties":{"max_stack_size":16}}"#).unwrap();
+        for json in [
+            r#"{"template":"minecraft:stick","max_stack_size":16,"properties":{"max_stack_size":32}}"#,
+            r#"{"template":"minecraft:stick","rarity":"rare","properties":{"rarity":"epic"}}"#,
+        ] {
+            assert!(parse(json).unwrap_err().contains("contradict"));
+        }
+    }
+
+    #[test]
+    fn item_properties_reject_invalid_components() {
+        let valid = serde_json::json!({
+            "template": "minecraft:stick",
+            "armor": {"slot": "legs", "defense": 5, "toughness": 2,
+                "durability": 600, "texture": "minecraft:iron"}
+        });
+        let cases = [
+            ("/armor/slot", serde_json::json!("hand"), "slot"),
+            ("/armor/defense", serde_json::json!(-1), "defense"),
+            ("/armor/toughness", serde_json::json!(-1), "toughness"),
+            ("/armor/durability", serde_json::json!(0), "durability"),
+            (
+                "/armor/durability",
+                serde_json::json!(2147483648u32),
+                "durability",
+            ),
+            ("/armor/texture", serde_json::json!("other:iron"), "texture"),
+            (
+                "/armor/texture",
+                serde_json::json!("ruby:../iron"),
+                "texture",
+            ),
+        ];
+        let namespaces = vec!["ruby".to_owned()];
+        for (pointer, value, error) in cases {
+            let mut json = valid.clone();
+            *json.pointer_mut(pointer).unwrap() = value;
+            let file: ItemFile = serde_json::from_value(json).unwrap();
+            assert!(
+                check_item(&file, &namespaces).unwrap_err().contains(error),
+                "{pointer}"
+            );
+        }
+        let mut file: ItemFile = serde_json::from_value(valid).unwrap();
+        file.armor.as_mut().unwrap().knockback_resistance = 1.1;
+        assert!(
+            check_item(&file, &namespaces)
+                .unwrap_err()
+                .contains("knockback")
+        );
+        file.armor.as_mut().unwrap().knockback_resistance = 0.0;
+        file.properties.max_stack_size = Some(2);
+        assert!(
+            check_item(&file, &namespaces)
+                .unwrap_err()
+                .contains("max_stack_size 1")
+        );
+        for properties in [
+            serde_json::json!({"max_damage": 0}),
+            serde_json::json!({"max_damage": 2147483648u32}),
+            serde_json::json!({"max_damage": 10,"max_stack_size":2}),
+            serde_json::json!({"enchantability":2147483648u32}),
+            serde_json::json!({"repair_item":"ruby:../ingot"}),
+            serde_json::json!({"attack_damage":-1}),
+            serde_json::json!({"attack_speed":-4}),
+        ] {
+            let file: ItemFile = serde_json::from_value(serde_json::json!({
+                "template":"minecraft:bow", "properties":properties
+            }))
+            .unwrap();
+            assert!(check_item(&file, &namespaces).is_err());
+        }
+        let mut file: ItemFile = serde_json::from_str(r#"{"template":"minecraft:stick"}"#).unwrap();
+        file.properties.attack_damage = Some(f64::NAN);
+        assert!(check_item(&file, &namespaces).is_err());
+        assert!(
+            serde_json::from_str::<ItemFile>(
+                r#"{"template":"minecraft:stick","properties":{"unknown":1}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn item_tools_validate_stats_tags_and_exclusivity() {
+        let base = serde_json::json!({"template":"minecraft:stick","tool":{
+            "kind":"sword","attack_damage":7,"attack_speed":-2.4,
+            "mining_speed":8,"durability":1000,"incorrect_blocks_for_drops":"#minecraft:incorrect_for_iron_tool",
+            "enchantability":10,"repair_item":"#c:ingots/silver"}});
+        let namespaces = vec!["ruby".to_owned()];
+        let file: ItemFile = serde_json::from_value(base.clone()).unwrap();
+        check_item(&file, &namespaces).unwrap();
+        let mut zero_stats = base.clone();
+        zero_stats["tool"]["mining_speed"] = serde_json::json!(0);
+        zero_stats["tool"]["enchantability"] = serde_json::json!(0);
+        let file: ItemFile = serde_json::from_value(zero_stats).unwrap();
+        check_item(&file, &namespaces).unwrap();
+        for (field, value) in [
+            ("kind", serde_json::json!("drill")),
+            ("attack_damage", serde_json::json!(-1)),
+            ("attack_speed", serde_json::json!(-4)),
+            ("mining_speed", serde_json::json!(-1)),
+            ("durability", serde_json::json!(0)),
+            ("enchantability", serde_json::json!(2147483648u32)),
+            ("repair_item", serde_json::json!("ruby:../ingot")),
+            (
+                "incorrect_blocks_for_drops",
+                serde_json::json!("minecraft/iron"),
+            ),
+        ] {
+            let mut json = base.clone();
+            json["tool"][field] = value;
+            let file: ItemFile = serde_json::from_value(json).unwrap();
+            assert!(
+                check_item(&file, &namespaces).unwrap_err().contains(field),
+                "{field}"
+            );
+        }
+        let mut both = base;
+        both["armor"] =
+            serde_json::json!({"slot":"head","defense":1,"toughness":0,"durability":10});
+        let file: ItemFile = serde_json::from_value(both).unwrap();
+        assert!(
+            check_item(&file, &namespaces)
+                .unwrap_err()
+                .contains("mutually exclusive")
+        );
     }
 
     const ENTITY: &[u8] = br#"{"template": "minecraft:zombie", "width": 1.2, "height": 2.4,

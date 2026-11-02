@@ -126,6 +126,7 @@ impl CameraType {
 pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
     horizon_client::mobs::load_model(root, "minecraft:player#main").map(|model| {
         Arc::new(MobType {
+            item_templates: Arc::new(horizon_client::items::load_item_templates(root)),
             id: "minecraft:player".into(),
             // Players render as a humanoid; the species only drives local AI.
             species: horizon_client::mobs::Species::Zombie,

@@ -375,13 +375,17 @@ impl Game<'_> {
     /// `evaluateWhichHandsToRender`: which of the main and off hand show.
     pub(super) fn hands_to_render(&self) -> [bool; 2] {
         let held = |slot| {
-            self.stack_in(slot)
-                .map(|s: &ItemStack| (&*s.item, s.data().is_some_and(|d| !d.charged.is_empty())))
+            self.stack_in(slot).map(|s: &ItemStack| {
+                (
+                    self.res.items().behavior(&s.item),
+                    s.data().is_some_and(|d| !d.charged.is_empty()),
+                )
+            })
         };
         let using = self.used_hand().zip(
             self.using
                 .and_then(|(slot, _)| self.stack_in(slot))
-                .map(|s| &*s.item),
+                .map(|s| self.res.items().behavior(&s.item)),
         );
         horizon_client::first_person::hands_to_render(
             [held(self.selected), held(super::shield::OFFHAND_SLOT)],
@@ -519,11 +523,11 @@ impl HandWorld for GameHands<'_, '_> {
         }
         // Item.canDestroyBlock: swords, tridents and maces cannot break
         // blocks in creative.
-        let held = self.game.held().map(|s| s.item.to_string());
-        if self.game.creative
-            && held.is_some_and(|i| {
-                i.ends_with("_sword") || i == "minecraft:trident" || i == "minecraft:mace"
-            })
+        if !self
+            .game
+            .res
+            .items()
+            .can_destroy_block(self.game.held(), self.game.creative)
         {
             return false;
         }
