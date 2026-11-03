@@ -360,7 +360,7 @@ fn content_biome_registry_and_climate_source() {
         climate::{ClimateSampler, TargetPoint},
     };
     use serde_json::{Value, json};
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     let scratch =
         std::env::temp_dir().join(format!("horizon-content-biome-{}", std::process::id()));
@@ -381,6 +381,13 @@ fn content_biome_registry_and_climate_source() {
     );
     write("items.json", json!({}));
     write("horizon-resources.json", json!({}));
+    write(
+        "registries.json",
+        json!({
+            "minecraft:item":{"entries":{"minecraft:air":{"protocol_id":0}}},
+            "minecraft:block":{"entries":{"minecraft:air":{"protocol_id":0}}}
+        }),
+    );
     let vanilla = json!({"temperature":0.5,"downfall":0.5,"has_precipitation":true,
         "effects":{"water_color":4159204},"carvers":[],"features":[]});
     write("data/minecraft/worldgen/biome/plains.json", vanilla.clone());
@@ -430,6 +437,14 @@ fn content_biome_registry_and_climate_source() {
                 "data/aaa/tags/worldgen/biome/frost.json",
                 r#"{"values":["aaa:groves/frost","aaa:missing"]}"#,
             ),
+            (
+                "data/c/tags/worldgen/biome/cold.json",
+                r##"{"values":["#aaa:frost"]}"##,
+            ),
+            (
+                "data/minecraft/tags/worldgen/biome/cold.json",
+                r##"{"values":["#c:cold","minecraft:plains"]}"##,
+            ),
         ],
     );
     let root = resource_root(&base, &[m], &scratch.join("cache")).unwrap();
@@ -477,6 +492,96 @@ fn content_biome_registry_and_climate_source() {
         ("minecraft:sheep", 7, 2, 2, true)
     );
     assert_eq!(frost.spawn_costs["minecraft:sheep"].charge, 0.2);
+    // Configuration uses the same overlay for integrated, LAN and dedicated
+    // servers. Decode actual packet bytes as the client does in net.rs.
+    use crate::lan::{chunks::ChunkEncoder, data::SyncData};
+    use horizon_protocol::{
+        buf::Reader,
+        packets::configuration::{Clientbound, UpdateTags},
+        registry::{Dynamic, ceil_log2},
+    };
+    let sync = SyncData::load(&root).unwrap();
+    let registry = "minecraft:worldgen/biome";
+    let before_sync = SyncData::load(&base).unwrap();
+    let frost_id = sync.id(registry, &frost.name).unwrap();
+    assert_eq!(frost_id, 1);
+    assert_eq!(sync.id(registry, "minecraft:plains"), Some(0));
+    assert_eq!(before_sync.id(registry, "minecraft:plains"), Some(0));
+    let names: Vec<_> = biomes.list.iter().map(|b| b.name.clone()).collect();
+    let encoder = ChunkEncoder::new(
+        [(Arc::<str>::from("minecraft:air"), false)],
+        &sync.builtin,
+        // Deliberately use a different internal ordering to test name mapping.
+        &[frost.name.clone(), "minecraft:plains".into()],
+        &names,
+    );
+    let mut chunk = crate::chunk::Chunk::empty(0, 0);
+    Arc::make_mut(&mut chunk.sections[0]).biomes.set(1, 1);
+    for known_pack in [false, true] {
+        let mut received = Dynamic::default();
+        for packet in sync.registry_packets(known_pack) {
+            let bytes = Clientbound::RegistryData(packet).encode();
+            let mut reader = Reader::new(&bytes);
+            let id = reader.varint().unwrap();
+            let Clientbound::RegistryData(packet) = Clientbound::decode(id, reader.rest()).unwrap()
+            else {
+                panic!("expected registry data")
+            };
+            received.add(packet);
+        }
+        assert_eq!(received.id(registry, &frost.name), Some(frost_id));
+        assert_eq!(received.name(registry, frost_id), Some(frost.name.as_str()));
+        assert_eq!(
+            received.data(registry, frost_id),
+            Some(&crate::lan::data::json_to_nbt(&biome))
+        );
+        assert_eq!(received.data(registry, 0).is_none(), known_pack);
+        let bytes = Clientbound::UpdateTags(sync.tags.clone()).encode();
+        let mut reader = Reader::new(&bytes);
+        let id = reader.varint().unwrap();
+        let Clientbound::UpdateTags(UpdateTags { registries }) =
+            Clientbound::decode(id, reader.rest()).unwrap()
+        else {
+            panic!("expected tags")
+        };
+        let tags = &registries
+            .iter()
+            .find(|r| r.registry == registry)
+            .unwrap()
+            .tags;
+        for name in ["aaa:frost", "c:cold", "minecraft:cold"] {
+            let tag = tags.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(tag.ids[0], frost_id);
+            assert_eq!(
+                received.name(registry, tag.ids[0]),
+                Some(frost.name.as_str())
+            );
+            if name == "minecraft:cold" {
+                assert_eq!(tag.ids, [frost_id, 0]);
+            }
+        }
+        let packet = encoder.encode(&chunk, &HashMap::new());
+        let mut reader = Reader::new(&packet.chunk.buffer);
+        let section = horizon_protocol::chunk::Section::read(
+            &mut reader,
+            16,
+            ceil_log2(received.len(registry)),
+        )
+        .unwrap();
+        for cell in 0..64 {
+            let id = section.biomes.get(cell);
+            let name = received.name(registry, id).unwrap();
+            assert_eq!(
+                name,
+                if cell == 1 {
+                    "minecraft:plains"
+                } else {
+                    &frost.name
+                }
+            );
+            assert_eq!(biomes.get(biomes.id(name)).name, name);
+        }
+    }
     let catalog = BiomeSourceCatalog::new(
         &bundled.keys().cloned().collect(),
         &BTreeMap::new(),

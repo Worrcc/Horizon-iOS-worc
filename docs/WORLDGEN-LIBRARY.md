@@ -175,9 +175,9 @@ under the requested offline-only workflow.
    prove package → overlay → client registry, properties/spawns, climate-point
    selection, vanilla winners elsewhere, no-declaration behaviour and malformed
    declarations. No new terrain settings or mod hooks.
-3. **Transport and generation proof.** Fix the shared configuration registry loader
-   described below, then with private prepared data verify actual generated
-   quart palettes and features/carvers for a content biome, both single-player
+3. **Transport and generation proof.** The shared configuration registry loader
+   now includes content biomes as described below. With private prepared data verify
+   actual generated quart palettes and features/carvers for a content biome, both single-player
    paths, dedicated/LAN, colours/fog and natural spawning. Run biome-source,
    generation, placement and natural-spawn parity harnesses with no declarations.
 4. **Persistence and distribution.** Prove saved biome names,
@@ -193,7 +193,7 @@ the numeric phone budget before treating the data contract as stable. The propos
 defaults above allow the minimal slice to proceed without those policy decisions.
 
 
-## Implemented slice and remaining barrier
+## Implemented slice and registry transport
 
 Stage 2 completes registry/source loading, with two new functions and tests:
 
@@ -209,19 +209,28 @@ Stage 2 completes registry/source loading, with two new functions and tests:
   The content overlay now bundles biomes and additions and retains their tag
   references; fog-distance lookup uses the resource's actual namespace.
 
-This is a tested **library slice**, not complete player-facing biome support.
-Inspection found a concrete next barrier: `SyncData::load` enumerates only
-`data/minecraft` (`crates/horizon-client/src/lan/data.rs:130`, `:136`), and
-`SectionCoder` maps unknown biome names to network ID zero
-(`crates/horizon-client/src/lan/chunks.rs:419`). This affects the default
-single-player server thread as well as LAN/dedicated servers. The next change must
-append content biome entries deterministically to the synchronized registry and
-send their data even when the peer knows the vanilla core pack
-(`crates/horizon-client/src/lan/data.rs:179`). It must test client decoding, palette
-IDs and tag translation with and without a known core pack. Do not claim that this
-slice makes mod biome colours appear in the default playing path. Expanding into
-registry transport is left to a separate tested change under the brief's allowance
-to stop after a complete part.
+`SyncData::load` in `crates/horizon-client/src/lan/data.rs` now appends owned
+content biomes after the unchanged vanilla entries, sorting namespace and nested
+resource path deterministically. The existing configuration `RegistryData` list
+carries these entries; no packet type or wire layout changes. `registry_packets`
+omits vanilla payloads when the core pack is known but always sends content data.
+Tag loading includes owned and convention namespaces and resolves cross-namespace
+references against that same network registry.
+
+The existing `lan/conn.rs` configuration sender and `net.rs` receiver feed
+`Dynamic::add`; `game/remote.rs::set_registries` maps received names to local biome
+IDs. `lan/chunks.rs::ChunkEncoder::new` likewise maps local IDs to network IDs by
+name. Both integrated single-player and LAN/dedicated servers share this path.
+Peers still need the content mod locally for biome properties and colours;
+automatic mod distribution is outside this change.
+
+The resource-free content test now decodes configuration packet bytes, checks
+content NBT, tag IDs and a mixed chunk biome palette with both known-pack modes.
+A second native test checks stable vanilla IDs, sorted nested content names,
+namespace ownership, and identical packets with an empty content namespace.
+This establishes registry transport, not actual generated-world or phone proof.
+The remaining generation, appearance, spawning and persistence acceptance above
+still requires private prepared resources and reviewer testing.
 
 Tests use original, synthetic biome/table/PNG fixtures, without prepared resources:
 `content_climate_point_and_vanilla_elsewhere` checks point selection, unchanged
@@ -234,7 +243,7 @@ declarations. Existing `biome_data` and content-root tests provide regression
 coverage. Full biome codecs, generated-world parity, game play and iOS are not
 established by these tests.
 
-Validation completed offline with `CARGO_TARGET_DIR=$PWD/.local/target-wglib`:
+Stage-2 validation completed offline with `CARGO_TARGET_DIR=$PWD/.local/target-wglib`:
 
 | Check | Result |
 |---|---|
@@ -252,3 +261,28 @@ return early without them; the five full-root tests remain ignored. No game,
 launcher, Java oracle, iOS build, phone measurement, commit or push was performed.
 The final no-commit rule in the brief takes precedence over its earlier conditional
 commit instruction.
+
+Transport follow-up validation, using the same offline target directory:
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy -p horizon-client -p horizon-mods -p horizon-world --all-targets --offline -- -D warnings` | Passed |
+| `cargo test --offline -p horizon-client --lib content_biome` | 2 passed |
+| `cargo test --offline -p horizon-client --lib --bins --tests` | Library: 1,132 passed, 33 ignored, 9 failed (eight socket permission errors and one GPU depth-texture backend error); Cargo stopped before the remaining targets |
+| Same client command with those nine tests excluded using `--skip` | 1,296 passed, 36 ignored, 9 filtered out across library, binaries and integration targets |
+| `cargo test --offline -p horizon-client --doc` | Passed, 0 tests |
+| `cargo test --offline -p horizon-world --test biome_data` | 2 passed |
+| `cargo test --offline -p horizon-world --lib content_climate_point_and_vanilla_elsewhere` | 1 passed |
+| `python3 tools/check_public_tree.py` | Passed |
+
+All client biome, fog and content tests in the ordinary run passed. Tests requiring
+prepared resources may return early, and full-root tests remain ignored; no
+prepared resources are present in this worktree. The ignored local fixture at
+`.local/test-biome-mod/` builds as `wgtest.hmod` with the requested external
+`cargo-horizon-mod` executable, and its `horizon-mod check` passes. Its biome is
+`wgtest:glass_flats`; the modern 26.3 attributes supply the colour/spawn data.
+Its README and `run-generation.sh` give the reviewer both single-player paths
+with fresh scratch homes. Actual desktop generation, LAN/dedicated sessions,
+vanilla oracle parity, save/reload and iOS remain unverified. No game or launcher
+was started, and no commit or push was made for this follow-up.
