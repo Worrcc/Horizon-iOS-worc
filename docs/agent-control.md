@@ -201,6 +201,8 @@ turn the switch off.
 
   The message names what to do next ("no world open; use: open WORLD").
 - **Shapes are shared:**
+  - `state.biome` is the biome resource name at the player's block position,
+    or `null` without a player or a loaded chunk (also on server clients);
   - a position is `[x, y, z]`;
   - a block is `{"pos", "block", "state", "loaded"}`;
   - an item stack is `{"item", "count", "damage"?, "components"?}`;

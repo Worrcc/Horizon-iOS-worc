@@ -86,6 +86,47 @@ impl BiomeSourceDefinition {
     }
 }
 impl ResolvedBiomeSource {
+    /// The locate query samples the same source as chunk generation, including
+    /// unloaded terrain; it does not inspect the resident chunk cache.
+    pub(crate) fn find_closest_biome(
+        &self,
+        climate: &ClimateSampler,
+        erosion: &dyn DensitySampler,
+        context: &mut SamplerContext,
+        search: &crate::worldgen::generator::BiomeSearch<'_>,
+    ) -> Option<(String, [i32; 3])> {
+        // BiomeSource.findClosestBiome3d.
+        let candidates: BTreeSet<&str> = self
+            .possible_biomes()
+            .into_iter()
+            .filter(|name| (search.allowed)(name))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let mut resolver = self.resolver(climate, erosion);
+        let ys = super::super::generator::out_from_origin(
+            search.origin[1],
+            search.min_y + 1,
+            search.max_y + 1,
+            search.vertical,
+        );
+        let radius = search.radius.div_euclid(search.horizontal);
+        for [sx, sz] in super::super::generator::spiral_around(radius) {
+            let x = search.origin[0].wrapping_add(sx.wrapping_mul(search.horizontal));
+            let z = search.origin[2].wrapping_add(sz.wrapping_mul(search.horizontal));
+            for &y in &ys {
+                let quart = [x >> 2, y >> 2, z >> 2];
+                let Ok(name) = resolver.sample(context, quart) else {
+                    continue;
+                };
+                if candidates.contains(name) {
+                    return Some((name.to_owned(), [x, y, z]));
+                }
+            }
+        }
+        None
+    }
     pub fn possible_biomes(&self) -> BTreeSet<&str> {
         match self {
             Self::Fixed(source) => [source.biome.as_str()].into(),

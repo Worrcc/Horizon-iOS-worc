@@ -508,6 +508,62 @@ fn content_biome_registry_and_climate_source() {
     assert_eq!(sync.id(registry, "minecraft:plains"), Some(0));
     assert_eq!(before_sync.id(registry, "minecraft:plains"), Some(0));
     let names: Vec<_> = biomes.list.iter().map(|b| b.name.clone()).collect();
+    // An exported vanilla registry shadows the legacy `biomes` field. The
+    // game's refresh must replace that authoritative list as well, preserving
+    // local IDs (minecraft first even when a content namespace sorts earlier).
+    let mut commands = crate::command::Registries {
+        permission: 4,
+        ..Default::default()
+    };
+    let export = json!({"by_registry": {registry: {
+        "ids": ["minecraft:plains"], "tags": ["minecraft:cold"]
+    }}});
+    commands.fill_from_export(&export);
+    biomes.fill_command_registry(&mut commands);
+    commands.fill_from_export(&export);
+    assert_eq!(commands.ids(registry), names);
+    assert_eq!(commands.biomes, names);
+    assert_eq!(commands.tags(registry), ["minecraft:cold"]);
+    let dispatcher = crate::command::vanilla::dispatcher();
+    for command in [
+        "locate biome aaa:groves/frost",
+        "fillbiome ~ ~ ~ ~ ~ ~ aaa:groves/frost",
+        "execute if biome ~ ~ ~ aaa:groves/frost run say found",
+    ] {
+        dispatcher.parse(command, &commands).executable().unwrap();
+    }
+    assert!(
+        dispatcher
+            .parse("locate biome aaa:missing", &commands)
+            .executable()
+            .is_err()
+    );
+    let input = "locate biome aaa:";
+    let suggestions = dispatcher
+        .suggestions(&dispatcher.parse(input, &commands), input.len(), &commands)
+        .1;
+    assert!(suggestions.iter().any(|s| s.text == frost.name));
+    // State reads the loaded quart cell, including negative block coordinates,
+    // rather than guessing the biome from a fresh generator query.
+    use horizon_core::position::BlockPos;
+    let mut chunks = crate::chunk_map::ChunkMap::default();
+    assert_eq!(biomes.name_at(&chunks, BlockPos::new(-1, 64, -1)), None);
+    let mut stored = crate::chunk::Chunk::empty(-1, -1);
+    stored.set_biome_cell(
+        3,
+        (64 - crate::chunk::MIN_Y) >> 2,
+        3,
+        biomes.id(&frost.name),
+    );
+    chunks.insert((-1, -1), Arc::new(stored));
+    assert_eq!(
+        biomes.name_at(&chunks, BlockPos::new(-1, 64, -1)),
+        Some(frost.name.as_str())
+    );
+    assert_eq!(
+        biomes.name_at(&chunks, BlockPos::new(-5, 64, -1)),
+        Some("minecraft:plains")
+    );
     let encoder = ChunkEncoder::new(
         [(Arc::<str>::from("minecraft:air"), false)],
         &sync.builtin,

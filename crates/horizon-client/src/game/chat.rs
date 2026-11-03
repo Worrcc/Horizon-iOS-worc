@@ -352,7 +352,6 @@ impl Game<'_> {
         reg.effects.sort();
         reg.enchantments = list("data/minecraft/enchantment");
         reg.structures = list("data/minecraft/worldgen/structure");
-        reg.biomes = list("data/minecraft/worldgen/biome");
         reg.clocks = list("data/minecraft/world_clock");
         reg.dimensions = vec![
             "minecraft:overworld".into(),
@@ -406,6 +405,7 @@ impl Game<'_> {
             }
         }
         let reg = &mut self.ui.registries;
+        self.res.biomes().fill_command_registry(reg);
         reg.timelines = self.ui.timelines.keys().cloned().collect();
         reg.time_markers = self
             .ui

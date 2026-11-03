@@ -64,6 +64,111 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn content_depth_point_is_located_and_fills_chunk_biomes() {
+        use crate::worldgen::{
+            biome_chunk::BiomeChunk, climate::ClimateSampler, generator::BiomeSearch,
+        };
+        use horizon_core::{
+            density::{
+                ConstantSampler, DensitySampler, GradientSampler, SamplerContext, TilingMode,
+            },
+            geometry::Axis,
+            position::ChunkPos,
+        };
+        use std::sync::Arc;
+
+        let catalog = BiomeSourceCatalog::new(
+            &["minecraft:plains".into(), "wgtest:glass_flats".into()].into(),
+            &BTreeMap::new(),
+            &["minecraft:overworld".into()].into(),
+        )
+        .unwrap();
+        let mut coordinates = vec![[-20000, 20000]; 6];
+        coordinates[4] = [0, 0];
+        let presets = [(
+            "minecraft:overworld".into(),
+            json!([{
+                "coordinates": coordinates, "offset": 0, "biome": "minecraft:plains"
+            }])
+            .to_string(),
+        )]
+        .into();
+        // Match the local review mod: five broad ranges and one depth point.
+        let addition = json!({"type":"minecraft:multi_noise","horizon:preset":"minecraft:overworld",
+        "biomes":[{"biome":"wgtest:glass_flats","parameters":{
+            "temperature":[-2,2],"humidity":[-2,2],"continentalness":[-2,2],
+            "erosion":[-2,2],"depth":0.1,"weirdness":[-2,2],"offset":0
+        }}]});
+        let presets = catalog
+            .with_preset_additions(
+                presets,
+                &[("wgtest:glass_flats".into(), addition.to_string())].into(),
+            )
+            .unwrap();
+        let source = catalog
+            .decode(r#"{"type":"minecraft:multi_noise","preset":"minecraft:overworld"}"#)
+            .unwrap()
+            .resolve(&presets)
+            .unwrap();
+        assert!(source.possible_biomes().contains("wgtest:glass_flats"));
+        let mut fields: [Arc<dyn DensitySampler>; 6] =
+            std::array::from_fn(|_| Arc::new(ConstantSampler(0.)) as _);
+        fields[4] = Arc::new(GradientSampler::new(
+            Axis::X,
+            TilingMode::ClampToEdge,
+            0,
+            32,
+            0.,
+            0.1,
+        ));
+        let climate = ClimateSampler::new(fields);
+        let erosion = ConstantSampler(0.);
+        let search = BiomeSearch {
+            allowed: &|name| name == "wgtest:glass_flats",
+            origin: [0, 64, 0],
+            radius: 32,
+            horizontal: 32,
+            vertical: 64,
+            min_y: -64,
+            max_y: 319,
+        };
+        // Exercise the actual /locate scan, without a game or resident chunks.
+        let (name, pos) = source
+            .find_closest_biome(&climate, &erosion, &mut SamplerContext::cached(), &search)
+            .unwrap();
+        assert_eq!(name, "wgtest:glass_flats");
+        assert_eq!(pos, [32, 64, 0]);
+        let mut context = SamplerContext::cached();
+        let mut resolver = source.resolver(&climate, &erosion);
+        assert_eq!(
+            resolver.sample(&mut context, [0, 16, 0]).unwrap(),
+            "minecraft:plains"
+        );
+        assert_eq!(
+            resolver.sample(&mut context, pos.map(|c| c >> 2)).unwrap(),
+            name
+        );
+        let mut chunk = BiomeChunk::new(ChunkPos::new(2, 0), -64, 384, String::new()).unwrap();
+        chunk
+            .fill(-64, 319, |quart| {
+                resolver.sample(&mut context, quart).map(str::to_owned)
+            })
+            .unwrap();
+        assert_eq!(chunk.noise_biome(pos.map(|c| c >> 2)), &name);
+        assert!(chunk.section(0).unwrap().iter().all(|biome| biome == &name));
+        // An absent biome still yields no result.
+        let missing = BiomeSearch {
+            allowed: &|name| name == "wgtest:missing",
+            ..search
+        };
+        assert!(
+            source
+                .find_closest_biome(&climate, &erosion, &mut context, &missing)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn content_climate_point_and_vanilla_elsewhere() {
         let catalog = BiomeSourceCatalog::new(
             &[

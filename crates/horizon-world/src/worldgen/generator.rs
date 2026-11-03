@@ -1877,42 +1877,14 @@ where
         worker: &mut WorkerState,
         search: &BiomeSearch<'_>,
     ) -> Option<(String, [i32; 3])> {
-        // BiomeSource.findClosestBiome3d.
-        let candidates: BTreeSet<&str> = self
-            .source
-            .possible_biomes()
-            .into_iter()
-            .filter(|name| (search.allowed)(name))
-            .collect();
-        if candidates.is_empty() {
-            return None;
-        }
-        let mut resolver = self.source.resolver(
+        self.source.find_closest_biome(
             &self.climate,
             self.router.get(RouterField::Erosion).as_ref(),
-        );
-        let ys = out_from_origin(
-            search.origin[1],
-            search.min_y + 1,
-            search.max_y + 1,
-            search.vertical,
-        );
-        let radius = search.radius.div_euclid(search.horizontal);
-        for [sx, sz] in spiral_around(radius) {
-            let x = search.origin[0].wrapping_add(sx.wrapping_mul(search.horizontal));
-            let z = search.origin[2].wrapping_add(sz.wrapping_mul(search.horizontal));
-            for &y in &ys {
-                let quart = [x >> 2, y >> 2, z >> 2];
-                let Ok(name) = resolver.sample(&mut worker.carver_context, quart) else {
-                    continue;
-                };
-                if candidates.contains(name) {
-                    return Some((name.to_owned(), [x, y, z]));
-                }
-            }
-        }
-        None
+            &mut worker.carver_context,
+            search,
+        )
     }
+
     fn surface_sample(
         &self,
         worker: &mut WorkerState,

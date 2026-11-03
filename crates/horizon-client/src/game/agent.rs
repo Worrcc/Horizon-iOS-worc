@@ -503,6 +503,14 @@ impl Game<'_> {
                 None => self.level.name.clone(),
             }),
             "dimension": self.dim.id(),
+            "biome": self.player.as_ref().and_then(|p| self.res.biomes().name_at(
+                &self.world.chunks,
+                horizon_core::position::BlockPos::new(
+                    p.position.x.floor() as i32,
+                    p.position.y.floor() as i32,
+                    p.position.z.floor() as i32,
+                ),
+            )),
             "gamemode": format!("{:?}", self.mode).to_lowercase(),
             // The bed (its head) the player sleeps in.
             "sleeping": self.sleeping,

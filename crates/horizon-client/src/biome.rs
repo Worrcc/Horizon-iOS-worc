@@ -229,6 +229,23 @@ impl Biomes {
     pub fn get(&self, id: u16) -> &BiomeInfo {
         &self.list[usize::from(id).min(self.list.len() - 1)]
     }
+    /// Commands use the loaded registry's order and IDs, including content
+    /// biomes. Exported vanilla IDs otherwise take precedence over `biomes`.
+    pub fn fill_command_registry(&self, reg: &mut crate::command::Registries) {
+        reg.biomes = self.list.iter().map(|b| b.name.clone()).collect();
+        reg.by_registry
+            .entry("minecraft:worldgen/biome".into())
+            .or_default()
+            .ids = reg.biomes.clone();
+    }
+    /// The stored biome at a block, available on local and remote worlds alike.
+    /// Missing chunks have no readout rather than a guessed generator biome.
+    pub fn name_at(&self, chunks: &crate::chunk_map::ChunkMap, pos: BlockPos) -> Option<&str> {
+        let chunk = chunks.get(&(pos.x >> 4, pos.z >> 4))?;
+        self.list
+            .get(usize::from(chunk.biome(pos.x, pos.y, pos.z)))
+            .map(|b| b.name.as_str())
+    }
     pub fn grass(&self, id: u16, x: f64, z: f64) -> u32 {
         let b = self.get(id);
         match b.modifier {
