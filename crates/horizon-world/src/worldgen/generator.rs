@@ -415,6 +415,11 @@ impl GeneratorData {
         }
         let source_catalog =
             BiomeSourceCatalog::new(&biome_set, &biome_tags, &presets.keys().cloned().collect())?;
+        if let Some(additions) = read_optional_bundle(dir, "biome_source_additions")? {
+            presets = source_catalog
+                .with_preset_additions(presets, &additions)
+                .map_err(resource)?;
+        }
         let carvers = CarverCatalog::from_json(&read_bundle(dir, "carvers")?)?;
         let mut biome_names = Vec::new();
         let mut biome_ids = BTreeMap::new();

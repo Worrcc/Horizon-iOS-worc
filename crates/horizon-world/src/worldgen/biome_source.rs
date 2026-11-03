@@ -1,4 +1,5 @@
 //! Fixed, checkerboard and End biome-source queries. Registry codecs are separate.
+mod additions;
 mod codec;
 mod runtime;
 pub use codec::{BiomeSet, BiomeSourceCatalog, BiomeSourceDefinition};

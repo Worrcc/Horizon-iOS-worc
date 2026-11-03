@@ -350,6 +350,204 @@ fn no_content_keeps_the_base_root() {
     );
 }
 
+/// Original fixtures: a packaged biome reaches both resource consumers without
+/// needing prepared vanilla resources, code mods, a window or a network.
+#[test]
+fn content_biome_registry_and_climate_source() {
+    use horizon_core::density::{ConstantSampler, SamplerContext};
+    use horizon_world::worldgen::{
+        biome_source::{BiomeSourceCatalog, ResolvedBiomeSource},
+        climate::{ClimateSampler, TargetPoint},
+    };
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-content-biome-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    let write = |name: &str, value: Value| {
+        let path = base.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, value.to_string()).unwrap();
+    };
+    write(
+        "facts.json",
+        json!({"states":[["minecraft:air"]],"defaults":{"minecraft:air":0}}),
+    );
+    write(
+        "gameplay-facts.json",
+        json!({"states":[{"name":"minecraft:air","item":"minecraft:air"}]}),
+    );
+    write("items.json", json!({}));
+    write("horizon-resources.json", json!({}));
+    let vanilla = json!({"temperature":0.5,"downfall":0.5,"has_precipitation":true,
+        "effects":{"water_color":4159204},"carvers":[],"features":[]});
+    write("data/minecraft/worldgen/biome/plains.json", vanilla.clone());
+    write(
+        "worldgen/biomes.json",
+        json!({"minecraft:plains":vanilla.to_string()}),
+    );
+    write("worldgen/biome_tags.json", json!({}));
+    for name in ["grass", "foliage", "dry_foliage"] {
+        let path = base.join(format!("assets/minecraft/textures/colormap/{name}.png"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut encoder = png::Encoder::new(fs::File::create(path).unwrap(), 256, 256);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&vec![128; 256 * 256 * 3])
+            .unwrap();
+    }
+    let before = crate::biome::Biomes::load(&base).unwrap();
+    let biome = json!({"temperature":-0.7,"downfall":0.4,"has_precipitation":true,
+        "effects":{"grass_color":1193046,"foliage_color":2311527,"water_color":3430008},
+        "attributes":{
+            "minecraft:visual/sky_color":"#456789","minecraft:visual/fog_color":"#56789a",
+            "minecraft:visual/water_fog_color":"#6789ab",
+            "minecraft:gameplay/natural_mob_spawns":{"spawns_by_category":{
+                "creature":[{"type":"minecraft:sheep","weight":7,"count":2}]},
+                "spawn_costs":{"minecraft:sheep":{"energy_budget":1.0,"charge":0.2}}}},
+        "carvers":[],"features":[]});
+    let addition = json!({"type":"minecraft:multi_noise","horizon:preset":"minecraft:overworld",
+        "biomes":[{"biome":"aaa:groves/frost","parameters":{
+            "temperature":-0.7,"humidity":0.4,"continentalness":0.3,
+            "erosion":0.1,"depth":0,"weirdness":0.2,"offset":0}}]});
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("aaa", "")),
+            (
+                "data/aaa/worldgen/biome/groves/frost.json",
+                &biome.to_string(),
+            ),
+            (
+                "data/aaa/worldgen/biome_source_addition/groves.json",
+                &addition.to_string(),
+            ),
+            (
+                "data/aaa/tags/worldgen/biome/frost.json",
+                r#"{"values":["aaa:groves/frost","aaa:missing"]}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, &[m], &scratch.join("cache")).unwrap();
+    let bundled: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(root.join("worldgen/biomes.json")).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&bundled["aaa:groves/frost"]).unwrap(),
+        biome
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&bundled["minecraft:plains"]).unwrap(),
+        vanilla
+    );
+    let tags: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(root.join(BIOME_TAGS)).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&tags["aaa:frost"]).unwrap()["values"],
+        json!(["aaa:groves/frost"])
+    );
+    let biomes = crate::biome::Biomes::load(&root).unwrap();
+    assert_eq!(biomes.id("minecraft:plains"), before.id("minecraft:plains"));
+    let frost = biomes.get(biomes.id("aaa:groves/frost"));
+    assert_eq!(frost.name, "aaa:groves/frost");
+    assert_eq!(
+        (frost.temperature, frost.downfall, frost.precipitation),
+        (-0.7, 0.4, true)
+    );
+    assert_eq!(
+        (frost.grass, frost.foliage, frost.water),
+        (0x123456, 0x234567, 0x345678)
+    );
+    assert_eq!(
+        (frost.sky, frost.fog, frost.water_fog),
+        (Some(0x456789), Some(0x56789a), 0x6789ab)
+    );
+    let spawn = &frost.spawns["creature"][0];
+    assert_eq!(
+        (
+            &*spawn.entity,
+            spawn.weight,
+            spawn.min,
+            spawn.max,
+            spawn.constant
+        ),
+        ("minecraft:sheep", 7, 2, 2, true)
+    );
+    assert_eq!(frost.spawn_costs["minecraft:sheep"].charge, 0.2);
+    let catalog = BiomeSourceCatalog::new(
+        &bundled.keys().cloned().collect(),
+        &BTreeMap::new(),
+        &["minecraft:overworld".into()].into(),
+    )
+    .unwrap();
+    let presets = [(
+        "minecraft:overworld".into(),
+        json!([{
+            "coordinates":vec![[10000,10000];6],"offset":0,"biome":"minecraft:plains"
+        }])
+        .to_string(),
+    )]
+    .into();
+    let additions = serde_json::from_slice(
+        &fs::read(root.join("worldgen/biome_source_additions.json")).unwrap(),
+    )
+    .unwrap();
+    let presets = catalog.with_preset_additions(presets, &additions).unwrap();
+    let source = catalog
+        .decode(r#"{"type":"minecraft:multi_noise","preset":"minecraft:overworld"}"#)
+        .unwrap()
+        .resolve(&presets)
+        .unwrap();
+    let ResolvedBiomeSource::MultiNoise(source) = source else {
+        panic!("expected multi-noise")
+    };
+    let climate = ClimateSampler::new(
+        [-0.7, 0.4, 0.3, 0.1, 0., 0.2].map(|v| Arc::new(ConstantSampler(v)) as _),
+    );
+    assert_eq!(
+        source
+            .resolver(&climate)
+            .sample(&mut SamplerContext::cached(), [4, -2, 8])
+            .unwrap(),
+        frost.name
+    );
+    assert_eq!(
+        source
+            .parameters()
+            .searcher()
+            .find(TargetPoint::from_values([1.; 6]))
+            .unwrap(),
+        "minecraft:plains"
+    );
+    // A content mod without biome declarations keeps the vanilla tables and IDs.
+    let plain = folder_mod(
+        &scratch.join("plain"),
+        &[
+            ("horizon-mod.toml", &manifest("plain", "")),
+            ("assets/plain/lang/en_us.json", "{}"),
+        ],
+    );
+    let plain_root = resource_root(&base, &[plain], &scratch.join("plain-cache")).unwrap();
+    assert!(
+        !plain_root
+            .join("worldgen/biome_source_additions.json")
+            .exists()
+    );
+    assert_eq!(
+        fs::read(plain_root.join("worldgen/biomes.json")).unwrap(),
+        fs::read(base.join("worldgen/biomes.json")).unwrap()
+    );
+    assert_eq!(
+        crate::biome::Biomes::load(&plain_root).unwrap().index,
+        before.index
+    );
+    assert!(!base.join("worldgen/biome_source_additions.json").exists());
+    fs::remove_dir_all(scratch).unwrap();
+}
+
 use horizon_world::registry::BlockStateId;
 
 #[test]

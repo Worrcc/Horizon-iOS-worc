@@ -40,10 +40,10 @@ impl FogTables {
     pub fn load(root: &Path, biomes: &Biomes) -> Self {
         let mut water_fog_end = vec![1.0; biomes.list.len()];
         for (name, &id) in &biomes.index {
-            let path = root.join(format!(
-                "data/minecraft/worldgen/biome/{}.json",
-                name.trim_start_matches("minecraft:")
-            ));
+            let Some((namespace, path)) = name.split_once(':') else {
+                continue;
+            };
+            let path = root.join(format!("data/{namespace}/worldgen/biome/{path}.json"));
             let Ok(bytes) = std::fs::read(path) else {
                 continue;
             };

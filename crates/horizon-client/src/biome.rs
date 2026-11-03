@@ -3,7 +3,11 @@
 use crate::Result;
 use horizon_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom};
 use serde_json::Value;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrassModifier {
@@ -110,77 +114,99 @@ fn sample(map: &[u32], temperature: f32, downfall: f32, fallback: u32) -> u32 {
     let index = (y << 8 | x) as usize;
     map.get(index).copied().unwrap_or(fallback)
 }
+/// Nested biome resource paths, sorted by their resource name by the caller.
+fn biome_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            biome_files(&path, files)?;
+        } else if path.extension().is_some_and(|e| e == "json") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
 impl Biomes {
     pub fn load(root: &Path) -> Result<Self> {
         let grass = colormap(root, "grass")?;
         let foliage = colormap(root, "foliage")?;
         let dry = colormap(root, "dry_foliage")?;
         let mut list = Vec::new();
-        let mut names: Vec<_> = fs::read_dir(root.join("data/minecraft/worldgen/biome"))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-            .collect();
-        names.sort();
-        for path in names {
-            let name = format!(
-                "minecraft:{}",
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or("bad biome")?
-            );
-            let v: Value = serde_json::from_slice(&fs::read(&path)?)?;
-            let effects = &v["effects"];
-            let attributes = &v["attributes"];
-            let temperature = v["temperature"].as_f64().unwrap_or(0.5) as f32;
-            let downfall = v["downfall"].as_f64().unwrap_or(0.5) as f32;
-            let modifier = match effects["grass_color_modifier"].as_str() {
-                Some("dark_forest") => GrassModifier::DarkForest,
-                Some("swamp") => GrassModifier::Swamp,
-                _ => GrassModifier::None,
-            };
-            let mut spawns: HashMap<String, Vec<SpawnEntry>> = HashMap::new();
-            let natural = &attributes["minecraft:gameplay/natural_mob_spawns"];
-            // A modifier object ({argument, modifier: overlay}) or the plain value;
-            // the overlay over the dimension's empty default is the biome's value.
-            let natural = if natural["argument"].is_object() {
-                &natural["argument"]
-            } else {
-                natural
-            };
-            let categories = &natural["spawns_by_category"];
-            for (category, entries) in categories.as_object().into_iter().flatten() {
-                let list = crate::mobs::spawn_selection::parse_entries(entries);
-                spawns.insert(category.clone(), list);
+        let mut namespaces = vec!["minecraft".to_owned()];
+        namespaces.extend(horizon_items::content_namespaces::namespaces(root));
+        // Keep vanilla's IDs even when a mod namespace sorts before minecraft.
+        namespaces.sort_by(|a, b| (a != "minecraft", a).cmp(&(b != "minecraft", b)));
+        namespaces.dedup();
+        for ns in namespaces {
+            let dir = root.join(format!("data/{ns}/worldgen/biome"));
+            if !dir.is_dir() {
+                continue;
             }
-            list.push(BiomeInfo {
-                spawns,
-                spawn_costs: crate::mobs::spawn_selection::parse_costs(&natural["spawn_costs"]),
-                creature_probability:
-                    attributes["minecraft:gameplay/creature_world_gen_spawn_probability"]
-                        .as_f64()
-                        .unwrap_or(0.1) as f32,
-                increased_fire_burnout: attributes["minecraft:gameplay/increased_fire_burnout"]
-                    .as_bool()
-                    .unwrap_or(false),
-                temperature,
-                frozen: v["temperature_modifier"].as_str() == Some("frozen"),
-                downfall,
-                precipitation: v["has_precipitation"].as_bool().unwrap_or(true),
-                grass: color(&effects["grass_color"])
-                    .unwrap_or_else(|| sample(&grass, temperature, downfall, 0xFF00FF)),
-                modifier,
-                foliage: color(&effects["foliage_color"])
-                    .unwrap_or_else(|| sample(&foliage, temperature, downfall, 0x48B518)),
-                dry_foliage: color(&effects["dry_foliage_color"])
-                    .unwrap_or_else(|| sample(&dry, temperature, downfall, 0x5D4930)),
-                water: color(&effects["water_color"]).unwrap_or(0x3F76E4),
-                sky: color(&attributes["minecraft:visual/sky_color"]),
-                fog: color(&attributes["minecraft:visual/fog_color"]),
-                water_fog: color(&attributes["minecraft:visual/water_fog_color"])
-                    .unwrap_or(0x050533),
-                name,
-            });
+            let mut names = Vec::new();
+            biome_files(&dir, &mut names)?;
+            names.sort();
+            for path in names {
+                let resource = path.strip_prefix(&dir)?.with_extension("");
+                let name = format!(
+                    "{ns}:{}",
+                    resource.to_str().ok_or("bad biome")?.replace('\\', "/")
+                );
+                let v: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                let effects = &v["effects"];
+                let attributes = &v["attributes"];
+                let temperature = v["temperature"].as_f64().unwrap_or(0.5) as f32;
+                let downfall = v["downfall"].as_f64().unwrap_or(0.5) as f32;
+                let modifier = match effects["grass_color_modifier"].as_str() {
+                    Some("dark_forest") => GrassModifier::DarkForest,
+                    Some("swamp") => GrassModifier::Swamp,
+                    _ => GrassModifier::None,
+                };
+                let mut spawns: HashMap<String, Vec<SpawnEntry>> = HashMap::new();
+                let natural = &attributes["minecraft:gameplay/natural_mob_spawns"];
+                // A modifier object ({argument, modifier: overlay}) or the plain value;
+                // the overlay over the dimension's empty default is the biome's value.
+                let natural = if natural["argument"].is_object() {
+                    &natural["argument"]
+                } else {
+                    natural
+                };
+                let categories = &natural["spawns_by_category"];
+                for (category, entries) in categories.as_object().into_iter().flatten() {
+                    let list = crate::mobs::spawn_selection::parse_entries(entries);
+                    spawns.insert(category.clone(), list);
+                }
+                list.push(BiomeInfo {
+                    spawns,
+                    spawn_costs: crate::mobs::spawn_selection::parse_costs(&natural["spawn_costs"]),
+                    creature_probability:
+                        attributes["minecraft:gameplay/creature_world_gen_spawn_probability"]
+                            .as_f64()
+                            .unwrap_or(0.1) as f32,
+                    increased_fire_burnout: attributes["minecraft:gameplay/increased_fire_burnout"]
+                        .as_bool()
+                        .unwrap_or(false),
+                    temperature,
+                    frozen: v["temperature_modifier"].as_str() == Some("frozen"),
+                    downfall,
+                    precipitation: v["has_precipitation"].as_bool().unwrap_or(true),
+                    grass: color(&effects["grass_color"])
+                        .unwrap_or_else(|| sample(&grass, temperature, downfall, 0xFF00FF)),
+                    modifier,
+                    foliage: color(&effects["foliage_color"])
+                        .unwrap_or_else(|| sample(&foliage, temperature, downfall, 0x48B518)),
+                    dry_foliage: color(&effects["dry_foliage_color"])
+                        .unwrap_or_else(|| sample(&dry, temperature, downfall, 0x5D4930)),
+                    water: color(&effects["water_color"]).unwrap_or(0x3F76E4),
+                    sky: color(&attributes["minecraft:visual/sky_color"]),
+                    fog: color(&attributes["minecraft:visual/fog_color"]),
+                    water_fog: color(&attributes["minecraft:visual/water_fog_color"])
+                        .unwrap_or(0x050533),
+                    name,
+                });
+            }
+        }
+        if list.is_empty() || list.len() > usize::from(u16::MAX) + 1 {
+            return Err("biome registry must contain 1..=65536 biomes".into());
         }
         let index = list
             .iter()

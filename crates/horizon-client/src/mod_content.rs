@@ -800,9 +800,13 @@ const TAG_BUNDLES: [&str; 2] = ["block-tags.json", "worldgen/block_tags.json"];
 const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// Worldgen registries a content mod may add to, and the bundle the
 /// worldgen loader reads each from (id → the file's text): what structure
-/// mods hold. Biomes, noise and density functions change the terrain and
-/// are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
+/// mods hold. Noise settings and density functions are not read from mods.
+const WORLDGEN_BUNDLES: [(&str, &str); 8] = [
+    ("biome", "worldgen/biomes.json"),
+    (
+        "biome_source_addition",
+        "worldgen/biome_source_additions.json",
+    ),
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
@@ -1259,7 +1263,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     // A tag naming an id nobody registers fails as a whole in vanilla, and
     // carried-over mods name blocks left out or other mods' ids: such
     // entries are dropped instead, so the rest of the tag holds.
-    let known = Known::new(base, &plan, &tags)?;
+    let mut known = Known::new(base, &plan, &tags)?;
+    known.biomes.extend(
+        worldgen
+            .get("worldgen/biomes.json")
+            .into_iter()
+            .flatten()
+            .map(|(id, _)| id.clone()),
+    );
     for (file, merge) in &mut tags {
         merge.values.retain(|v| known.keeps(file, v));
     }
@@ -1323,10 +1334,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     // Structures and the pools, sets, processors and features they use, then
     // what mods add to sets and pools, in mod and file order.
     for (bundle, entries) in &worldgen {
-        if !base.join(bundle).exists() {
+        if !base.join(bundle).exists() && *bundle != "worldgen/biome_source_additions.json" {
             continue;
         }
-        let mut doc = read_json(&base.join(bundle))?;
+        let mut doc = if base.join(bundle).exists() {
+            read_json(&base.join(bundle))?
+        } else {
+            J::Obj(Vec::new())
+        };
         for (id, text) in entries {
             doc.set(id, J::Str(text.clone()));
         }
