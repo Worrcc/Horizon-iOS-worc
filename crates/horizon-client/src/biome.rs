@@ -328,6 +328,10 @@ pub fn blend_rgb(weights: &[(u16, f64)], mut value: impl FnMut(u16) -> [f32; 3])
 }
 
 #[cfg(test)]
+#[path = "biome_tests.rs"]
+mod tests;
+
+#[cfg(test)]
 mod blend_tests {
     use super::*;
 
