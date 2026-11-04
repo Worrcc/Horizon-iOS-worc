@@ -7,6 +7,9 @@
 #[cfg(test)]
 #[path = "generator_decoration_ore_tests.rs"]
 mod ore_tests;
+#[cfg(test)]
+#[path = "generator_decoration_tree_tests.rs"]
+mod tree_tests;
 
 use super::structure::{
     BoundingBox,

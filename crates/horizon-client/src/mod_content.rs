@@ -792,6 +792,9 @@ pub use horizon_items::content_namespaces::{namespaces, tag_namespaces};
 #[cfg(test)]
 #[path = "mod_content_ore_tests.rs"]
 mod ore_tests;
+#[cfg(test)]
+#[path = "mod_content_tree_tests.rs"]
+mod tree_tests;
 /// Block states a world can hold. Chunk sections widen their global palette
 /// past vanilla's 16 bits to fit the registry (crate::chunk::set_block_states);
 /// this caps it at 20 bits, about 29 times vanilla's 35,723 states. Mods past
