@@ -88,6 +88,21 @@ Add `--minecraft-dir PATH` if your launcher keeps the game elsewhere. The prepar
 newer: older ones don't keep `registries.json` and `commands.json` with the prepared files, and the
 server then stops with "registries.json not found next to the resources". Prepare again with a newer release.
 
+### Content mods on the server
+
+Restart after changing world-generation content; already generated chunks retain their saved biomes.
+Installing content mods for `horizon-server` is not documented yet: it does not read `horizon-mods/`.
+
+For development, start the engine directly with a mod folder or package:
+
+```sh
+horizon-client --resources /path/to/26.3 --dedicated --nogui --dev-mod /path/to/test-biome-mod
+```
+
+`--dev-mod` is repeatable and also works before `--dedicated`. The server loads content into the same
+resource root used by single player: biome namespaces, climate additions, generation and the registry
+sent to joining clients all use that root. Clients need the mod installed too for its colours and assets.
+
 ## 3. First run
 
 ```sh

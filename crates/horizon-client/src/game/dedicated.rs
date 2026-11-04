@@ -110,14 +110,22 @@ fn capture_log(f: impl FnOnce()) -> Vec<String> {
     CAPTURE.take().unwrap_or_default()
 }
 
-/// Main.main up to the server start: arguments, server.properties (stored
-/// back at once), eula.txt. False when the process should stop here.
-pub(super) fn preflight(options: &mut Options) -> Result<bool> {
-    let args = options.dedicated.clone().unwrap_or_default();
+/// Server arguments are parsed before resources load, so content declarations
+/// join the same resource root as mods passed before `--dedicated`.
+struct Arguments {
+    universe: PathBuf,
+    world: Option<String>,
+    port: Option<u16>,
+    init_settings: bool,
+    dev_mods: Vec<PathBuf>,
+}
+
+fn parse_arguments(args: &[String]) -> Result<Option<Arguments>> {
     let mut universe = PathBuf::from(".");
     let mut world = None;
     let mut port = None;
     let mut init_settings = false;
+    let mut dev_mods = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let name = arg.trim_start_matches('-');
@@ -131,11 +139,14 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
             | "safeMode"
             | "jfrProfile" => {}
             "initSettings" => init_settings = true,
+            "dev-mod" => dev_mods.push(std::path::absolute(
+                it.next().ok_or("--dev-mod needs a path")?,
+            )?),
             "help" => {
                 eprintln!(
-                    "Option                Description\n------                -----------\n--help\n--initSettings        Initializes 'server.properties' and 'eula.txt', then quits\n--nogui\n--port <Integer>      (default: -1)\n--universe <String>   (default: .)\n--world <String>"
+                    "Option                Description\n------                -----------\n--help\n--initSettings        Initializes 'server.properties' and 'eula.txt', then quits\n--nogui\n--port <Integer>      (default: -1)\n--universe <String>   (default: .)\n--world <String>\n--dev-mod <Path>      Content or code mod (.hmod or folder), repeatable"
                 );
-                return Ok(false);
+                return Ok(None);
             }
             "universe" => universe = PathBuf::from(it.next().ok_or("--universe needs a value")?),
             "world" => world = Some(it.next().ok_or("--world needs a value")?.clone()),
@@ -152,6 +163,29 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
             _ => return Err(format!("{arg} is not a recognized option").into()),
         }
     }
+    Ok(Some(Arguments {
+        universe,
+        world,
+        port,
+        init_settings,
+        dev_mods,
+    }))
+}
+
+/// Main.main up to the server start: arguments, server.properties (stored
+/// back at once), eula.txt. False when the process should stop here.
+pub(super) fn preflight(options: &mut Options) -> Result<bool> {
+    let Some(Arguments {
+        universe,
+        world,
+        port,
+        init_settings,
+        dev_mods,
+    }) = parse_arguments(options.dedicated.as_deref().unwrap_or_default())?
+    else {
+        return Ok(false);
+    };
+    options.dev_mods.extend(dev_mods);
     let started = Instant::now();
     let settings = PathBuf::from("server.properties");
     let props = ServerProperties::from_file(&settings, &mut SystemEntropy::default())?;
@@ -1394,7 +1428,7 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_log, log, log_from};
+    use super::{capture_log, log, log_from, parse_arguments};
     use std::{
         fs,
         io::{self, BufRead, BufReader, Read, Write},
@@ -1406,6 +1440,46 @@ mod tests {
     const WARNING: &str = "Authentication warning";
     const READY: &str = "horizon-console-log-ready\n";
     const CHILD_HOME: &str = "HORIZON_TEST_CONSOLE_LOG_HOME";
+
+    #[test]
+    fn server_arguments_collect_content_mods_before_resource_loading() {
+        let args = [
+            "--nogui",
+            "--dev-mod",
+            "test mod",
+            "--world",
+            "Biomes",
+            "--port",
+            "25576",
+            "--dev-mod",
+            "test.hmod",
+            "--universe",
+            "worlds",
+        ]
+        .map(str::to_owned);
+        let parsed = parse_arguments(&args).unwrap().unwrap();
+        assert_eq!(parsed.world.as_deref(), Some("Biomes"));
+        assert_eq!(parsed.port, Some(25576));
+        assert_eq!(parsed.universe, std::path::Path::new("worlds"));
+        assert!(!parsed.init_settings);
+        assert_eq!(
+            parsed.dev_mods,
+            [
+                std::path::absolute("test mod").unwrap(),
+                std::path::absolute("test.hmod").unwrap(),
+            ]
+        );
+        let plain = parse_arguments(&[]).unwrap().unwrap();
+        assert!(plain.dev_mods.is_empty());
+        assert_eq!(plain.universe, std::path::Path::new("."));
+    }
+
+    #[test]
+    fn server_arguments_require_a_mod_path_and_reject_unknown_flags() {
+        let missing = parse_arguments(&["--dev-mod".into()]).err().unwrap();
+        assert_eq!(missing.to_string(), "--dev-mod needs a path");
+        assert!(parse_arguments(&["--unknown".into()]).is_err());
+    }
 
     fn assert_log_lines(text: &str) {
         let expected = [
