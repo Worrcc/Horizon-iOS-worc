@@ -4,6 +4,10 @@
 //! Roots whose algorithm or bindings are not implemented are left out of
 //! execution (but keep their place in vanilla's per-step feature ordering, so
 //! decoration seeds of the remaining features are unchanged).
+#[cfg(test)]
+#[path = "generator_decoration_ore_tests.rs"]
+mod ore_tests;
+
 use super::structure::{
     BoundingBox,
     start::{STEPS, place_in_chunk},
