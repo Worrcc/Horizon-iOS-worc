@@ -4,12 +4,18 @@ use std::cell::{Cell, RefCell};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, CGPoint, CGRect, MainThreadMarker, NSObject, NSSet, NSString};
+use objc2_foundation::{
+    CGFloat, CGPoint, CGRect, MainThreadMarker, NSNotification, NSNotificationCenter, NSObject,
+    NSSet, NSString,
+};
 use objc2_ui_kit::{
     UICoordinateSpace, UIEvent, UIForceTouchCapability, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyInput, UIPanGestureRecognizer,
-    UIPinchGestureRecognizer, UIResponder, UIRotationGestureRecognizer, UITapGestureRecognizer,
-    UITextInputTraits, UITouch, UITouchPhase, UITouchType, UITraitEnvironment, UIView,
+    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyInput,
+    UIKeyboardDidChangeFrameNotification, UIKeyboardFrameEndUserInfoKey,
+    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
+    UIKeyboardWillShowNotification, UIPanGestureRecognizer, UIPinchGestureRecognizer, UIResponder,
+    UIRotationGestureRecognizer, UITapGestureRecognizer, UITextInputTraits, UITouch, UITouchPhase,
+    UITouchType, UITraitEnvironment, UIView,
 };
 
 use super::app_state::{self, EventWrapper};
@@ -31,6 +37,9 @@ pub struct WinitViewState {
     rotation_last_delta: Cell<CGFloat>,
     pinch_last_delta: Cell<CGFloat>,
     pan_last_delta: Cell<CGPoint>,
+    // Horizon: keep the original screen-space frame so rotation/layout never accumulates insets.
+    keyboard_frame: Cell<Option<CGRect>>,
+    keyboard_requested: Cell<bool>,
 }
 
 declare_class!(
@@ -68,6 +77,8 @@ declare_class!(
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
 
             let window = self.window().unwrap();
+            // Horizon: keyboard avoidance belongs to GUI layout. Keep UIKit/Metal and
+            // touch coordinates at the full window size; expose the occlusion separately.
             let window_bounds = window.bounds();
 
             // If the app is started in landscape, the view frame and window bounds can be mismatched.
@@ -351,6 +362,34 @@ declare_class!(
         fn delete_backward(&self) {
             self.handle_delete_backward()
         }
+
+        #[method(horizonKeyboardFrameChanged:)]
+        fn keyboard_frame_changed(&self, notification: &NSNotification) {
+            // WillShow/WillChangeFrame may arrive inside becomeFirstResponder, before
+            // isFirstResponder changes. Record our intent before making that call.
+            let first_responder = unsafe { self.isFirstResponder() };
+            log::info!(target: "horizon::ios_keyboard", "Horizon: iOS keyboard {:?}: requested={}, responder={}",
+                unsafe { notification.name() }, self.ivars().keyboard_requested.get(), first_responder);
+            if !self.ivars().keyboard_requested.get() && !first_responder {
+                return;
+            }
+            let frame = unsafe {
+                notification.userInfo()
+                    .and_then(|info| info.objectForKey(UIKeyboardFrameEndUserInfoKey))
+                    .map(|value| msg_send![&*value, CGRectValue])
+            };
+            self.ivars().keyboard_frame.set(frame);
+            log::info!(target: "horizon::ios_keyboard", "Horizon: iOS keyboard frame={frame:?}, bottom inset={} pt",
+                self.keyboard_bottom_inset());
+            self.setNeedsDisplay();
+        }
+
+        #[method(horizonKeyboardHidden:)]
+        fn keyboard_hidden(&self, _notification: &NSNotification) {
+            self.ivars().keyboard_frame.set(None);
+            log::info!(target: "horizon::ios_keyboard", "Horizon: iOS keyboard hidden");
+            self.setNeedsDisplay();
+        }
     }
 );
 
@@ -369,16 +408,77 @@ impl WinitView {
             rotation_last_delta: Cell::new(0.0),
             pinch_last_delta: Cell::new(0.0),
             pan_last_delta: Cell::new(CGPoint { x: 0.0, y: 0.0 }),
+            keyboard_frame: Cell::new(None),
+            keyboard_requested: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), initWithFrame: frame] };
 
         this.setMultipleTouchEnabled(true);
+
+        // Horizon: selector observers are weak/automatically removed by UIKit on iOS 9+.
+        unsafe {
+            let center = NSNotificationCenter::defaultCenter();
+            for name in [
+                UIKeyboardWillShowNotification,
+                UIKeyboardWillChangeFrameNotification,
+                UIKeyboardDidChangeFrameNotification,
+            ] {
+                center.addObserver_selector_name_object(
+                    &this,
+                    sel!(horizonKeyboardFrameChanged:),
+                    Some(name),
+                    None,
+                );
+            }
+            center.addObserver_selector_name_object(
+                &this,
+                sel!(horizonKeyboardHidden:),
+                Some(UIKeyboardWillHideNotification),
+                None,
+            );
+        }
 
         if let Some(scale_factor) = window_attributes.platform_specific.scale_factor {
             this.setContentScaleFactor(scale_factor as _);
         }
 
         this
+    }
+
+    pub(crate) fn set_keyboard_requested(&self, requested: bool) {
+        log::info!(target: "horizon::ios_keyboard", "Horizon: iOS keyboard requested={requested}");
+        self.ivars().keyboard_requested.set(requested);
+        if !requested {
+            self.ivars().keyboard_frame.set(None);
+            self.setNeedsDisplay();
+        }
+    }
+
+    /// Bottom occlusion in view-local UIKit points, recomputed after rotation/layout.
+    pub(crate) fn keyboard_bottom_inset(&self) -> f64 {
+        let Some(frame) = self.ivars().keyboard_frame.get() else {
+            return 0.0;
+        };
+        let Some(window) = self.window() else {
+            return 0.0;
+        };
+        let screen_space = window.screen().coordinateSpace();
+        let keyboard = self.convertRect_fromCoordinateSpace(frame, &screen_space);
+        let bounds = self.bounds();
+        super::super::ios_keyboard::visible_bottom_inset(
+            [
+                bounds.origin.x,
+                bounds.origin.y,
+                bounds.size.width,
+                bounds.size.height,
+            ],
+            [
+                keyboard.origin.x,
+                keyboard.origin.y,
+                keyboard.size.width,
+                keyboard.size.height,
+            ],
+        )
     }
 
     fn window(&self) -> Option<Retained<WinitUIWindow>> {

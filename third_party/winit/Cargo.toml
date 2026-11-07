@@ -378,6 +378,10 @@ version = "0.6.0"
 version = "0.9.0"
 default-features = false
 
+# Horizon: keyboard diagnostics reach the game's log facade on iOS only.
+[target.'cfg(target_os = "ios")'.dependencies.log]
+version = "0.4"
+
 [target.'cfg(target_os = "ios")'.dependencies.objc2-foundation]
 version = "0.2.2"
 features = [
