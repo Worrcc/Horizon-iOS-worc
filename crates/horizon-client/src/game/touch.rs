@@ -1,18 +1,16 @@
 //! Touch controls in the game (`touch_controls.rs` turns fingers into [`Output`]s): applying
 //! them as the keys, clicks and look movement a keyboard and mouse would give, and drawing
 //! the buttons over the HUD. On iOS only: desktop touchscreens keep winit's own behaviour.
-use super::{Game, Screen};
+use super::{Game, Screen, event_loop::EventLoopCtl};
 use horizon_client::{
     hud::{HudAtlas, HudBatch, rgba},
     touch_controls::{Button, Layout, Output, TouchControls},
 };
 use std::time::Instant;
 use winit::{
-    application::ApplicationHandler,
     event::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
     },
-    event_loop::ActiveEventLoop,
     keyboard::KeyCode,
 };
 
@@ -249,7 +247,7 @@ impl Game<'_> {
     }
 
     /// `WindowEvent::Touch`.
-    pub(super) fn touch_event(&mut self, event_loop: &ActiveEventLoop, touch: Touch) {
+    pub(super) fn touch_event(&mut self, event_loop: &dyn EventLoopCtl, touch: Touch) {
         if self.pending_save.is_some() {
             return;
         }
@@ -293,7 +291,7 @@ impl Game<'_> {
     }
 
     /// Once a frame: held fingers start breaking or dragging.
-    pub(super) fn touch_update(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn touch_update(&mut self, event_loop: &dyn EventLoopCtl) {
         if !ENABLED || !self.touch.controls.used {
             return;
         }
@@ -314,7 +312,7 @@ impl Game<'_> {
 
     /// Lets go of every finger: the app went to the background.
     #[cfg(target_os = "ios")]
-    pub(super) fn touch_release_all(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn touch_release_all(&mut self, event_loop: &dyn EventLoopCtl) {
         let Some((_, scale)) = self.touch_layout() else {
             return;
         };
@@ -326,7 +324,7 @@ impl Game<'_> {
     /// A controller is being used: the on-screen controls go away (letting go of every finger)
     /// until the next touch brings them back.
     #[cfg(target_os = "ios")]
-    pub(super) fn touch_hide(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn touch_hide(&mut self, event_loop: &dyn EventLoopCtl) {
         if !self.touch.controls.used {
             return;
         }
@@ -341,7 +339,7 @@ impl Game<'_> {
         }
     }
 
-    fn apply_touch(&mut self, event_loop: &ActiveEventLoop, output: Output, scale: f32) {
+    fn apply_touch(&mut self, event_loop: &dyn EventLoopCtl, output: Output, scale: f32) {
         let result = match output {
             Output::Key(key, true) => self.control_key_down(key),
             Output::Key(key, false) => {
@@ -380,7 +378,12 @@ impl Game<'_> {
                     return;
                 };
                 if let Some(event) = pointer_event(device, output, scale) {
-                    self.window_event(event_loop, id, event);
+                    self.handle_window_event(
+                        event_loop,
+                        id,
+                        event,
+                        super::input_trace::InputOrigin::User,
+                    );
                 }
                 Ok(())
             }

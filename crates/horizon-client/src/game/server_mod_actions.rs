@@ -16,7 +16,7 @@ fn record_use(mods: &mut super::mods::ModsState, event: PlayerItemUse, source: O
                 return;
             }
         }
-        Some(GuestUse::OnBlock(_) | GuestUse::Entity(_)) => {
+        Some(GuestUse::OnBlock(_) | GuestUse::Entity(..)) => {
             mods.use_fallbacks.insert(key, event.item.clone());
         }
         None => {}
@@ -278,9 +278,8 @@ impl Game<'_> {
             // Older queued sounds still belong to the level we will return to.
             if let Some(capture) = self.audio.capture.as_mut() {
                 let from = heard.min(capture.len());
-                for (name, at, volume, pitch) in capture.drain(from..) {
-                    let source = horizon_client::settings::sound_source(&name) as i32;
-                    host.hub.sound(&name, at, volume, pitch, source, None);
+                for sound in capture.drain(from..) {
+                    host.hub.captured_sound(&sound, None);
                 }
             }
             if self.dim != back

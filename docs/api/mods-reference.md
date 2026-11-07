@@ -12,7 +12,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `hud` | [`hud`](#hud) | draw text on your screen |
 | `storage` | [`storage`](#storage) | save its own settings to disk |
 | `command` | [`command`](#command) | run commands as you, with your permissions |
-| `registries` | data files (`assets/`, `data/`), no interface | add blocks and items to your worlds |
+| `registries` | data files (`assets/`, `data/`), no interface | add blocks, items, mob effects and entity types to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
 | `render` | [`render`](#render) | draw on your screen, shake and zoom the camera |
 | `input` | [`input`](#input) | see the keys you hold and your clicks, take over the use button on its own items and the mouse wheel, and add keys |
@@ -393,7 +393,7 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 
 | Field | Type | |
 | --- | --- | --- |
-| `sprite` | `string` | One of the game's GUI sprites, as `gui/sprites/` names them (`hud/heart/full`, `widget/button`), the resource packs' versions included. An unknown one draws nothing. |
+| `sprite` | `string` | One of the game's GUI sprites, as `gui/sprites/` names them (`hud/heart/full`, `widget/button`), the resource packs' versions included, drawn over `rect` as vanilla draws it: nine-sliced when its `gui.scaling` says so (`tooltip/frame`, `widget/button`: the borders keep their size), stretched otherwise. An unknown one draws nothing. |
 | `rect` | `rect` |  |
 | `color` | `u32` | A tint, 0xAARRGGBB: 0xFFFFFFFF draws it as it is. |
 

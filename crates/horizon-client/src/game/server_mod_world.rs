@@ -1,6 +1,7 @@
 //! Container access for server mods. Reads use a call's snapshot; writes use
 //! the live block entity after that tick's queued block changes.
 use super::Game;
+use horizon_client::furnace::FurnaceCooking;
 use horizon_client::{containers::BlockEntity, items::ItemStack, world::World};
 use horizon_mods::ContainerItemStack;
 use std::{collections::HashMap, path::Path};
@@ -77,7 +78,7 @@ impl Game<'_> {
             }
         };
         add(self.dim.id(), &self.world);
-        for (dimension, world) in self.levels.parked_worlds() {
+        for (dimension, world) in self.levels.all_parked_worlds() {
             add(dimension.id(), world);
         }
         out

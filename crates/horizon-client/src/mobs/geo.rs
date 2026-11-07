@@ -381,6 +381,7 @@ fn cube(
             normal = r * normal;
         }
         out.push(Polygon {
+            cull_back: false,
             normal: normal.to_array(),
             vertices,
         });

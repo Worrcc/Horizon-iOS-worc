@@ -590,7 +590,7 @@ pub(super) mod run {
                     .filter(|m| m.alive() && !m.removed)
                     .map(|m| mod_entity(m, here, riders.get(&m.id)))
                     .collect();
-                for (dim, mobs) in self.levels.parked_mobs() {
+                for (dim, mobs) in self.levels.all_parked_mobs() {
                     let alive = mobs.iter().filter(|m| m.alive() && !m.removed);
                     all.extend(alive.map(|m| mod_entity(m, dim.id(), riders.get(&m.id))));
                 }
@@ -598,7 +598,7 @@ pub(super) mod run {
                 snapshot.tamable_mobs = self
                     .mobs
                     .iter()
-                    .chain(self.levels.parked_mobs().flat_map(|(_, ms)| ms.iter()))
+                    .chain(self.levels.all_parked_mobs().flat_map(|(_, ms)| ms.iter()))
                     .filter(|m| m.alive() && !m.removed && horizon_client::mobs::tame::can_tame(m))
                     .map(|m| m.id)
                     .collect::<Vec<_>>()
@@ -606,7 +606,7 @@ pub(super) mod run {
                 let mut vehicles: Vec<(u32, u32)> = (self.mobs.iter())
                     .filter_map(|m| Some((m.id, m.extra.mount?)))
                     .collect();
-                for (_, mobs) in self.levels.parked_mobs() {
+                for (_, mobs) in self.levels.all_parked_mobs() {
                     vehicles.extend(mobs.iter().filter_map(|m| Some((m.id, m.extra.mount?))));
                 }
                 snapshot.vehicles = vehicles.into();
@@ -674,7 +674,7 @@ pub(super) mod run {
             self.apply_mod_spawns();
             self.apply_mod_entity_operations();
             let orders = std::mem::take(&mut self.mods.mob_orders);
-            let parked: std::collections::HashSet<u32> = (self.levels.parked_mobs())
+            let parked: std::collections::HashSet<u32> = (self.levels.all_parked_mobs())
                 .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
                 .collect();
             for (id, order) in orders {
@@ -691,7 +691,7 @@ pub(super) mod run {
         fn apply_mod_entity_operations(&mut self) {
             let parked: std::collections::HashSet<u32> = self
                 .levels
-                .parked_mobs()
+                .all_parked_mobs()
                 .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
                 .collect();
             for op in std::mem::take(&mut self.mods.entity_operations) {
@@ -743,7 +743,7 @@ pub(super) mod run {
             if self.mods.rides.is_empty() {
                 return;
             }
-            let parked: std::collections::HashSet<u32> = (self.levels.parked_mobs())
+            let parked: std::collections::HashSet<u32> = (self.levels.all_parked_mobs())
                 .flat_map(|(_, mobs)| mobs.iter().map(|m| m.id))
                 .collect();
             let live = |game: &Self, id: u32| {
@@ -1110,6 +1110,21 @@ pub(super) mod run {
                 horizon_client::mobs::orders::area_reaches(center, area.radius, feet, half, height)
             };
             let (amount, fire) = (area.amount, area.fire as i32 * 20);
+            let attack = Damage {
+                kind: if credit.is_some() {
+                    DamageKind::PlayerAttack
+                } else {
+                    DamageKind::MobAttack
+                },
+                attacker: Some(if credit.is_some() {
+                    MobWho::Player
+                } else {
+                    MobWho::Mob(source)
+                }),
+                attacker_species: self.mobs.iter().find(|m| m.id == source).map(Mob::species),
+                from: Some(source_pos),
+            };
+
             let mut mobs = std::mem::take(&mut self.mobs);
             for m in mobs.iter_mut().filter(|m| {
                 m.alive() && !m.removed && m.id != source && !area.skip_kinds.contains(&m.kind.id)
@@ -1119,22 +1134,7 @@ pub(super) mod run {
                     continue;
                 }
                 if amount > 0.0 {
-                    let landed = m.damage(
-                        amount,
-                        Damage {
-                            kind: if credit.is_some() {
-                                DamageKind::PlayerAttack
-                            } else {
-                                DamageKind::MobAttack
-                            },
-                            attacker: Some(if credit.is_some() {
-                                MobWho::Player
-                            } else {
-                                MobWho::Mob(source)
-                            }),
-                            from: Some(source_pos),
-                        },
-                    );
+                    let landed = m.damage(amount, attack);
                     if landed && credit.is_some() {
                         self.last_hurt_by_player.insert(m.id, killer);
                         if let Some(player) = credit {
@@ -1147,6 +1147,7 @@ pub(super) mod run {
                         f64::from(area.knockback),
                         source_pos[0] - m.position.x,
                         source_pos[2] - m.position.z,
+                        &attack,
                     );
                     m.needs_sync = true;
                 }
@@ -1187,6 +1188,11 @@ pub(super) mod run {
                         f64::from(area.knockback),
                         source_pos[0] - p.x,
                         source_pos[2] - p.z,
+                        horizon_client::health::HurtSource {
+                            damage_type: "minecraft:mob_attack",
+                            causing: source as i32,
+                            direct: source as i32,
+                        },
                     );
                     if let Some(p) = g.player.as_mut() {
                         p.health.sync_velocity = true;
@@ -1512,7 +1518,9 @@ pub(super) mod run {
                 }
                 Output::Broadcast { name, text } => {
                     let plain = format!("[{name}] {text}");
-                    if self.options.dedicated.is_some() {
+                    if self.options.execution_role
+                        == super::super::execution_role::ExecutionRole::DedicatedServer
+                    {
                         super::super::dedicated::log("INFO", &plain);
                     } else {
                         log::info!("{plain}");
@@ -1541,7 +1549,16 @@ pub(super) mod run {
                     dz,
                 } => {
                     self.with_mod_player(host, &player, |g| {
-                        g.knock_back_player(f64::from(strength), -dx, -dz);
+                        g.knock_back_player(
+                            f64::from(strength),
+                            -dx,
+                            -dz,
+                            horizon_client::health::HurtSource {
+                                damage_type: "minecraft:generic",
+                                causing: 0,
+                                direct: 0,
+                            },
+                        );
                         if let Some(p) = g.player.as_mut() {
                             p.health.sync_velocity = true;
                         }

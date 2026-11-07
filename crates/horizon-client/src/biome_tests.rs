@@ -1,8 +1,10 @@
-use super::*;
+use crate::biome::*;
 use crate::mod_content::{ContentMod, resource_root};
+use horizon_core::random::LegacyRandom;
 use horizon_mods::{Package, content::Content};
+use serde_json::Value;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 // Original fixtures only: no prepared data or files under .local are read.
 struct Fixture(PathBuf);

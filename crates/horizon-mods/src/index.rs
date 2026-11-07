@@ -41,15 +41,23 @@ pub struct Index {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum Kind {
-    /// A `.hmod`.
+    /// A `.hmod` of content only.
     Mod,
+    /// A source-only native mixin bundle, compiled into an isolated game build. Published as an
+    /// `.hnmod` until launchers and the game read native `.hmod`s (#5865, docs/api/mod-files.md).
+    NativeMod,
     /// A `.hpack`: registry mods played together as a profile.
     Modpack,
     /// A resource pack (`.zip` with `pack.mcmeta`) made or tested for Horizon.
     ResourcePack,
     /// A Horizon shader pack (`.hshader`, the native WGSL format of
-    /// docs/shaders.md; not the shaders/-folder packs, which stay on Modrinth).
+    /// docs/shaders.md).
     Shader,
+    /// A `shaders/`-folder shader pack (`.zip`, the format `horizon-shaders` loads), listed by
+    /// its author under a licence that allows it.
+    ShaderPack,
+    /// A data pack (`.zip` with `pack.mcmeta` and `data/`), installed into a world.
+    DataPack,
     Other(String),
 }
 
@@ -57,9 +65,12 @@ impl Kind {
     pub fn name(&self) -> &str {
         match self {
             Kind::Mod => "mod",
+            Kind::NativeMod => "native-mod",
             Kind::Modpack => "modpack",
             Kind::ResourcePack => "resourcepack",
             Kind::Shader => "shader",
+            Kind::ShaderPack => "shaderpack",
+            Kind::DataPack => "datapack",
             Kind::Other(name) => name,
         }
     }
@@ -68,9 +79,11 @@ impl Kind {
     pub fn extension(&self) -> Option<&'static str> {
         match self {
             Kind::Mod => Some("hmod"),
+            Kind::NativeMod => Some("hnmod"),
             Kind::Modpack => Some("hpack"),
             Kind::ResourcePack => Some("zip"),
             Kind::Shader => Some(horizon_shader_api::EXTENSION),
+            Kind::ShaderPack | Kind::DataPack => Some("zip"),
             Kind::Other(_) => None,
         }
     }
@@ -80,9 +93,12 @@ impl From<String> for Kind {
     fn from(name: String) -> Kind {
         match name.as_str() {
             "mod" => Kind::Mod,
+            "native-mod" => Kind::NativeMod,
             "modpack" => Kind::Modpack,
             "resourcepack" => Kind::ResourcePack,
             "shader" => Kind::Shader,
+            "shaderpack" => Kind::ShaderPack,
+            "datapack" => Kind::DataPack,
             _ => Kind::Other(name),
         }
     }
@@ -116,6 +132,15 @@ pub struct Project {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// From the kind's list ([`page::categories`]), at most 3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+    /// Free-form, lowercase, at most 10.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// `https://` addresses of PNG or JPEG images, in order, at most 8.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
     /// The author's minisign public key: every version must be signed with
     /// it. None: unsigned (the SHA-256 still pins the reviewed file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +276,16 @@ impl Index {
             https(&p.source).map_err(at)?;
             if let Some(icon) = &p.icon {
                 https(icon).map_err(at)?;
+            }
+            if p.screenshots.len() > page::MAX_SCREENSHOTS {
+                return Err(at(format!(
+                    "{} screenshots, at most {}",
+                    p.screenshots.len(),
+                    page::MAX_SCREENSHOTS
+                )));
+            }
+            for s in &p.screenshots {
+                https(s).map_err(at)?;
             }
             if let Some(key) = &p.key {
                 minisign_verify::PublicKey::from_base64(key.trim())
@@ -552,7 +587,22 @@ impl Facts {
 /// this build doesn't know are refused: their checks come with their formats.
 pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
     match kind {
+        Kind::NativeMod => {
+            let facts = native::Bundle::read(path)?.manifest.facts();
+            // A `.hmod` with content too: checked as the game reads it.
+            if Package::has_manifest(path) {
+                let m = Package::read(path)?.manifest;
+                crate::Content::read(path, &m)?;
+            }
+            Ok(facts)
+        }
         Kind::Mod => {
+            if native::holds(path) {
+                return Err(format!(
+                    "it has native code ({}): it is a native-mod",
+                    native::MANIFEST
+                ));
+            }
             let Package { manifest: m, wasm } = Package::read(path)?;
             crate::Content::read(path, &m)?;
             let api_level = match wasm {
@@ -604,6 +654,14 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
                 ..Facts::default()
             })
         }
+        Kind::ShaderPack => Ok(Facts {
+            api: check_shader_folder_pack(path)?,
+            ..Facts::default()
+        }),
+        Kind::DataPack => Ok(Facts {
+            api: check_data_pack(path)?,
+            ..Facts::default()
+        }),
         Kind::Other(name) => Err(format!("this Horizon can't read a {name} yet")),
     }
 }
@@ -612,19 +670,69 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
 /// object, and only plain paths. Returns its pack format (`pack_format`, or
 /// `min_format` in newer packs), empty when it names none.
 fn check_resource_pack(path: &Path) -> Result<String, String> {
+    let (mut zip, _) = plain_zip(path)?;
+    pack_format(&mut zip)
+}
+
+/// A zip whose paths are all plain, and those paths.
+fn plain_zip(path: &Path) -> Result<(zip::ZipArchive<std::fs::File>, Vec<String>), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut names = Vec::with_capacity(zip.len());
     for i in 0..zip.len() {
         let name = zip
             .by_index_raw(i)
             .map_err(|e| e.to_string())?
             .name()
-            .to_owned();
+            .map_err(|e| e.to_string())?
+            .into_owned();
         if name.starts_with('/') || name.split('/').any(|part| part == "..") || name.contains('\\')
         {
             return Err(format!("{name:?} is not a plain path"));
         }
+        names.push(name);
     }
+    Ok((zip, names))
+}
+
+/// A data pack: a resource pack's rules, and a `data/` folder at the root.
+fn check_data_pack(path: &Path) -> Result<String, String> {
+    let (mut zip, names) = plain_zip(path)?;
+    if !names.iter().any(|n| n.starts_with("data/")) {
+        return Err("no data/ folder at the zip's root: not a data pack".into());
+    }
+    pack_format(&mut zip)
+}
+
+/// A `shaders/`-folder shader pack: plain paths and a `shaders/` folder at the root. Its format
+/// has no version of its own: the facts' `api` is empty.
+fn check_shader_folder_pack(path: &Path) -> Result<String, String> {
+    let (_, names) = plain_zip(path)?;
+    if !names.iter().any(|n| n.starts_with("shaders/")) {
+        return Err("no shaders/ folder at the zip's root: not a shader pack".into());
+    }
+    Ok(String::new())
+}
+
+/// What a zip's file is, by its content: a `shaders/` folder makes a shader pack, a `data/` folder
+/// without `assets/` a data pack, anything else a resource pack (checked as one).
+pub fn zip_kind(path: &Path) -> Kind {
+    let Ok((_, names)) = plain_zip(path) else {
+        return Kind::ResourcePack;
+    };
+    let root = |dir: &str| names.iter().any(|n| n.starts_with(dir));
+    if root("shaders/") {
+        Kind::ShaderPack
+    } else if root("data/") && !root("assets/") {
+        Kind::DataPack
+    } else {
+        Kind::ResourcePack
+    }
+}
+
+/// `pack.mcmeta`'s pack format (`pack_format`, or `min_format` in newer packs), empty when it
+/// names none; refused when it has no `pack` object.
+fn pack_format(zip: &mut zip::ZipArchive<std::fs::File>) -> Result<String, String> {
     let mut meta = String::new();
     zip.by_name("pack.mcmeta")
         .map_err(|_| "pack.mcmeta: missing".to_string())?
@@ -656,7 +764,13 @@ fn check_resource_pack(path: &Path) -> Result<String, String> {
 /// formats.
 pub fn open(kind: &Kind) -> Result<(), String> {
     match kind {
-        Kind::Mod | Kind::Modpack | Kind::ResourcePack | Kind::Shader => Ok(()),
+        Kind::Mod
+        | Kind::NativeMod
+        | Kind::Modpack
+        | Kind::ResourcePack
+        | Kind::Shader
+        | Kind::ShaderPack
+        | Kind::DataPack => Ok(()),
         Kind::Other(name) => Err(format!("the registry doesn't take {name} yet")),
     }
 }
@@ -666,6 +780,8 @@ fn names(caps: &[Capability]) -> String {
     format!("[{}]", names.join(", "))
 }
 
+pub mod native;
+pub mod page;
 pub mod registry;
 #[cfg(test)]
 mod tests;

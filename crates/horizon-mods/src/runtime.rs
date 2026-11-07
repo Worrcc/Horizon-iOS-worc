@@ -4098,6 +4098,7 @@ mod entity_tests {
     }
 
     #[test]
+    #[cfg(feature = "pack")]
     fn api15_players_and_world_imports_do_not_require_entities_capability() {
         use wit_parser::{ManglingAndAbi, Resolve};
         for interface in ["players", "world"] {

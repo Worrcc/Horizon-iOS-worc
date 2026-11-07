@@ -1,9 +1,10 @@
 //! Updates and rollbacks (docs/server.md, section 7) for a `horizon-server` installed by install.sh or
 //! install.ps1: each release in `<dir>/releases/<tag>`, `<dir>/current` pointing at the one in use, and
-//! `<dir>/previous` naming the one before it. An update downloads the newest stable release from GitHub, checks it
-//! against the SHA-256 in the release's signed SHA256SUMS (docs/security.md), unpacks it beside the others and
-//! switches `current`; the supervisor then restarts the game on it and switches back by itself if the new game
-//! doesn't come up.
+//! `<dir>/previous` naming the one before it. An update downloads the current Nightly from GitHub (the only build
+//! Horizon ships since 2026-10-28; GitHub's latest release while there is none), checks it against the SHA-256 in
+//! its signed SHA256SUMS (docs/security.md), unpacks it beside the others as `nightly-<date>-<commit>` and switches
+//! `current`; the supervisor then restarts the game on it and switches back by itself if the new game doesn't come
+//! up.
 
 use crate::{api::Client, backup, config::Config, engine, supervisor};
 use serde_json::{Value, json};
@@ -16,18 +17,33 @@ use std::{
 const REPO: &str = "horizon-rust/horizon";
 /// The release archives for this computer, most specific first: on Linux the server build (no ALSA or
 /// udev), else the full game (releases before the server build).
-const ASSETS: &[&str] = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    &[
-        "horizon-server-linux-x86_64.tar.gz",
-        "horizon-linux-x86_64.tar.gz",
-    ]
-} else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-    &["horizon-macos-arm64.zip"]
-} else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-    &["horizon-windows-x64.zip"]
-} else {
-    &[]
-};
+fn assets_for(os: &str, arch: &str, musl: bool) -> &'static [&'static str] {
+    // The musl archive is manually installed; glibc updates would replace this supervisor
+    // with a binary that cannot even start to roll back on a musl system.
+    if musl {
+        return &[];
+    }
+    match (os, arch) {
+        ("linux", "x86_64") => &[
+            "horizon-server-linux-x86_64.tar.gz",
+            "horizon-linux-x86_64.tar.gz",
+        ],
+        ("macos", "aarch64") => &["horizon-macos-arm64.zip"],
+        ("macos", "x86_64") => &["horizon-macos-x64.zip"],
+        // A release without an ARM64 build: the x64 one, which Windows runs under emulation.
+        ("windows", "aarch64") => &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"],
+        ("windows", "x86_64") => &["horizon-windows-x64.zip"],
+        _ => &[],
+    }
+}
+
+static ASSETS: std::sync::LazyLock<&'static [&'static str]> = std::sync::LazyLock::new(|| {
+    assets_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cfg!(target_env = "musl"),
+    )
+});
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -222,9 +238,10 @@ fn point(link: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
-/// A release on GitHub: its tag and the archive for this computer.
+/// A release on GitHub: its name here and the archive for this computer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
+    /// The release's tag, or for a Nightly the version it installs as (`nightly-2026-10-28-0c02067`).
     pub tag: String,
     pub asset: String,
     pub url: String,
@@ -249,14 +266,21 @@ fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-/// The newest stable release (or `tag`), from GitHub's API, with the SHA-256 its signed checksums
-/// give for this computer's archive.
+/// The current Nightly (or `tag`: a release, `nightly` or a dated `nightly-<date>`), from GitHub's
+/// API, with the SHA-256 its signed checksums give for this computer's archive. With no Nightly
+/// published, GitHub's latest release.
 pub fn release(tag: Option<&str>) -> Result<Release, String> {
-    let url = match tag {
-        Some(tag) => format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}"),
-        None => format!("https://api.github.com/repos/{REPO}/releases/latest"),
-    };
-    let text = fetch(&url).map_err(|e| match e.as_str() {
+    let api = |tag: &str| format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}");
+    let text = match tag {
+        Some(tag) => fetch(&api(tag)),
+        None => match fetch(&api(horizon_release_sign::NIGHTLY)) {
+            Err(e) if e == "404" => fetch(&format!(
+                "https://api.github.com/repos/{REPO}/releases/latest"
+            )),
+            found => found,
+        },
+    }
+    .map_err(|e| match e.as_str() {
         "404" => format!("no release {} on GitHub", tag.unwrap_or("")),
         _ => e,
     })?;
@@ -273,17 +297,26 @@ fn pick(
     fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
     keys: &[horizon_release_sign::PublicKey],
 ) -> Result<Release, String> {
+    pick_for_assets(release, fetch, keys, &ASSETS)
+}
+
+fn pick_for_assets(
+    release: &Value,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+    keys: &[horizon_release_sign::PublicKey],
+    candidates: &[&str],
+) -> Result<Release, String> {
     let tag = release["tag_name"]
         .as_str()
         .ok_or("GitHub's answer has no tag")?;
     let assets = release["assets"].as_array().cloned().unwrap_or_default();
-    let asset = ASSETS
+    let asset = candidates
         .iter()
         .find_map(|name| assets.iter().find(|a| a["name"] == *name))
         .ok_or_else(|| {
             format!(
                 "release {tag} has no archive for this computer ({})",
-                ASSETS.join(", ")
+                candidates.join(", ")
             )
         })?;
     let name = asset["name"].as_str().unwrap_or_default();
@@ -308,17 +341,37 @@ fn pick(
         }
     };
     let sums = attached(horizon_release_sign::SUMS)?;
-    let signature = attached(horizon_release_sign::SIGNATURE)?
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    let sha256 = horizon_release_sign::signed_digest(
-        tag,
-        name,
-        sums.as_deref(),
-        signature.as_deref(),
-        keys,
-    )?;
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    // A Nightly installs under its date and commit, which its title names (strictly: nothing signs
+    // GitHub's publication time), and its SHA256SUMS.v2.sig must sign the checksums for exactly that
+    // version, so an older Nightly can't be served as a newer one.
+    let (tag, sha256) = if horizon_release_sign::is_nightly(tag) {
+        let title = release["name"].as_str().unwrap_or_default();
+        let version = horizon_release_sign::nightly_title_version(title).ok_or_else(|| {
+            format!("the Nightly's title {title:?} doesn't name its date and commit, so it can't be checked")
+        })?;
+        let signature = attached(horizon_release_sign::SIGNATURE_V2)?.map(text);
+        let sha256 = horizon_release_sign::nightly_digest(
+            &version,
+            name,
+            sums.as_deref(),
+            signature.as_deref(),
+            keys,
+        )?;
+        (version, sha256)
+    } else {
+        let signature = attached(horizon_release_sign::SIGNATURE)?.map(text);
+        let sha256 = horizon_release_sign::signed_digest(
+            tag,
+            name,
+            sums.as_deref(),
+            signature.as_deref(),
+            keys,
+        )?;
+        (tag.to_owned(), sha256)
+    };
     Ok(Release {
-        tag: tag.to_owned(),
+        tag,
         asset: name.to_owned(),
         url: asset["browser_download_url"]
             .as_str()
@@ -332,10 +385,12 @@ fn pick(
 /// tagged `vYYYY.MM.DD[.N]` (any `v` and numbers: `Dated`), compared number by number; from 0.2 they are
 /// `vMAJOR.MINOR.PATCH[-PRE]` (`Semver`), and every one of those is newer than every dated one, so
 /// v0.2.0 follows v2026.10.19.15. A pre-release (`v0.3.0-rc.1`) comes before its release, as in semver.
+/// Nightlies (`nightly-<date>-<commit>`, the only builds since 2026-10-28) follow every release, by date.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum TagOrder {
     Dated(Vec<u64>),
     Semver([u64; 3], Prerelease),
+    Nightly(String),
 }
 
 /// A pre-release's place: (is a release, its identifiers). A release has none and follows every
@@ -353,6 +408,9 @@ enum Identifier {
 const FIRST_YEAR: u64 = 1000;
 
 fn tag_order(tag: &str) -> Option<TagOrder> {
+    if let Some(date) = horizon_release_sign::nightly_date(tag) {
+        return Some(TagOrder::Nightly(date.to_owned()));
+    }
     let rest = tag.strip_prefix('v')?;
     let (core, pre) = match rest.split_once('-') {
         Some((core, pre)) => (core, Some(pre)),
@@ -397,6 +455,13 @@ pub fn newer(tag: &str, than: &str) -> bool {
         (Some(_), None) => true,
         _ => false,
     }
+}
+
+/// Whether `tag`, the newest build on GitHub, is an update for a server running `current`: a
+/// different build that isn't older. Two Nightlies of one day are equal by [`newer`], so the one
+/// on GitHub is taken.
+pub fn update_available(tag: &str, current: &str) -> bool {
+    tag != current && tag_order(tag).is_some() && !newer(current, tag)
 }
 
 /// Downloads a release's archive into `<root>/downloads/` and checks its SHA-256; the archive's path.
@@ -599,14 +664,14 @@ pub fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                     json!({
                         "installed": current,
                         "newest": release.tag,
-                        "available": newer(&release.tag, &current),
+                        "available": update_available(&release.tag, &current),
                         "previous": install.previous(),
                     })
                 );
                 return Ok(());
             }
             if check {
-                if newer(&release.tag, &current) {
+                if update_available(&release.tag, &current) {
                     println!(
                         "Horizon {} is out; this server runs {current}. `horizon-server update` installs it.",
                         release.tag
@@ -619,9 +684,16 @@ pub fn command(dir: &Path, args: &[String]) -> Result<(), String> {
                 }
                 return Ok(());
             }
-            if version.is_none() && !newer(&release.tag, &current) {
+            if version.is_none() && !update_available(&release.tag, &current) {
                 println!("Already on the newest release ({current}).");
                 return Ok(());
+            }
+            if newer(&current, &release.tag) {
+                // Asked for by --version: a rollback is allowed, never done without saying so.
+                println!(
+                    "{} is older than {current}, which this server runs: installing it as a rollback.",
+                    release.tag
+                );
             }
             println!("Downloading Horizon {} ({})...", release.tag, release.asset);
             let archive = download(&install, &release)?;
@@ -781,6 +853,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn musl_update_refuses_glibc_before_downloading() {
+        let release = json!({"tag_name": "nightly", "assets": [
+            {"name": "horizon-server-linux-x86_64.tar.gz", "browser_download_url": "server"},
+            {"name": "horizon-linux-x86_64.tar.gz", "browser_download_url": "client"},
+            {"name": "horizon-linux-musl-x86_64.tar.gz", "browser_download_url": "manual"}
+        ]});
+        let error = pick_for_assets(
+            &release,
+            |_| panic!("unsupported updates must not download an archive or signatures"),
+            &[],
+            assets_for("linux", "x86_64", true),
+        )
+        .unwrap_err();
+        assert!(error.contains("no archive for this computer"));
+    }
+
+    #[test]
+    fn windows_updates_choose_the_machine_architecture() {
+        assert_eq!(
+            assets_for("windows", "x86_64", false),
+            &["horizon-windows-x64.zip"]
+        );
+        assert_eq!(
+            assets_for("windows", "aarch64", false),
+            &["horizon-windows-arm64.zip", "horizon-windows-x64.zip"]
+        );
+    }
+
     #[cfg(unix)]
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -854,6 +955,79 @@ mod tests {
         assert!(newer("v0.2.0", "v2026.10.21-x"));
         assert!(newer("v0.2.0", "v0.3.0-"));
         assert!(newer("v0.2.0", "v0.3.0-rc..1"));
+    }
+
+    #[test]
+    fn nightlies_follow_every_release() {
+        let today = "nightly-2026-10-28-0c02067";
+        assert!(newer(today, "v0.2.95"));
+        assert!(newer(today, "v2026.10.21"));
+        assert!(newer(today, "nightly-2026-10-27-1a2b3c4"));
+        assert!(!newer("v0.2.95", today));
+        assert!(newer(today, "local"));
+        // Two builds of one day: neither is newer, but the one on GitHub is the update.
+        let later = "nightly-2026-10-28-9b772b2";
+        assert!(!newer(later, today) && !newer(today, later));
+        assert!(update_available(later, today));
+        assert!(update_available(today, "v0.2.95"));
+        assert!(!update_available(today, today));
+        assert!(!update_available("v0.2.95", today));
+        assert!(!update_available("nightly-2026-10-27-1a2b3c4", today));
+        assert!(update_available("v0.2.96", "v0.2.95"));
+        assert!(!update_available("v0.2.94", "v0.2.95"));
+    }
+
+    #[test]
+    fn a_nightly_is_picked_with_its_version_signature_and_named_by_its_build() {
+        use horizon_release_sign::{SigningKey, sha256_hex, sums_file};
+        let Some(first) = ASSETS.first() else { return };
+        let asset = |name: &str| json!({ "name": name, "browser_download_url": format!("https://example.invalid/{name}") });
+        let (key, _) = SigningKey::generate().unwrap();
+        let sums = sums_file(&[(first.to_string(), sha256_hex(b"server"))]);
+        // SHA256SUMS.sig signed for `channel`, SHA256SUMS.v2.sig for `v2`.
+        let serving = |channel: &str, v2: &str| {
+            let sums = sums.clone();
+            let (one, two) = (
+                key.sign(channel, sums.as_bytes()),
+                key.sign(v2, sums.as_bytes()),
+            );
+            move |url: &str| -> Result<Vec<u8>, String> {
+                match url.rsplit('/').next() {
+                    Some("SHA256SUMS") => Ok(sums.clone().into_bytes()),
+                    Some("SHA256SUMS.sig") => Ok(one.clone().into_bytes()),
+                    Some("SHA256SUMS.v2.sig") => Ok(two.clone().into_bytes()),
+                    _ => Err("404".into()),
+                }
+            }
+        };
+        const TONIGHT: &str = "nightly-2026-10-28-0c02067";
+        let nightly = json!({
+            "tag_name": "nightly", "name": "Nightly 2026-10-28 · 0c02067",
+            "published_at": "2026-10-28T20:40:00Z",
+            "assets": [asset(first), asset("SHA256SUMS"), asset("SHA256SUMS.sig"), asset("SHA256SUMS.v2.sig")],
+        });
+        let picked = pick(&nightly, serving("nightly", TONIGHT), &[key.public()]).unwrap();
+        assert_eq!(picked.tag, TONIGHT);
+        assert_eq!(picked.sha256, sha256_hex(b"server"));
+        // An older Nightly's files under tonight's title: refused.
+        let old = serving("nightly", "nightly-2026-10-21-aaaaaaa");
+        assert!(pick(&nightly, old, &[key.public()]).is_err());
+        // Only the channel's signature (a Nightly from before v2): refused.
+        let mut v1_only = nightly.clone();
+        v1_only["assets"] = json!([asset(first), asset("SHA256SUMS"), asset("SHA256SUMS.sig")]);
+        let err = pick(&v1_only, serving("nightly", TONIGHT), &[key.public()]).unwrap_err();
+        assert!(err.contains("SHA256SUMS.v2.sig"), "{err}");
+        // A title that doesn't name its date and commit: refused, never dated by `published_at`.
+        let mut untitled = nightly.clone();
+        untitled["name"] = json!("Nightly");
+        let err = pick(&untitled, serving("nightly", TONIGHT), &[key.public()]).unwrap_err();
+        assert!(err.contains("doesn't name"), "{err}");
+        // A release's signed list served as the Nightly: refused.
+        assert!(pick(&nightly, serving("v0.2.95", "v0.2.95"), &[key.public()]).is_err());
+        // A Nightly's signed list served as a release: refused.
+        let mut release = nightly.clone();
+        release["tag_name"] = json!("v0.2.95");
+        assert!(pick(&release, serving(TONIGHT, TONIGHT), &[key.public()]).is_err());
     }
 
     #[test]

@@ -1,15 +1,16 @@
-//! `cargo horizon-mod`: make Horizon mods in Rust (`docs/mods.md`).
+//! `cargo horizon-mod`: make sandboxed WASM, content and native Horizon mods.
+//! WASM mods use the SDK; native mods use the pinned trait API.
 //!
-//! - `new <path> [--template code|content] [--name "Name"] [--sdk-path <dir>]`:
-//!   a mod from a template: a Rust crate, or a content mod (no code).
-//! - `build [--debug]`: the `.hmod` in `target/horizon-mod/`, with the mod's
-//!   `assets/` and `data/`; a folder without `Cargo.toml` is content only.
+//! - `new <path> [--name "Name"] [--sdk-path <dir>]`: a WASM mod; use
+//!   `--template content` for content only, or
+//!   `--template native [--horizon <commit>]`, a native trait mod's bundle.
+//! - `build`: the `.hmod` in `target/horizon-mod/`, with the mod's `assets/`
+//!   and `data/`.
 //! - `run [--game <horizon-client>] [-- <game args>]`: build, then play with
-//!   the mod; run `build` again and the game reloads it.
-//! - `test [--debug] [--hmod <file>] [<name>]`: build, then run the mod's
-//!   `tests/*.toml` scripts in the sandbox, with no game.
+//!   the mod.
+//! - `test [--debug] [--hmod <file>] [<name>]`: sandbox scripts, without a game.
 //! - `check <file> [--json]`: what the registry checks of a submission
-//!   (`.hmod`, `.hpack`, resource pack `.zip`), with a trial run for a mod.
+//!   (`.hmod`, `.hnmod`, `.hpack`, resource pack `.zip`, `.hshader`).
 //! - `registry build|review|check|list`: the registry repository's CI.
 use horizon_mods::{
     Capability, Content, Manifest, Package,
@@ -25,7 +26,8 @@ use std::{
 };
 
 const TARGET: &str = "wasm32-unknown-unknown";
-const SDK_GIT: &str = "{ git = \"https://github.com/horizon-rust/horizon\" }";
+// Upstream removed the SDK; use the fork revision that serves API levels 9–16.
+const SDK_GIT: &str = "{ git = \"https://github.com/Worrcc/Horizon-iOS-worc\", rev = \"0bab7370fc7ff1dfb9a2d106803ae4447027940d\" }";
 
 fn main() -> ExitCode {
     // Cargo runs `cargo-horizon-mod horizon-mod <args>`.
@@ -42,7 +44,7 @@ fn main() -> ExitCode {
         Some("test") => test(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("registry") => registry::main(&args[1..]),
-        _ => Err("usage: cargo horizon-mod new <path> [--template code|content] | build [--debug] | run [--game <horizon-client>] [-- <game args>] | test [--debug] [--hmod <file>] [<name>] | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | registry build|review|check|list".into()),
+        _ => Err("usage: cargo horizon-mod new <path> [--name \"Name\"] [--sdk-path <dir>] [--template code|content|native [--horizon <commit>]] | build [--debug] | test [--debug] [--hmod <file>] [<name>] | run [--game <horizon-client>] [-- <game args>] | check <file> [--kind <kind>] [--key <public key> --signature <file.minisig>] [--json] | registry build|review|check|list".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -96,6 +98,9 @@ fn new(args: &[String]) -> Result<(), String> {
             .replace("{name}", &name)
             .replace("{sdk}", &sdk)
     };
+    if flag(args, "--template") == Some("native") {
+        return new_native(dir, &id, flag(args, "--horizon"), fill);
+    }
     let code = [
         ("Cargo.toml", include_str!("../template/Cargo.toml.in")),
         (MANIFEST, include_str!("../template/horizon-mod.toml")),
@@ -149,9 +154,9 @@ fn new(args: &[String]) -> Result<(), String> {
     let files: &[(&str, &str)] = match flag(args, "--template").unwrap_or("code") {
         "code" => &code,
         "content" => &content,
-        other => return Err(format!("no template {other}: code or content")),
+        _ => return Err("--template is code, content or native".into()),
     };
-    for &(file, text) in files {
+    for (file, text) in files {
         let file = fill(file);
         let file = file.as_str();
         let to = dir.join(file);
@@ -164,6 +169,67 @@ fn new(args: &[String]) -> Result<(), String> {
     Content::read(dir, &manifest)?;
     println!(
         "Created {} (mod id {id}). Next: cd {path} && cargo horizon-mod run",
+        dir.display()
+    );
+    Ok(())
+}
+
+/// A native trait mod's bundle in `dir` (docs/native-mods.md, "Trait mods"): its
+/// `horizon-mixin.toml` and an `[api]` crate with one hook. It is what the launcher
+/// builds (`native-build <dir>`) and packs as `mixins/<id>/` of a `.hnmod`
+/// (docs/api/mod-files.md). `horizon` pins the Horizon commit it is made for.
+fn new_native(
+    dir: &Path,
+    id: &str,
+    horizon: Option<&str>,
+    fill: impl Fn(&str) -> String,
+) -> Result<(), String> {
+    // `[mod] id`, as `horizon-native.json` needs it: the template keeps to its characters.
+    if id.len() > 64 {
+        return Err(format!("mod id {id}: 64 characters at most"));
+    }
+    let (compatibility, rev) = match horizon {
+        Some(commit) if horizon_mods::index::native::revision(commit) => (
+            format!("[compatibility]\nhorizon_revision = \"{commit}\"\n"),
+            format!(", rev = \"{commit}\""),
+        ),
+        Some(commit) => {
+            return Err(format!(
+                "--horizon {commit}: a Horizon commit is 40 lowercase hex digits"
+            ));
+        }
+        // Unpinned, it builds on the instance's own Horizon.
+        None => (
+            "# The Horizon commit it is made for; unpinned, it builds on the instance's own.\n\
+             # [compatibility]\n# horizon_revision = \"<40 hex digits>\"\n"
+                .to_owned(),
+            String::new(),
+        ),
+    };
+    let files = [
+        (
+            "horizon-mixin.toml",
+            include_str!("../template/native/horizon-mixin.toml"),
+        ),
+        (
+            "api/Cargo.toml",
+            include_str!("../template/native/api.toml"),
+        ),
+        ("api/src/lib.rs", include_str!("../template/native/lib.rs")),
+        (".gitignore", include_str!("../template/gitignore")),
+    ];
+    for (file, text) in files {
+        let to = dir.join(file);
+        std::fs::create_dir_all(to.parent().expect("a file in the mod"))
+            .map_err(|e| e.to_string())?;
+        let text = fill(text)
+            .replace("{compatibility}", &compatibility)
+            .replace("{rev}", &rev);
+        std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    println!(
+        "Created {} (native mod id {id}). Next: horizon-launcher native-build {} --instance <instance> --trust-native-code",
+        dir.display(),
         dir.display()
     );
     Ok(())
@@ -428,6 +494,70 @@ mod tests {
             ])
             .is_err()
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_native_template_packs_into_an_hnmod_the_registry_accepts() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("horizon-mod-native-{}", std::process::id()));
+        let path = dir.join("machine-mod");
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let args = [
+            path.display().to_string(),
+            "--template".into(),
+            "native".into(),
+            "--horizon".into(),
+            commit.into(),
+        ];
+        new(&args).unwrap();
+        let api = std::fs::read_to_string(path.join("api/Cargo.toml")).unwrap();
+        assert!(api.contains(&format!("rev = \"{commit}\"")), "{api}");
+        // Packed as the launcher packs a mod folder: the manifest, then the bundle under
+        // `mixins/<id>/` (docs/api/mod-files.md).
+        let manifest = serde_json::json!({
+            "schema": 1, "id": "machine_mod", "version": "0.1.0", "game": "26.3",
+            "horizon": commit, "mixins": "b".repeat(40),
+        });
+        let hnmod = dir.join("machine_mod.hnmod");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&hnmod).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("horizon-native.json", options).unwrap();
+        zip.write_all(manifest.to_string().as_bytes()).unwrap();
+        for file in [
+            "horizon-mixin.toml",
+            "api/Cargo.toml",
+            "api/src/lib.rs",
+            ".gitignore",
+        ] {
+            assert!(horizon_mods::index::native::allowed(file), "{file}");
+            zip.start_file(format!("mixins/machine_mod/{file}"), options)
+                .unwrap();
+            zip.write_all(&std::fs::read(path.join(file)).unwrap())
+                .unwrap();
+        }
+        zip.finish().unwrap();
+        let report = check::check(&hnmod, check::kind_of(&hnmod).unwrap(), None, None).unwrap();
+        assert!(report.text().contains("machine_mod"), "{}", report.text());
+        // A pin that is not a commit is refused; with none, the folder builds on the
+        // instance's Horizon.
+        let bad = [
+            dir.join("bad").display().to_string(),
+            "--template".into(),
+            "native".into(),
+            "--horizon".into(),
+            "main".into(),
+        ];
+        assert!(new(&bad).unwrap_err().contains("40 lowercase hex"));
+        let free = dir.join("free");
+        new(&[
+            free.display().to_string(),
+            "--template".into(),
+            "native".into(),
+        ])
+        .unwrap();
+        let mixin = std::fs::read_to_string(free.join("horizon-mixin.toml")).unwrap();
+        assert!(!mixin.contains("\nhorizon_revision"), "{mixin}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -17,7 +17,7 @@ pub(super) struct ModUse {
 
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
-    pub(super) fn mod_use(&mut self, _button: MouseButton, _pressed: bool) -> bool {
+    pub(super) fn wasm_mod_use(&mut self, _button: MouseButton, _pressed: bool) -> bool {
         false
     }
     pub(super) fn mod_key(&mut self, _key: KeyCode, _pressed: bool, _repeat: bool) {}
@@ -64,7 +64,7 @@ pub(super) struct ModFarTerrain {
 #[cfg(feature = "mods")]
 impl Game<'_> {
     /// The main hand's stack as `input` shows it; none when it is empty.
-    pub(super) fn mod_held(&self) -> Option<HeldItem> {
+    pub(super) fn wasm_held(&self) -> Option<HeldItem> {
         let stack = self.inventory.get(self.selected)?.as_ref()?;
         Some(HeldItem {
             id: stack.item.to_string(),
@@ -74,14 +74,14 @@ impl Game<'_> {
     }
     /// The use button while playing: true when a mod claimed the held item,
     /// so the game does nothing else with it (no placing, eating, swing).
-    pub(super) fn mod_use(&mut self, button: MouseButton, pressed: bool) -> bool {
+    pub(super) fn wasm_mod_use(&mut self, button: MouseButton, pressed: bool) -> bool {
         if button != MouseButton::Right || !self.mods.mods.claims_any() {
             return false;
         }
         if !pressed {
             return self.stop_mod_use();
         }
-        let Some(item) = self.mod_held().filter(|h| self.mods.mods.claims(&h.id)) else {
+        let Some(item) = self.wasm_held().filter(|h| self.mods.mods.claims(&h.id)) else {
             return false;
         };
         self.mods.mods.use_start(&item);
@@ -103,12 +103,12 @@ impl Game<'_> {
     }
     /// Once a tick: a claimed use stops when its item leaves the hand or a
     /// screen opens, as vanilla's `releaseUsingItem`.
-    pub(super) fn tick_mod_use(&mut self) {
+    pub(super) fn tick_wasm_mod_use(&mut self) {
         let Some(u) = &self.mods.using else {
             return;
         };
         let still = self
-            .mod_held()
+            .wasm_held()
             .is_some_and(|h| h.id == u.item.id && h.slot == u.item.slot);
         if !still || self.screen != Screen::Playing {
             self.stop_mod_use();
@@ -130,6 +130,7 @@ impl Game<'_> {
             && let Some(name) = horizon_client::keybinds::key_name(key)
             && let Some(stack) = self.mod_browser_pointed()
         {
+            let stack = super::mod_panel::browser_stack(stack);
             self.mods.mods.browser_key(name, &stack);
             return;
         }

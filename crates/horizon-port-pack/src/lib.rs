@@ -21,6 +21,8 @@ pub mod oracle;
 pub mod pipeline;
 pub mod processors;
 pub mod report;
+pub mod resourcepacks;
 pub mod tabula;
+pub mod upgrade;
 pub mod worldgen;
 mod yung;
