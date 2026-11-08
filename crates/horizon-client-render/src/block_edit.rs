@@ -157,6 +157,9 @@ impl World {
             }
             self.revision = self.revision.wrapping_add(1);
             self.modified.insert(key);
+            if let Some(writes) = &mut self.mod_writes {
+                writes.insert(key);
+            }
             if self.block_log.is_some() {
                 self.bulk_log.insert(key);
             }

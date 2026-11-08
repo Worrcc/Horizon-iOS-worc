@@ -27,7 +27,7 @@ struct Jolt {
 
 /// The HUD batch's colour (ABGR) from a mod's 0xAARRGGBB.
 #[cfg(feature = "mods")]
-fn argb(color: u32) -> u32 {
+pub(super) fn argb(color: u32) -> u32 {
     let [a, r, g, b] = color.to_be_bytes();
     rgba(r, g, b, a)
 }
