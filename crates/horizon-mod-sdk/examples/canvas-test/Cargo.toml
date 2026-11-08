@@ -1,0 +1,16 @@
+[package]
+name = "canvas-test"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Example Horizon mod: a gradient image in a round corner box (canvas) and the top block under you (client-world)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../.." }
+
+[lints]
+workspace = true

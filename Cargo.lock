@@ -417,6 +417,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas-test"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "cargo-horizon-mod"
 version = "0.1.0"
 dependencies = [
@@ -1941,6 +1948,13 @@ dependencies = [
  "wit-component",
  "wit-parser",
  "zip",
+]
+
+[[package]]
+name = "horizon-mods-test-canvas-guest"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
 ]
 
 [[package]]
