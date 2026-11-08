@@ -435,6 +435,14 @@ impl Game<'_> {
     /// on a server; none on the title screen.
     pub(super) fn mod_world_id(&self) -> Option<String> {
         self.player.as_ref()?;
+        // Single player runs the world on the integrated server's thread,
+        // so the window's `world_root` is empty there: its folder is the
+        // handle's.
+        if let Some(i) = &self.integrated
+            && !i.folder.is_empty()
+        {
+            return Some(format!("sp:{}", i.folder));
+        }
         let save = || {
             let name = self.world_root.file_name()?.to_string_lossy();
             Some(format!("sp:{name}"))
