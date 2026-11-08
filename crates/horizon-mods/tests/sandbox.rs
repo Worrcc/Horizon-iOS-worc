@@ -29,6 +29,14 @@ api = "0.1"
 capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes"]
 experimental = ["ui", "render", "input", "recipes"]
 "#;
+const CANVAS_MANIFEST: &str = r#"
+id = "test_canvas_guest"
+name = "Test Canvas Guest"
+version = "0.1.0"
+api = "0.1"
+capabilities = ["game-read", "render", "world-read"]
+experimental = ["render", "world-read"]
+"#;
 
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
 fn mods_dir() -> &'static Path {
@@ -54,6 +62,10 @@ fn mods_dir() -> &'static Path {
                 "horizon-mods-test-guest",
                 "-p",
                 "horizon-mods-test-ui-guest",
+                "-p",
+                "horizon-mods-test-canvas-guest",
+                "-p",
+                "canvas-test",
                 "--target-dir",
             ])
             .arg(&target)
@@ -78,6 +90,11 @@ fn mods_dir() -> &'static Path {
             ("mob_orders", example("mob-orders")),
             ("horizon_mods_test_guest", GUEST_MANIFEST.to_string()),
             ("horizon_mods_test_ui_guest", UI_MANIFEST.to_string()),
+            (
+                "horizon_mods_test_canvas_guest",
+                CANVAS_MANIFEST.to_string(),
+            ),
+            ("canvas_test", example("canvas-test")),
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
@@ -244,8 +261,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read"]
+experimental = ["ui", "render", "input", "recipes", "world-read"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -260,6 +277,8 @@ experimental = ["ui", "render", "input", "recipes"]
     assert_eq!(level("coords_hud.hmod"), 0);
     // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
     assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
+    // canvas-test paints an image and reads chunks (level 17).
+    assert_eq!(level("canvas_test.hmod"), 17);
 }
 
 #[test]
@@ -892,6 +911,7 @@ fn the_examples_test_scripts_pass() {
         ("welcome", "welcome"),
         ("beacons", "beacons"),
         ("mob-orders", "mob_orders"),
+        ("canvas-test", "canvas_test"),
     ];
     for (example, hmod) in examples_and_files {
         for entry in std::fs::read_dir(examples.join(example).join("tests")).unwrap() {
@@ -904,7 +924,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 6);
+    assert_eq!(ran, 7);
 }
 
 /// Capability `world` without a world lent (the registry's trial run):
@@ -1504,4 +1524,177 @@ fn mob_orders_consumes_food_once_labels_sneak_clicks_and_targets_a_uuid() {
         if text == "2 slots: 1: minecraft:stick x3"))
     );
     assert_eq!(mods.entries()[0].status, Status::Running);
+}
+
+/// The command's feedback, or its error.
+fn answer(game: &mut TestGame, line: &str) -> Result<String, String> {
+    assert!(game.command(line), "/{line}");
+    let out = game.drain();
+    out.into_iter()
+        .rev()
+        .find_map(|o| match o {
+            Output::Feedback { text, error } => Some(if error { Err(text) } else { Ok(text) }),
+            Output::Stopped { reason, .. } => panic!("stopped: {reason}"),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("/{line} said nothing"))
+}
+
+fn canvas_guest() -> TestGame {
+    TestGame::load(&mods_dir().join("horizon_mods_test_canvas_guest.hmod")).unwrap()
+}
+
+/// Canvas images: sides and the mod's share are checked, updates are
+/// checked and capped per frame, and the texels go up once a frame.
+#[test]
+fn canvas_images_are_checked_capped_and_uploaded() {
+    let mut game = canvas_guest();
+    for bad in ["image 0 4", "image 513 1"] {
+        let e = answer(&mut game, bad).unwrap_err();
+        assert!(e.contains("1 to 512 texels a side"), "{e}");
+    }
+    assert_eq!(answer(&mut game, "image 512 512").as_deref(), Ok("image 1"));
+    let e = answer(&mut game, "image 1 1").unwrap_err();
+    assert!(e.contains("at most 262144 texels"), "{e}");
+    answer(&mut game, "drop 1").unwrap();
+    assert_eq!(answer(&mut game, "image 64 32").as_deref(), Ok("image 2"));
+    // A new image goes up whole and clear, before anything is drawn on it.
+    let first = game.canvas_uploads();
+    assert_eq!(first.len(), 1);
+    assert_eq!((first[0].width, first[0].height), (64, 32));
+    assert!(first[0].rgba.iter().all(|&b| b == 0));
+    assert!(game.canvas_uploads().is_empty());
+    answer(&mut game, "update 2 4 2 3 2").unwrap();
+    let up = game.canvas_uploads();
+    assert_eq!(up.len(), 1);
+    assert_eq!((up[0].width, up[0].height), (3, 2));
+    assert_eq!(&up[0].rgba[..4], &[255, 0, 0, 255]);
+    for bad in ["update 2 62 0 3 1", "update 2 0 31 1 2", "update 9 0 0 1 1"] {
+        assert!(answer(&mut game, bad).is_err(), "{bad}");
+    }
+    let e = answer(&mut game, "update_short 2").unwrap_err();
+    assert!(e.contains("16 bytes, not 15"), "{e}");
+    // 8 KiB a call: 64 fit in a frame's 512 KiB, the 65th waits a frame.
+    for _ in 0..64 {
+        answer(&mut game, "update 2 0 0 64 32").unwrap();
+    }
+    let e = answer(&mut game, "update 2 0 0 64 32").unwrap_err();
+    assert!(e.contains("over 512 KiB"), "{e}");
+    assert_eq!(game.canvas_uploads().len(), 1);
+    answer(&mut game, "update 2 0 0 64 32").unwrap();
+    // The box draws image 2; an image dropped draws nothing.
+    answer(&mut game, "box 2").unwrap();
+    let panel = game.canvas().unwrap();
+    assert_eq!((panel.width, panel.height), (32.0, 32.0));
+    assert_eq!(game.status(), &Status::Running);
+}
+
+/// Two mods' images share the page without overlapping, and a mod's go
+/// when it stops.
+#[test]
+fn canvas_images_of_two_mods_share_the_page() {
+    let mut mods = Mods::load(
+        &[
+            mods_dir().join("canvas_test.hmod"),
+            mods_dir().join("horizon_mods_test_canvas_guest.hmod"),
+        ],
+        |_| true,
+        |_| false,
+    );
+    assert!(mods.uses_canvas());
+    mods.set_snapshot(player());
+    // canvas_test made its 64 × 64 gradient in `init`.
+    let (owner, panel) = mods.canvas_panels().next().unwrap();
+    let Some(horizon_mods::CanvasShape::Image(shape)) = panel.shapes.get(1).cloned() else {
+        panic!("{:?}", panel.shapes)
+    };
+    let gradient = mods.canvas_image(owner, shape.image).unwrap();
+    assert!(mods.command("image 100 20"));
+    let guest = mods.canvas_image(1, 1).unwrap();
+    let overlap = gradient.x < guest.x + guest.width
+        && guest.x < gradient.x + gradient.width
+        && gradient.y < guest.y + guest.height
+        && guest.y < gradient.y + gradient.height;
+    assert!(!overlap, "{gradient:?} {guest:?}");
+    // The gradient's texels: red across, green down.
+    let up = mods.take_canvas_uploads(false);
+    let g = up
+        .iter()
+        .find(|u| u.x == gradient.x && u.y == gradient.y)
+        .unwrap();
+    let px = |x: usize, y: usize| &g.rgba[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
+    assert_eq!(px(0, 0), &[0, 0, 255, 255]);
+    assert_eq!(px(10, 5), &[40, 20, 235, 255]);
+    // After an atlas rebuild, every image goes up again whole.
+    assert!(mods.take_canvas_uploads(false).is_empty());
+    assert_eq!(mods.take_canvas_uploads(true).len(), 2);
+    assert_eq!(mods.frame_budget(0), Some(horizon_mods::FRAME_BUDGET));
+}
+
+/// `game.world-id` and `client-world`'s reads: counts and depths checked,
+/// the view's chunks and changes as lent.
+#[test]
+fn client_world_reads_are_checked() {
+    let mut game = canvas_guest();
+    assert_eq!(
+        answer(&mut game, "world_id").as_deref(),
+        Ok("Some(\"sp:Test World\")")
+    );
+    let e = answer(&mut game, "columns 17 1").unwrap_err();
+    assert!(e.contains("at most 16 chunks"), "{e}");
+    let e = answer(&mut game, "columns 2 0").unwrap_err();
+    assert!(e.contains("depth is 1 to 16"), "{e}");
+    assert_eq!(
+        answer(&mut game, "columns 3 16").as_deref(),
+        Ok("3 chunks, 3 loaded")
+    );
+    game.set_block(20, 64, 5, "minecraft:stone");
+    game.set_block(-200, 64, 5, "minecraft:stone");
+    assert_eq!(
+        answer(&mut game, "table").as_deref(),
+        Ok("2 states, 2 blocks, 2 sprites")
+    );
+    assert_eq!(
+        answer(&mut game, "texture block/stone").as_deref(),
+        Ok("none")
+    );
+    // Only the chunk within 4 of the player's; the far one is past it.
+    assert_eq!(
+        answer(&mut game, "changes 0 4").as_deref(),
+        Ok("now 3: [(1, 0)]")
+    );
+    assert_eq!(answer(&mut game, "changes 3 4").as_deref(), Ok("now 3: []"));
+}
+
+/// The frame budget: asked for and clamped, and `work-left` keeps a busy
+/// `frame` hook to it once the rate is measured. Timing, so run alone and
+/// in release (`--ignored`; with `--features force-pulley` as on iOS).
+#[test]
+#[ignore]
+fn the_frame_budget_converges() {
+    let mut game = canvas_guest();
+    assert_eq!(
+        answer(&mut game, "budget 9999").as_deref(),
+        Ok("granted 500")
+    );
+    assert_eq!(
+        answer(&mut game, "budget 300").as_deref(),
+        Ok("granted 300")
+    );
+    answer(&mut game, "work on").unwrap();
+    let mut times = Vec::new();
+    for _ in 0..400 {
+        let started = Instant::now();
+        game.frames(1);
+        times.push(started.elapsed().as_secs_f64() * 1e6);
+    }
+    let mut last: Vec<f64> = times[200..].to_vec();
+    last.sort_by(f64::total_cmp);
+    let median = last[last.len() / 2];
+    println!(
+        "frame call, µs: first {:.0}, tenth {:.0}, median of the last 200 {median:.0}",
+        times[0], times[9]
+    );
+    assert!((240.0..=360.0).contains(&median), "{median} µs");
+    assert_eq!(game.status(), &Status::Running);
 }
