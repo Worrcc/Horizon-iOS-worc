@@ -114,6 +114,25 @@ pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
 use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
+/// Capability `world-read`'s imports (docs/mods.md): the player's loaded world.
+mod world_read_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "world-read-host",
+    });
+}
+use world_read_bindings::WorldReadHost;
+mod canvas_host;
+mod client_world_host;
+pub use canvas_host::{
+    CANVAS_PAGE, CanvasImageShape, CanvasPanel, CanvasShape, CanvasUpload, FRAME_BUDGET,
+    FRAME_BUDGET_MAX, IMAGE_SIDE, IMAGE_TEXELS, ImageRect, UPLOAD_BYTES,
+};
+pub use client_world_host::{
+    BlockFace, BlockTable, CHANGES_MAX, CHANGES_RADIUS, COLUMN_CHUNKS, COLUMN_DEPTH, ChunkColumns,
+    ClientDimension, ClientTexture, ClientWorldView, ColumnLayer, FaceTint, NO_SPRITE, NO_TOP,
+    state_flags,
+};
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -245,6 +264,9 @@ pub struct Snapshot {
     pub placing: bool,
     /// The player is in creative mode (`recipes.give`).
     pub creative: bool,
+    /// Which world the player is in (`game.world-id`): `sp:<save folder>`
+    /// or `mp:<address>`; none on the title screen.
+    pub world_id: Option<String>,
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -563,6 +585,10 @@ struct Running {
     entity_raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
+    /// It imports `canvas` (capability `render`).
+    canvas: bool,
+    /// It imports capability `world-read`.
+    reads_client_world: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -675,6 +701,9 @@ struct State {
     limits: StoreLimits,
     world: WorldSlot,
     inventories: InventoriesSlot,
+    /// Capability `render`'s images, canvas box and frame budget.
+    canvas: canvas_host::CanvasState,
+    client_world: client_world_host::ClientWorldSlot,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -687,6 +716,12 @@ pub struct Mods {
     out: Vec<Output>,
     world: WorldSlot,
     inventories: InventoriesSlot,
+    /// Capability `world-read`'s view, lent by the game.
+    client_world: client_world_host::ClientWorldSlot,
+    /// The mod-image page the running mods' canvases share.
+    page: canvas_host::PageSlot,
+    /// The calls under way are `frame` calls: the budget controller runs.
+    framing: bool,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -770,6 +805,19 @@ impl Mods {
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
         let mut mods = Mods::default();
+        mods.load_into(runs, paths, enabled, reserved);
+        mods
+    }
+    /// [`Mods::load_for`] into these mods, which have none yet: what the
+    /// game lent them ([`Mods::lend_client_world`]) serves the mods' `init`.
+    pub fn load_into(
+        &mut self,
+        runs: Runs,
+        paths: &[PathBuf],
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+    ) {
+        let mods = self;
         for path in paths {
             let modified = modified(path);
             let mut entry = Entry {
@@ -807,7 +855,6 @@ impl Mods {
             }
             mods.entries.push(entry);
         }
-        mods
     }
 
     fn engine(&mut self) -> Result<&(Engine, Linker<State>), String> {
@@ -817,8 +864,9 @@ impl Mods {
             // iOS: Pulley bytecode in place of machine code, which only a JIT entitlement (or a
             // debugger attached) could run; bounds checks in place of guard pages and signal
             // handlers, and memories that grow by copying, not inside a 4 GiB reservation an
-            // app's address space has no room for.
-            #[cfg(target_os = "ios")]
+            // app's address space has no room for. `force-pulley` does the
+            // same on any host, to test and time mods as iOS runs them.
+            #[cfg(any(target_os = "ios", feature = "force-pulley"))]
             config
                 .target("pulley64")
                 .map_err(|e| e.to_string())?
@@ -862,6 +910,23 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            // `work-left` reads the store's fuel, which a plain host
+            // function has no way to.
+            linker.allow_shadowing(true);
+            linker
+                .instance("horizon:mods/canvas@0.1.0")
+                .map_err(|e| e.to_string())?
+                .func_wrap(
+                    "work-left",
+                    |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
+                        let fuel = store.get_fuel()?;
+                        Ok((canvas_host::work_left(store.data().canvas.work, fuel),))
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            linker.allow_shadowing(false);
+            WorldReadHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
@@ -904,6 +969,8 @@ impl Mods {
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
         let inventories = self.inventories.clone();
+        let client_world = self.client_world.clone();
+        let page = self.page.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -947,10 +1014,16 @@ impl Mods {
                 .build(),
             world,
             inventories,
+            canvas: canvas_host::CanvasState::new(page),
+            client_world,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+        store.data_mut().canvas.work = canvas_host::Work {
+            start: FUEL_INIT,
+            soft: FUEL_INIT,
+        };
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
@@ -1006,6 +1079,8 @@ impl Mods {
                 .any(|f| f == "game.raycast" || f == "game.raycast-entity"),
             entity_raycasts: functions.iter().any(|f| f == "game.raycast-entity"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            canvas: functions.iter().any(|f| f.starts_with("canvas.")),
+            reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
         }))
     }
 
@@ -1088,10 +1163,24 @@ impl Mods {
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
+        // A `frame` call's soft budget is the granted time in fuel at the
+        // rate the mod burned it here so far; other hooks' is their fuel.
+        let canvas = &mut run.store.data_mut().canvas;
+        let soft = if self.framing {
+            canvas.budget.allowance(fuel)
+        } else {
+            fuel
+        };
+        canvas.work = canvas_host::Work { start: fuel, soft };
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
+        let took = started.elapsed();
         // An average over about the last 64 calls.
-        entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
+        entry.cost = (entry.cost * 63 + took) / 64;
+        if self.framing && result.is_ok() {
+            let used = fuel.saturating_sub(run.store.get_fuel().unwrap_or(0));
+            run.store.data_mut().canvas.budget.observe(used, took);
+        }
         let data = run.store.data_mut();
         let (open, close) = (
             std::mem::take(&mut data.ui.open),
@@ -1128,7 +1217,9 @@ impl Mods {
     }
     /// A rendered frame, `seconds` after the last.
     pub fn frame(&mut self, seconds: f32) {
+        self.framing = true;
         self.each_client(FUEL_FRAME, |h| h.frame, |m, s| m.call_frame(s, seconds));
+        self.framing = false;
     }
     /// A chat line the player received, as plain text.
     pub fn chat(&mut self, text: &str) {
@@ -1738,6 +1829,9 @@ impl game::Host for State {
         let (at, hit) = self.snapshot.view_hit.as_ref()?;
         // NaN compares false: no hit.
         (*at <= distance.min(RAYCAST_MAX) && !distance.is_nan()).then(|| hit.clone())
+    }
+    fn world_id(&mut self) -> Option<String> {
+        self.snapshot.world_id.clone()
     }
     fn raycast_entity(&mut self, distance: f32) -> Option<EntityHit> {
         let (at, hit) = self.snapshot.view_entity.as_ref()?;
@@ -3137,6 +3231,8 @@ mod entity_tests {
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
             inventories: InventoriesSlot::default(),
+            canvas: canvas_host::CanvasState::new(Default::default()),
+            client_world: Default::default(),
         }
     }
 
@@ -3205,7 +3301,7 @@ mod entity_tests {
             if interface.name.as_deref() == Some("game") {
                 interface
                     .functions
-                    .retain(|name, _| name != "raycast-entity");
+                    .retain(|name, _| name != "raycast-entity" && name != "world-id");
             }
         }
         let world = resolve
