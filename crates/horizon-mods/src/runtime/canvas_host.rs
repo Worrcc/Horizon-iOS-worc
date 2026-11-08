@@ -512,8 +512,10 @@ mod tests {
 
     #[test]
     fn the_budget_follows_the_measured_rate() {
-        let mut b = Budget::default();
-        b.granted = 300;
+        let mut b = Budget {
+            granted: 300,
+            ..Budget::default()
+        };
         let cap = 10_000_000;
         // Before any frame: the low first guess, at least the floor.
         let first = ((FIRST_RATE * 300.0) as u64).max(SOFT_MIN);
