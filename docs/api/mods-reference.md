@@ -604,7 +604,7 @@ Every block state the game knows, as the loaded resource packs draw them (`block
 | `sprites` | `list<string>` | The texture names faces use, `block/grass_block_top` (a mod's with its namespace), for `texture`. |
 | `state-block` | `list<u16>` | Each state's block, an index into `blocks`. |
 | `state-flags` | `list<u16>` | Each state's facts, bits from the lowest: air (1), drawn as nothing (2: a barrier, light), water (4), lava (8), waterlogged (16), see-through like glass or leaves (32), no collision like a plant (64), a full face on top (128); and the light it gives (0 to 15) << 8. |
-| `state-top` | `list<face>` | What each state draws facing up, and facing south. |
+| `state-top` | `list<face>` | What each state draws facing up, and facing south; a model with nothing flat on either (a flower's crossed planes) gives its first face for both. |
 | `state-side` | `list<face>` |  |
 | `constant-tint` | `list<u32>` | Each state's tint for tint source `constant`, 0xRRGGBB (0 when none). |
 | `map-color` | `list<u32>` | Each state's vanilla map colour, 0xRRGGBB (0 for none): a fallback. |
@@ -635,7 +635,7 @@ A chunk's 256 columns, x fastest: column `z * 16 + x`.
 | Field | Type | |
 | --- | --- | --- |
 | `revision` | `u64` | The chunk's change counter, as `changes` counts: the same value means the same blocks. |
-| `tops` | `list<s16>` | Each column's top block's y in the layer; -32768 for none (air all the way down). |
+| `tops` | `list<s16>` | Each column's top block's y in the layer, water and lava included; -32768 for none (air all the way down). |
 | `states` | `list<u32>` | For each column, `depth` state ids from its top block down (air below the world's bottom). |
 | `water` | `list<u8>` | Each column's water depth from its top block down (0 when the top block isn't water), at most 255. |
 | `light` | `list<u8>` | The light just above each top block: sky light << 4 \| block light. |
@@ -645,6 +645,7 @@ A chunk's 256 columns, x fastest: column `z * 16 + x`.
 | --- | --- | --- |
 | `dimension` | `func() -> option<dimension-info>` | The player's dimension; none on the title screen. |
 | `block-table` | `func() -> block-states` | The block table (about 30000 states: read it in `init` or when its version changes, not every frame). Empty lists on a game without block models (a dedicated server). |
+| `table-version` | `func() -> u64` | The block table's `version` now, without reading the table: cheap enough to ask every tick, to know when the packs reloaded. |
 | `texture` | `func(name: string) -> option<texture-pixels>` | A texture by its name in `block-states.sprites`, from the loaded resource packs (a higher pack's over a lower one's); none for one no block model uses. |
 | `columns` | `func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<chunk-columns>>, string>` | The chunks at these chunk coordinates (block x >> 4, z >> 4), each column's `depth` blocks (1 to 16) from the top in `layer`; none for a chunk the game hasn't loaded. At most 16 chunks a call: more, or a depth out of range, is an error. |
 | `changes` | `func(since: u64, radius: u32) -> tuple<u64, list<tuple<s32, s32>>>` | The chunks within `radius` chunks of the player (at most 64) whose change counter moved past `since`: changed, loaded or unloaded since (an unloaded one now reads none), nearest first, at most 4096. Returns the counter now, for the next call; 0 asks for every loaded chunk. |

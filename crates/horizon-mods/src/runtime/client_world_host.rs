@@ -44,6 +44,11 @@ pub trait ClientWorldView: std::any::Any + Send {
     fn dimension(&self) -> Option<ClientDimension>;
     /// The loaded packs' block table (`client-world.block-table`).
     fn block_table(&mut self) -> BlockTable;
+    /// The block table's `version` (`client-world.table-version`), without
+    /// building it.
+    fn table_version(&mut self) -> u64 {
+        self.block_table().version
+    }
     /// A texture of the block table's `sprites`, by name.
     fn texture(&mut self, name: &str) -> Option<ClientTexture>;
     /// One chunk's columns, `depth` (1 to [`COLUMN_DEPTH`]) blocks of each in
@@ -93,6 +98,9 @@ impl client_world::Host for State {
     }
     fn block_table(&mut self) -> BlockTable {
         self.with_view(|v| v.block_table()).unwrap_or_else(no_table)
+    }
+    fn table_version(&mut self) -> u64 {
+        self.with_view(|v| v.table_version()).unwrap_or(0)
     }
     fn texture(&mut self, name: String) -> Option<ClientTexture> {
         if name.len() > 256 {

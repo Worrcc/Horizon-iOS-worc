@@ -574,7 +574,9 @@ interface client-world {
         /// see-through like glass or leaves (32), no collision like a plant
         /// (64), a full face on top (128); and the light it gives (0 to 15) << 8.
         state-flags: list<u16>,
-        /// What each state draws facing up, and facing south.
+        /// What each state draws facing up, and facing south; a model with
+        /// nothing flat on either (a flower's crossed planes) gives its
+        /// first face for both.
         state-top: list<face>,
         state-side: list<face>,
         /// Each state's tint for tint source `constant`, 0xRRGGBB (0 when none).
@@ -603,8 +605,8 @@ interface client-world {
         /// The chunk's change counter, as `changes` counts: the same value
         /// means the same blocks.
         revision: u64,
-        /// Each column's top block's y in the layer; -32768 for none (air
-        /// all the way down).
+        /// Each column's top block's y in the layer, water and lava
+        /// included; -32768 for none (air all the way down).
         tops: list<s16>,
         /// For each column, `depth` state ids from its top block down
         /// (air below the world's bottom).
@@ -625,6 +627,9 @@ interface client-world {
     /// version changes, not every frame). Empty lists on a game without
     /// block models (a dedicated server).
     block-table: func() -> block-states;
+    /// The block table's `version` now, without reading the table: cheap
+    /// enough to ask every tick, to know when the packs reloaded.
+    table-version: func() -> u64;
     /// A texture by its name in `block-states.sprites`, from the loaded
     /// resource packs (a higher pack's over a lower one's); none for one no
     /// block model uses.

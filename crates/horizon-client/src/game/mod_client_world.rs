@@ -243,8 +243,28 @@ fn build_table(context: &WorkerContext, res: &Resources) -> BlockTable {
                 }
             }
         };
-        t.state_top.push(face(Direction::Up));
-        t.state_side.push(face(Direction::South));
+        let (mut up, mut south) = (face(Direction::Up), face(Direction::South));
+        if !air && up.sprite == NO_SPRITE && south.sprite == NO_SPRITE {
+            // Nothing flat on either side (a flower's crossed planes, a
+            // rotated element): the model's first face stands for both, with
+            // its tint, as a map averages a plant's loose quads.
+            let models = (render.model_catalog)
+                .collect(id, horizon_core::position::BlockPos::new(0, 0, 0))
+                .unwrap_or_default();
+            if let Some(f) = models.iter().flat_map(|(_, m)| &m.faces).next() {
+                let (tint, c) = tint(context.tables.tint_source(id, f.quad.tint_index));
+                if c != 0 {
+                    constant = c;
+                }
+                up = BlockFace {
+                    sprite: f.layer,
+                    tint,
+                };
+                south = up;
+            }
+        }
+        t.state_top.push(up);
+        t.state_side.push(south);
         t.state_block.push(block);
         t.state_flags.push(bits);
         t.constant_tint.push(constant);
@@ -290,6 +310,9 @@ impl ClientWorldView for LentClientWorld {
     fn block_table(&mut self) -> BlockTable {
         (*self.table()).clone()
     }
+    fn table_version(&mut self) -> u64 {
+        self.context.render.generation
+    }
     fn texture(&mut self, name: &str) -> Option<ClientTexture> {
         let render = &self.context.render;
         let layers = &render.sprite_layers;
@@ -324,10 +347,14 @@ impl ClientWorldView for LentClientWorld {
         let revision = self.revisions.chunks.get(&key).map_or(0, |r| r.0);
         let depth = usize::from(depth);
         let (min_y, max_y) = (chunk.min_y(), chunk.max_y());
+        // Fluids are drawn as nothing by their block (the fluid renderer
+        // draws them), but they are what a column shows: only air and
+        // invisible blocks without a fluid are passed.
         let skip = |id: u32| {
-            flags
-                .get(id as usize)
-                .is_none_or(|f| f & (flags::AIR | flags::INVISIBLE) != 0)
+            flags.get(id as usize).is_none_or(|f| {
+                f & flags::AIR != 0
+                    || (f & flags::INVISIBLE != 0 && f & (flags::WATER | flags::LAVA) == 0)
+            })
         };
         // As the game's minimap: from the highest section holding a block.
         let air = self.res.facts().air.0;

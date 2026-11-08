@@ -189,6 +189,9 @@ impl crate::ClientWorldView for ScriptClientWorld {
             state_block,
         }
     }
+    fn table_version(&mut self) -> u64 {
+        self.states.len() as u64
+    }
     fn texture(&mut self, name: &str) -> Option<ClientTexture> {
         let t = self.textures.get(name)?;
         let [a, r, g, b] = t.color.to_be_bytes();
