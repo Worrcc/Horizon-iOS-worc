@@ -71,13 +71,15 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | Interface | Capability | Functions |
 |---|---|---|
 | `log` | always | `write(level, message)`, in the game log as `[mod <id>]` |
-| `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id; `raycast-entity(distance)` (API level 16): the nearest living entity before a block, its display name and current/max health |
+| `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id; `raycast-entity(distance)` (API level 16): the nearest living entity before a block, its display name and current/max health; `world-id()` (API level 17): `sp:<save folder>` or `mp:<address>`, for what a mod keeps per world |
 | `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call) |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box, and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
+| `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 512, 512 × 512 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 512 KiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default); `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. The game measures how fast the mod burns fuel on this device (Pulley on iOS is slower) and sets each call's budget from it. **Experimental:** `experimental = ["render"]` |
+| `client-world` | `world-read` | API level 17. What this game has loaded, in single player and on any server (only what the server sent): `columns(chunks, layer, depth)`: up to 16 chunks a call, each column's top block in the layer (the surface, or the floor below a height as the game's minimap maps caves and the Nether) and up to 16 state ids down from it, its water depth, the light above it and its biome's grass, foliage and water colours; `changes(since, radius)`: the chunks changed, loaded or unloaded since a counter, nearest first; `block-table()`: every block state's block, facts (air, water, see-through, ...), the texture its model shows up and south with its tint source, and its map colour, from the loaded packs (its `version` changes on a resource reload); `texture(name)`: a block texture's RGBA from the loaded packs, so a mod averages its own colours; `dimension()`, `light(x, y, z)`, `biome(x, y, z)`. **Experimental:** `experimental = ["world-read"]` |
 | `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
 | `recipes` | `recipes` | `items()`: every item in the registry's order, with its name in the player's language and its tags; `all()`: every recipe (crafting, smelting, blasting, smoking, campfire, stonecutting, smithing, brewing), its slots as the stacks that fit each, its results, cooking time and experience, and the recipe book's id for it; `known()`: the book ids the player's recipe book holds; `place(book-id, all)`: the recipe book's click on a recipe, in the open inventory's or crafting table's grid (refused for a recipe the player's book doesn't hold, as vanilla's server refuses it); `give(stack)`: in creative mode, the stack into the player's inventory, as from the creative inventory. The recipes are the world's in single player and on Horizon's servers, vanilla 26.3's on any other server (a client is sent no others), while `known` follows that server's book. The game makes the tables once, when a mod first reads them. **Experimental:** `experimental = ["recipes"]` |
 
@@ -105,7 +107,6 @@ loading. Ordered by what the first native ports need:
 | `keys` | keybinds | registered binds appear in Controls; press/release events |
 | `target` | the crosshair's block or entity, with its state and NBT summary | Jade/WTHIT-style tooltips |
 | `inventory-read` | the player's inventory, held item, open container | AppleSkin, recipe viewers |
-| `world-read` | blocks and biomes around the player, within the render distance | minimaps, schematics |
 | `render` (world) | world-space lines, boxes and billboards, beside the HUD shapes `render` has | Litematica-style placement, waypoints |
 | `registries` | new blocks, items, entities and recipes, mostly data: JSON models, textures, loot and recipes in the `.hmod`'s `assets/` and `data/` | server side; see [Multiplayer](#multiplayer) |
 | `server` | world events (entity spawn/death), game rules, world read/write, typed server commands | after [server mods 0.3](#server-mods-api-03-experimental)'s players, chat, blocks and commands |
@@ -171,7 +172,12 @@ run-to-run spread.
 million for a command or chat line. A runaway loop ends in a fraction of a
 second (the sandbox test's endless `/spin` is cut well within its 5 s limit)
 instead of hanging the game. The target budgets a mod should stay under are
-tighter: **1 ms per tick and 0.1 ms per frame**. The runtime keeps each mod's
+tighter: **1 ms per tick and 0.1 ms per frame**; a mod with heavy `frame` work
+(a minimap baking chunks) asks for up to 0.5 ms with
+`canvas.request-frame-budget` and stops when `canvas.work-left` says it is
+spent (`the_frame_budget_converges` in the sandbox tests: a 300 µs budget
+holds to within a few percent, with Cranelift and on Pulley,
+`--features force-pulley`, as iOS runs mods). The runtime keeps each mod's
 average call time (`Entry::cost`); the Mods page will show it, and a mod over
 budget for long will be flagged, then paused.
 
@@ -1029,6 +1035,22 @@ maximum health includes runtime attribute changes. On servers these are the
 values synchronized to the client. Existing records and `game.raycast` are
 unchanged. Block Info uses this call for entities and its existing block raycast
 for blocks; its position, distance, source and coordinate settings apply to both.
+
+**API level 17: pixels and the loaded world.** Capability `render` adds the
+`canvas` interface (a mod's own images in a corner box, a frame budget and
+`work-left`), and the new experimental capability `world-read` the
+`client-world` interface (whole chunks as columns, change counters, the
+packs' block table and textures); `game-read` adds `game.world-id`. They are
+new interfaces and functions only: every earlier record, variant and world
+is unchanged, so mods built before them load as they did, and a mod that
+uses them is refused by an older Horizon with "made for a newer Horizon".
+The SDK example `canvas-test` paints a gradient into a round box and says the
+top block under the player. Images live on the HUD atlas's mod-image page
+(1024 × 1024), which the game keeps while a client mod that is on imports
+`canvas` (or a native mod is built in; the two share it, so a native mod's
+`native_mod_image` may cover canvas images). A chunk's change counter moves
+when a block in it is written, when it loads, is sent again or unloads; light
+or biome updates alone don't move it.
 
 ## Horizon's official mods
 
