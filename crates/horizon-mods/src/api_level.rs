@@ -7,13 +7,28 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 16;
+pub const LEVEL: u32 = 17;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 85] = [
+pub const FUNCTIONS: [(&str, u32); 100] = [
+    ("game.world-id", 17),
+    ("canvas.create-image", 17),
+    ("canvas.update-image", 17),
+    ("canvas.drop-image", 17),
+    ("canvas.set-corner", 17),
+    ("canvas.clear-corner", 17),
+    ("canvas.request-frame-budget", 17),
+    ("canvas.work-left", 17),
+    ("client-world.dimension", 17),
+    ("client-world.block-table", 17),
+    ("client-world.texture", 17),
+    ("client-world.columns", 17),
+    ("client-world.changes", 17),
+    ("client-world.light", 17),
+    ("client-world.biome", 17),
     ("game.raycast-entity", 16),
     ("entities.effect", 15),
     ("entities.push", 15),

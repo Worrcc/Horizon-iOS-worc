@@ -28,6 +28,13 @@
 //! [`ui::open_screen`] and a page in Options > Mods with
 //! [`ui::set_settings`]; what the player does with them comes back as
 //! [`Mod::ui_select`], [`Mod::ui_closed`] and [`Mod::ui_settings_opened`].
+//!
+//! Pixels (capability `render`, API level 17): [`canvas::create_image`] and
+//! [`canvas::update_image`] fill images that [`canvas::set_corner`] shows in
+//! a corner box; [`canvas::request_frame_budget`] and [`canvas::work_left`]
+//! keep heavy `frame` work to a time budget. The loaded world (capability
+//! `world-read`, API level 17): [`client_world::columns`] reads whole chunks,
+//! [`client_world::block_table`] and [`client_world::texture`] the packs.
 
 wit_bindgen::generate!({
     path: "wit",
@@ -40,8 +47,33 @@ wit_bindgen::generate!({
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    browser, chat, command, game, hud, input, log, recipes, render, storage, ui,
+    browser, canvas, chat, client_world, command, game, hud, input, log, recipes, render, storage,
+    ui,
 };
+
+/// `client_world::BlockStates::state_flags`' bits (capability `world-read`).
+pub mod state_flags {
+    pub const AIR: u16 = 1;
+    /// Drawn as nothing: a barrier, a light block, a structure void.
+    pub const INVISIBLE: u16 = 2;
+    pub const WATER: u16 = 4;
+    pub const LAVA: u16 = 8;
+    pub const WATERLOGGED: u16 = 16;
+    /// See-through like glass, ice or leaves.
+    pub const SEE_THROUGH: u16 = 32;
+    /// No collision, like a plant or a torch.
+    pub const NO_COLLISION: u16 = 64;
+    /// A full face on top (a minimap draws the block, not what's under it).
+    pub const FULL_TOP: u16 = 128;
+    /// The light a state gives (0 to 15), from these bits.
+    pub fn emission(flags: u16) -> u8 {
+        (flags >> 8) as u8 & 15
+    }
+}
+/// `client_world::ChunkColumns::tops` for a column with no block.
+pub const NO_TOP: i16 = i16::MIN;
+/// `client_world::Face::sprite` for a side that draws nothing.
+pub const NO_SPRITE: u32 = u32::MAX;
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.
