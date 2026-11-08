@@ -23,7 +23,7 @@ use super::{
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The side of the shared image page, in texels (the game's
@@ -177,7 +177,12 @@ impl Budget {
         let fuel = self.rate.unwrap_or(FIRST_RATE) * f64::from(self.granted);
         (fuel as u64).clamp(SOFT_MIN, cap.max(SOFT_MIN))
     }
-    /// A frame call burned `fuel` in `took` (host calls included).
+    /// The fuel `took` of host time counts for at the measured rate.
+    pub(super) fn fuel_for(&self, took: Duration) -> u64 {
+        (self.rate.unwrap_or(FIRST_RATE) * took.as_secs_f64() * 1e6) as u64
+    }
+    /// A frame call burned `fuel` in `took` of the mod's own code (its
+    /// charged host calls' time taken off).
     pub(super) fn observe(&mut self, fuel: u64, took: Duration) {
         let micros = took.as_secs_f64() * 1e6;
         if fuel < SAMPLE_FUEL || micros < 1.0 {
@@ -191,12 +196,63 @@ impl Budget {
     }
 }
 
+/// Wall-clock times of a mod's `frame` calls over a window, for the log
+/// `HORIZON_MOD_FRAME_TIMES=N` asks for (one line per N calls): the budget
+/// controller works in fuel, this checks what it bought in time.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct FrameTimes {
+    calls: u32,
+    sum: Duration,
+    max: Duration,
+    /// Calls over the 0.3 ms and the 0.5 ms marks.
+    over_300: u32,
+    over_500: u32,
+}
+impl FrameTimes {
+    /// Adds a call; past `window` calls, the window's line, and a new window.
+    pub(super) fn record(&mut self, took: Duration, window: u32) -> Option<String> {
+        self.calls += 1;
+        self.sum += took;
+        self.max = self.max.max(took);
+        self.over_300 += u32::from(took > Duration::from_micros(300));
+        self.over_500 += u32::from(took > Duration::from_micros(500));
+        if self.calls < window.max(1) {
+            return None;
+        }
+        let line = format!(
+            "{} calls: avg {} µs, max {} µs, {} over 300 µs, {} over 500 µs",
+            self.calls,
+            (self.sum / self.calls).as_micros(),
+            self.max.as_micros(),
+            self.over_300,
+            self.over_500,
+        );
+        *self = Self::default();
+        Some(line)
+    }
+}
+/// The window of `HORIZON_MOD_FRAME_TIMES`, read once; None when unset.
+pub(super) fn frame_times_window() -> Option<u32> {
+    static WINDOW: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *WINDOW.get_or_init(|| {
+        std::env::var("HORIZON_MOD_FRAME_TIMES")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .filter(|&n: &u32| n > 0)
+    })
+}
+
 /// The current hook call's fuel at its start and its soft budget, for
 /// `work-left`.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Work {
     pub(super) start: u64,
     pub(super) soft: u64,
+    /// Fuel the call's dear host calls (reading chunks, uploading texels)
+    /// count for: they burn none, but take the frame's time.
+    pub(super) host: u64,
+    /// Their time, so the rate is measured over the mod's own code alone.
+    pub(super) host_time: Duration,
 }
 
 /// `work-left` from the fuel the store has left now.
@@ -204,7 +260,10 @@ pub(super) fn work_left(work: Work, fuel_now: u64) -> u64 {
     if work.soft == 0 {
         return 0;
     }
-    let used = work.start.saturating_sub(fuel_now);
+    let used = work
+        .start
+        .saturating_sub(fuel_now)
+        .saturating_add(work.host);
     let left = work.soft.saturating_sub(used);
     (u128::from(left) * u128::from(WORK_SCALE) / u128::from(work.soft)) as u64
 }
@@ -220,8 +279,17 @@ pub(super) struct CanvasState {
     pub(super) panel: Option<CanvasPanel>,
     pub(super) budget: Budget,
     pub(super) work: Work,
+    pub(super) times: FrameTimes,
+    /// The same for its other hooks' calls (mostly `tick`).
+    pub(super) other_times: FrameTimes,
 }
 impl CanvasState {
+    /// Counts the host's time since `started` against the call's budget.
+    pub(super) fn charge(&mut self, started: Instant) {
+        let took = started.elapsed();
+        self.work.host_time += took;
+        self.work.host = self.work.host.saturating_add(self.budget.fuel_for(took));
+    }
     pub(super) fn new(page: PageSlot) -> Self {
         Self {
             page,
@@ -232,6 +300,8 @@ impl CanvasState {
             panel: None,
             budget: Budget::default(),
             work: Work::default(),
+            times: FrameTimes::default(),
+            other_times: FrameTimes::default(),
         }
     }
     fn page(&self) -> std::sync::MutexGuard<'_, Page> {
@@ -359,40 +429,10 @@ impl canvas::Host for State {
         height: u32,
         rgba: Vec<u8>,
     ) -> Result<(), String> {
-        let c = &mut self.canvas;
-        let Some(img) = c.images.get_mut(&image) else {
-            return Err(format!("no image {image}"));
-        };
-        let (x1, y1) = (x.checked_add(width), y.checked_add(height));
-        if x1.is_none_or(|x1| x1 > img.width) || y1.is_none_or(|y1| y1 > img.height) {
-            return Err(format!(
-                "{width} × {height} at {x}, {y} is outside the {} × {} image",
-                img.width, img.height
-            ));
-        }
-        let want = u64::from(width) * u64::from(height) * 4;
-        if rgba.len() as u64 != want {
-            return Err(format!(
-                "{width} × {height} texels are {want} bytes, not {}",
-                rgba.len()
-            ));
-        }
-        if c.uploaded + rgba.len() > UPLOAD_BYTES {
-            return Err(format!(
-                "over {} KiB of images updated this frame",
-                UPLOAD_BYTES >> 10
-            ));
-        }
-        c.uploaded += rgba.len();
-        let row = (width * 4) as usize;
-        for (i, line) in rgba.chunks_exact(row.max(1)).enumerate() {
-            let at = (((y + i as u32) * img.width + x) * 4) as usize;
-            img.rgba[at..at + row].copy_from_slice(line);
-        }
-        if width > 0 && height > 0 {
-            img.touch(x, y, x + width, y + height);
-        }
-        Ok(())
+        let started = Instant::now();
+        let result = self.put_image(image, (x, y, width, height), rgba);
+        self.canvas.charge(started);
+        result
     }
     fn drop_image(&mut self, image: ImageId) {
         let c = &mut self.canvas;
@@ -434,6 +474,51 @@ impl canvas::Host for State {
         // The linker's own `work-left` reads the store's fuel
         // (`Mods::engine`); this one serves only a store without it.
         0
+    }
+}
+
+impl State {
+    /// `update-image`'s work.
+    fn put_image(
+        &mut self,
+        image: ImageId,
+        (x, y, width, height): (u32, u32, u32, u32),
+        rgba: Vec<u8>,
+    ) -> Result<(), String> {
+        let c = &mut self.canvas;
+        let Some(img) = c.images.get_mut(&image) else {
+            return Err(format!("no image {image}"));
+        };
+        let (x1, y1) = (x.checked_add(width), y.checked_add(height));
+        if x1.is_none_or(|x1| x1 > img.width) || y1.is_none_or(|y1| y1 > img.height) {
+            return Err(format!(
+                "{width} × {height} at {x}, {y} is outside the {} × {} image",
+                img.width, img.height
+            ));
+        }
+        let want = u64::from(width) * u64::from(height) * 4;
+        if rgba.len() as u64 != want {
+            return Err(format!(
+                "{width} × {height} texels are {want} bytes, not {}",
+                rgba.len()
+            ));
+        }
+        if c.uploaded + rgba.len() > UPLOAD_BYTES {
+            return Err(format!(
+                "over {} KiB of images updated this frame",
+                UPLOAD_BYTES >> 10
+            ));
+        }
+        c.uploaded += rgba.len();
+        let row = (width * 4) as usize;
+        for (i, line) in rgba.chunks_exact(row.max(1)).enumerate() {
+            let at = (((y + i as u32) * img.width + x) * 4) as usize;
+            img.rgba[at..at + row].copy_from_slice(line);
+        }
+        if width > 0 && height > 0 {
+            img.touch(x, y, x + width, y + height);
+        }
+        Ok(())
     }
 }
 
@@ -499,15 +584,40 @@ mod tests {
     }
 
     #[test]
+    fn frame_times_report_a_window_then_start_again() {
+        let mut t = FrameTimes::default();
+        let us = Duration::from_micros;
+        assert_eq!(t.record(us(100), 4), None);
+        assert_eq!(t.record(us(350), 4), None);
+        assert_eq!(t.record(us(650), 4), None);
+        assert_eq!(
+            t.record(us(100), 4).as_deref(),
+            Some("4 calls: avg 300 µs, max 650 µs, 2 over 300 µs, 1 over 500 µs")
+        );
+        assert_eq!(
+            t.record(us(20), 1).as_deref(),
+            Some("1 calls: avg 20 µs, max 20 µs, 0 over 300 µs, 0 over 500 µs")
+        );
+    }
+
+    #[test]
     fn work_left_counts_down_the_soft_budget() {
         let work = Work {
             start: 10_000_000,
             soft: 200_000,
+            ..Work::default()
         };
         assert_eq!(work_left(work, 10_000_000), WORK_SCALE);
         assert_eq!(work_left(work, 9_900_000), WORK_SCALE / 2);
         assert_eq!(work_left(work, 9_700_000), 0);
         assert_eq!(work_left(Work::default(), 5), 0);
+        // Host calls' time counts as the fuel it would have bought.
+        let charged = Work {
+            host: 50_000,
+            ..work
+        };
+        assert_eq!(work_left(charged, 10_000_000), WORK_SCALE * 3 / 4);
+        assert_eq!(work_left(charged, 9_850_000), 0);
     }
 
     #[test]

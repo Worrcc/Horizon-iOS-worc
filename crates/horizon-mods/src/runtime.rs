@@ -1023,6 +1023,7 @@ impl Mods {
         store.data_mut().canvas.work = canvas_host::Work {
             start: FUEL_INIT,
             soft: FUEL_INIT,
+            ..canvas_host::Work::default()
         };
         let instance = linker
             .instantiate(&mut store, &component)
@@ -1171,7 +1172,11 @@ impl Mods {
         } else {
             fuel
         };
-        canvas.work = canvas_host::Work { start: fuel, soft };
+        canvas.work = canvas_host::Work {
+            start: fuel,
+            soft,
+            ..canvas_host::Work::default()
+        };
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
         let took = started.elapsed();
@@ -1179,7 +1184,20 @@ impl Mods {
         entry.cost = (entry.cost * 63 + took) / 64;
         if self.framing && result.is_ok() {
             let used = fuel.saturating_sub(run.store.get_fuel().unwrap_or(0));
-            run.store.data_mut().canvas.budget.observe(used, took);
+            let canvas = &mut run.store.data_mut().canvas;
+            let own = took.saturating_sub(canvas.work.host_time);
+            canvas.budget.observe(used, own);
+        }
+        if let Some(window) = canvas_host::frame_times_window() {
+            let data = run.store.data_mut();
+            let (times, hooks) = if self.framing {
+                (&mut data.canvas.times, "frame")
+            } else {
+                (&mut data.canvas.other_times, "other hook")
+            };
+            if let Some(line) = times.record(took, window) {
+                log::info!("Horizon: mod {}: {line} ({hooks})", data.id);
+            }
         }
         let data = run.store.data_mut();
         let (open, close) = (

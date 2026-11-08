@@ -123,9 +123,13 @@ impl client_world::Host for State {
         if !(1..=COLUMN_DEPTH).contains(&depth) {
             return Err(format!("depth is 1 to {COLUMN_DEPTH}, not {depth}"));
         }
-        Ok(self
+        let started = std::time::Instant::now();
+        let read = self
             .with_view(|v| chunks.iter().map(|&c| v.columns(c, layer, depth)).collect())
-            .unwrap_or_else(|| vec![None; chunks.len()]))
+            .unwrap_or_else(|| vec![None; chunks.len()]);
+        // Reading the world burns no fuel, but takes the frame's time.
+        self.canvas.charge(started);
+        Ok(read)
     }
     fn changes(&mut self, since: u64, radius: u32) -> (u64, Vec<(i32, i32)>) {
         let Some(p) = self.snapshot.player.as_ref() else {
