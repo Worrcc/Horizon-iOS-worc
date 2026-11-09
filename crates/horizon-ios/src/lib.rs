@@ -42,18 +42,6 @@ pub fn low_power_mode() -> bool {
     false
 }
 
-/// Battery temperature in degrees Celsius, if IOKit permits access. Both readings and failures
-/// are cached for five seconds across all callers. This is not the CPU or GPU temperature.
-pub fn battery_temperature_c() -> Option<f32> {
-    #[cfg(target_os = "ios")]
-    return battery_temperature::read();
-    #[cfg(not(target_os = "ios"))]
-    None
-}
-
-#[cfg(any(target_os = "ios", test))]
-mod battery_temperature;
-
 pub mod thermal;
 
 /// An alert shown with [`show_alert`].

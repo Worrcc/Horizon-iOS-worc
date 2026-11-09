@@ -1890,7 +1890,6 @@ name = "horizon-ios"
 version = "0.1.0"
 dependencies = [
  "block2 0.5.1",
- "core-foundation-sys",
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",
  "objc2-game-controller",

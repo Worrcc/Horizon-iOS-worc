@@ -36,9 +36,15 @@ const FAILED: u8 = 5;
 struct Slot {
     buffer: wgpu::Buffer,
     state: Arc<AtomicU8>,
+    #[cfg(any(target_os = "ios", test))]
+    frame: u64,
 }
 
 pub struct GpuTimer {
+    #[cfg(any(target_os = "ios", test))]
+    pub frame: u64,
+    #[cfg(any(target_os = "ios", test))]
+    pub samples: Vec<(u64, f32)>,
     queries: wgpu::QuerySet,
     resolve: wgpu::Buffer,
     slots: Vec<Slot>,
@@ -99,9 +105,15 @@ impl GpuTimer {
                     mapped_at_creation: false,
                 }),
                 state: Arc::new(AtomicU8::new(FREE)),
+                #[cfg(any(target_os = "ios", test))]
+                frame: 0,
             })
             .collect();
         Some(Self {
+            #[cfg(any(target_os = "ios", test))]
+            frame: 0,
+            #[cfg(any(target_os = "ios", test))]
+            samples: Vec::new(),
             queries,
             resolve,
             slots,
@@ -133,6 +145,12 @@ impl GpuTimer {
         })
     }
     pub fn begin(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        #[cfg(any(target_os = "ios", test))]
+        {
+            // IDs survive renderer replacement; a late readback must never match a new frame.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            self.frame = NEXT.fetch_add(1, Ordering::Relaxed);
+        }
         if self
             .slots
             .iter()
@@ -151,6 +169,10 @@ impl GpuTimer {
         let slot = self.next;
         self.current = (self.slots[slot].state.load(Ordering::Acquire) == FREE).then_some(slot);
         let Some(slot) = self.current else { return };
+        #[cfg(any(target_os = "ios", test))]
+        {
+            self.slots[slot].frame = self.frame;
+        }
         let index = 2 * slot as u32;
         let Some(markers) = &self.markers else {
             encoder.write_timestamp(&self.queries, index);
@@ -262,7 +284,10 @@ impl GpuTimer {
                 let stamps: [u64; 2] = bytemuck::pod_read_unaligned(&data[..16]);
                 // A start marker that ran late (rare on Metal) leaves the frame untimed.
                 if let Some(ticks) = stamps[1].checked_sub(stamps[0]) {
-                    out.push((ticks as f64 * f64::from(self.period_ns) / 1e6) as f32);
+                    let ms = (ticks as f64 * f64::from(self.period_ns) / 1e6) as f32;
+                    out.push(ms);
+                    #[cfg(any(target_os = "ios", test))]
+                    self.samples.push((slot.frame, ms));
                 }
             }
             slot.buffer.unmap();
@@ -343,12 +368,16 @@ mod tests {
             return;
         };
         let mut samples = Vec::new();
+        // A later draw must not steal the completed slot's frame ID.
+        timer.slots[0].frame = 7;
+        timer.frame = 9;
         timer.collect(&device, &mut samples);
         assert_eq!(
             samples,
             vec![(10.0 * f64::from(timer.period_ns) / 1e6) as f32]
         );
         assert_eq!(timer.slots[0].state.load(Ordering::Acquire), FREE);
+        assert_eq!(timer.samples, vec![(7, samples[0])]);
     }
 
     #[test]

@@ -5241,7 +5241,18 @@ impl Renderer {
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
     }
+    /// The frame just timed and tagged GPU readbacks that arrived during this draw.
+    #[cfg(target_os = "ios")]
+    pub fn phone_gpu_timings(&mut self) -> (Option<u64>, Vec<(u64, f32)>) {
+        self.gpu_timer.as_mut().map_or_else(
+            || (None, Vec::new()),
+            |timer| (Some(timer.frame), std::mem::take(&mut timer.samples)),
+        )
+    }
+
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+        #[cfg(target_os = "ios")]
+        let _span = crate::spans::guard("upload_chunks");
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
         }
@@ -7111,6 +7122,8 @@ impl Renderer {
         }
         // Waits for the submit thread since the last frame's present (this frame's uploads).
         let queued = self.queue.take_waited();
+        #[cfg(target_os = "ios")]
+        let acquire_span = crate::spans::guard("surface_acquire");
         let acquire = Instant::now();
         let fg_frames = fg
             .then(|| {
@@ -7132,6 +7145,8 @@ impl Renderer {
         } else {
             self.surface.as_ref().map(|s| s.get_current_texture())
         };
+        #[cfg(target_os = "ios")]
+        drop(acquire_span);
         self.last_wait = landed + queued + acquire.elapsed();
         // Inside the acquire's time already.
         self.queue.take_waited();

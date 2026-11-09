@@ -204,6 +204,8 @@ impl Integrated {
         &self,
         f: impl FnOnce(&mut Game<'_>) -> T + Send + 'static,
     ) -> Option<T> {
+        #[cfg(target_os = "ios")]
+        let _span = horizon_client::spans::guard("server_handoff");
         let (tx, rx) = sync_channel(1);
         self.tasks
             .send(Box::new(move |g| {
