@@ -34,6 +34,8 @@ jobs:
         # variable, not a secret, since client IDs are public. Unset, the app plays offline.
         env:
           HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+          # The first line of latest.log names the commit, so a log says which IPA ran.
+          HORIZON_COMMIT: ${{ github.sha }}
         run: ios/build.sh
       - name: Check the bundle
         run: |
@@ -47,11 +49,14 @@ jobs:
           cargo build --release -p cargo-horizon-mod
           (cd mods/official/block-info && ../../../target/release/cargo-horizon-mod horizon-mod build)
           cp target/horizon-mod/block_info.hmod target/ios/
+      - name: Name the IPA after its commit
+        # Every build was Horizon.ipa, so an older download was easy to install by mistake.
+        run: mv target/ios/Horizon.ipa "target/ios/Horizon-${GITHUB_SHA::9}.ipa"
       - uses: actions/upload-artifact@v4
         with:
           name: Horizon-ios-${{ github.sha }}
           path: |
-            target/ios/Horizon.ipa
+            target/ios/Horizon-*.ipa
             target/ios/block_info.hmod
           if-no-files-found: error
           retention-days: 30

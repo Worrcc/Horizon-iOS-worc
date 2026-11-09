@@ -65,7 +65,10 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             thread,
         );
         // The log's first line names the build, so a bug report that carries the log says which one it was.
-        log::info!("Horizon {}", crash::version());
+        match option_env!("HORIZON_COMMIT") {
+            Some(commit) => log::info!("Horizon {} (build {commit})", crash::version()),
+            None => log::info!("Horizon {}", crash::version()),
+        }
         crash::install(home.clone(), side);
     }
     let renderers = crate::mod_api::mods()
@@ -215,23 +218,27 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     logging::flush();
 }
 
-/// The JVM raises its open-file limit to the hard limit as it starts
-/// (`-XX:+MaxFDLimit`, on by default), so a vanilla server may hold as many
-/// sockets and region files as the host allows, not the soft default (often
-/// 1024 in a container). The same here; macOS caps it at `OPEN_MAX`, as the
-/// JVM does there.
 /// The main thread's stack is 8 MB on Linux and macOS (and on Windows, build.rs), but iOS gives
 /// it 1 MB, and an app LiveContainer starts runs on LiveContainer's main thread, so no link flag
 /// reaches it. The loading screen's handoff alone (`Loading::finish`, `start_game`,
 /// `Game::new`, each holding a whole `Game`) needs about 2 MB: on a smaller stack the game runs
 /// on an 8 MB stack of its own, still on the main thread, which UIKit and winit need.
+/// iOS always switches: how much stack is left is read from what pthread reports for the
+/// thread, which a host app like LiveContainer need not match.
 fn run_on_a_large_stack<R>(run: impl FnOnce() -> R) -> R {
-    #[cfg(unix)]
+    #[cfg(target_os = "ios")]
+    return stacker::grow(8 << 20, run);
+    #[cfg(all(unix, not(target_os = "ios")))]
     return stacker::maybe_grow(4 << 20, 8 << 20, run);
     #[cfg(not(unix))]
     run()
 }
 
+/// The JVM raises its open-file limit to the hard limit as it starts
+/// (`-XX:+MaxFDLimit`, on by default), so a vanilla server may hold as many
+/// sockets and region files as the host allows, not the soft default (often
+/// 1024 in a container). The same here; macOS caps it at `OPEN_MAX`, as the
+/// JVM does there.
 fn raise_open_file_limit() {
     #[cfg(unix)]
     {
