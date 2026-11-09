@@ -228,6 +228,30 @@ pub fn targets_mark() -> usize {
     TARGETS.with_borrow(|(current, _, _)| current.len())
 }
 
+/// Mark labelled widgets before drawing a scrollable viewport.
+pub fn widgets_mark() -> usize {
+    WIDGETS.with_borrow(|(current, _, _)| current.len())
+}
+
+/// Keep only visible button bounds for agents, including partially visible rows.
+pub fn clip_widgets(mark: usize, top: f32, bottom: f32) {
+    WIDGETS.with_borrow_mut(|(current, _, _)| {
+        let mut i = mark.min(current.len());
+        while i < current.len() {
+            let widget = &mut current[i];
+            let y = widget.y.max(top);
+            let end = (widget.y + widget.h).min(bottom);
+            if end <= y {
+                current.remove(i);
+            } else {
+                widget.y = y;
+                widget.h = end - y;
+                i += 1;
+            }
+        }
+    });
+}
+
 /// Drop the targets registered since `mark` that aren't inside `y0..y1`
 /// (GUI pixels): rows a scrolling list clipped away.
 pub fn clip_targets(mark: usize, y0: f32, y1: f32) {
@@ -1313,6 +1337,36 @@ mod tests {
         end_frame(101);
         assert_eq!(last().len(), 1);
         assert_eq!(last_labelled().len(), 2);
+    }
+
+    #[test]
+    fn viewport_reports_only_clickable_parts_of_scrolled_buttons() {
+        end_frame(100);
+        record("Outside viewport", [0.0, 0.0, 200.0, 20.0], true);
+        let mark = widgets_mark();
+        for (label, y) in [
+            ("Hidden above", 10.0),
+            ("Partial above", 30.0),
+            ("Visible", 80.0),
+            ("Partial below", 196.0),
+            ("Hidden below", 210.0),
+        ] {
+            record(label, [100.0, y, 200.0, 20.0], true);
+        }
+        clip_widgets(mark, 40.0, 206.0);
+        record("Done", [100.0, 213.0, 200.0, 20.0], true);
+        end_frame(101);
+        let bounds: Vec<_> = last().into_iter().map(|w| (w.label, w.y, w.h)).collect();
+        assert_eq!(
+            bounds,
+            vec![
+                ("Outside viewport".into(), 0.0, 20.0),
+                ("Partial above".into(), 40.0, 10.0),
+                ("Visible".into(), 80.0, 20.0),
+                ("Partial below".into(), 196.0, 10.0),
+                ("Done".into(), 213.0, 20.0),
+            ]
+        );
     }
 
     #[test]

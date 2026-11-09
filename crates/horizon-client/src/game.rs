@@ -18235,6 +18235,9 @@ impl Game<'_> {
                         if self.screen == Screen::Stats {
                             self.stats_drag();
                         }
+                        if self.screen == Screen::Mod {
+                            self.mod_screen_drag();
+                        }
                         if self.screen == Screen::DebugOptions {
                             self.debug_options_drag();
                         }
@@ -18461,6 +18464,8 @@ impl Game<'_> {
                 {
                     if state == ElementState::Pressed {
                         self.mod_screen_click(button);
+                    } else if button == MouseButton::Left {
+                        self.mod_screen_release();
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Options => {
@@ -18693,6 +18698,7 @@ impl Game<'_> {
                         }
                         Screen::Stats if button == MouseButton::Left => self.stats_release(),
                         Screen::Mod if pressed => self.mod_screen_click(button),
+                        Screen::Mod if button == MouseButton::Left => self.mod_screen_release(),
                         _ => {}
                     }
                 }

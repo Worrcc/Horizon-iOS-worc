@@ -214,6 +214,8 @@ struct ModScreen {
     under: Screen,
     /// One scroll per `list` widget, in widget order.
     scrolls: Vec<ui::Scroll>,
+    /// Keys and widgets share one scrollable column.
+    scroll: ui::Scroll,
     /// A key row waiting for the key to bind: the mod key's name.
     binding: Option<String>,
 }
@@ -715,6 +717,8 @@ impl Game<'_> {
         false
     }
     pub(super) fn mod_screen_scroll(&mut self, _delta: f32) {}
+    pub(super) fn mod_screen_drag(&mut self) {}
+    pub(super) fn mod_screen_release(&mut self) {}
 }
 
 #[cfg(feature = "mods")]
@@ -1440,9 +1444,9 @@ impl Game<'_> {
         self.bind_mod_key(value.unwrap_or("key.keyboard.unknown").to_owned());
         true
     }
-    /// The layout the mod screen's widgets get at `h`: (widget, top,
+    /// The layout the mod screen's widgets get: (top,
     /// height), the column being `COLUMN` wide down the middle.
-    fn mod_ui_layout(h: f32, top: f32, widgets: &[UiWidget]) -> Vec<(f32, f32)> {
+    fn mod_ui_layout(top: f32, widgets: &[UiWidget]) -> Vec<(f32, f32)> {
         let mut out = Vec::with_capacity(widgets.len());
         let mut y = top;
         for w in widgets {
@@ -1451,10 +1455,6 @@ impl Game<'_> {
                 UiWidget::Item(_) | UiWidget::Button(_) => 20.0,
                 UiWidget::List(l) => (l.rows.len().min(6) as f32 * 12.0) + 8.0,
             };
-            // Nothing may cover Done; a crowded mod loses what won't fit.
-            if y + wh > h - 34.0 {
-                break;
-            }
             out.push((y, wh));
             y += wh + 6.0;
         }
@@ -1488,6 +1488,7 @@ impl Game<'_> {
             settings,
             under: self.screen,
             scrolls: Vec::new(),
+            scroll: ui::Scroll::default(),
             binding: None,
         });
         self.screen = Screen::Mod;
@@ -1558,9 +1559,14 @@ impl Game<'_> {
         let x = cx - MOD_UI_COLUMN / 2.0;
         // A settings page starts with the mod's keys, as Key Binds rows.
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
+        let page = ModPageLayout::new(batch.height, keys.len(), widgets, &mut ms.scroll);
+        let cursor = page.cursor(self.cursor);
+        let start = batch.vertices.len();
+        let widgets_mark = horizon_client::widgets::widgets_mark();
+        let targets_mark = horizon_client::widgets::targets_mark();
         for (i, k) in keys.iter().enumerate() {
-            let wy = MOD_UI_TOP + i as f32 * MOD_UI_KEY_ROW;
-            let hover = ui::hovered(self.cursor, x, wy, MOD_UI_COLUMN, 20.0);
+            let wy = page.key_y(i);
+            let hover = ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0);
             let waiting = ms.binding.as_deref() == Some(k.name.as_str());
             let label = Self::mod_key_label(k, waiting);
             ui::button(
@@ -1575,13 +1581,11 @@ impl Game<'_> {
                 hover,
             );
         }
-        let top = MOD_UI_TOP + keys.len() as f32 * MOD_UI_KEY_ROW;
-        let layout = Self::mod_ui_layout(batch.height, top, widgets);
         let mut list_i = 0usize;
-        for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
+        for (w, &(wy, wh)) in widgets.iter().zip(&page.widgets) {
             match w {
                 UiWidget::Button(b) => {
-                    let hover = ui::hovered(self.cursor, x, wy, MOD_UI_COLUMN, 20.0);
+                    let hover = ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0);
                     let label = Text::literal(b.label.clone());
                     ui::button(
                         batch,
@@ -1632,7 +1636,11 @@ impl Game<'_> {
                     );
                 }
                 UiWidget::List(l) => {
-                    ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+                    if ms.scrolls.len() <= list_i {
+                        ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+                    }
+                    let content = l.rows.len() as f32 * 12.0;
+                    ms.scrolls[list_i].clamp(wy + 4.0, wy + wh - 4.0, content);
                     let scroll = ms.scrolls[list_i];
                     list_i += 1;
                     let rows_top = wy + 4.0;
@@ -1644,11 +1652,10 @@ impl Game<'_> {
                     for (xx, yy) in [(x, wy), (x + MOD_UI_COLUMN - 1.0, wy)] {
                         batch.fill(atlas, xx, yy, 1.0, wh, 0xFF50_5050);
                     }
-                    let content = l.rows.len() as f32 * 12.0;
                     draw_list_rows(
                         batch,
                         atlas,
-                        self.cursor,
+                        cursor,
                         &l.rows,
                         l.selected,
                         scroll.amount,
@@ -1666,6 +1673,26 @@ impl Game<'_> {
                 }
             }
         }
+        horizon_client::widgets::clip_widgets(widgets_mark, MOD_UI_TOP, page.bottom);
+        horizon_client::widgets::clip_targets(targets_mark, MOD_UI_TOP, page.bottom);
+        batch.clip_since(start, 0.0, MOD_UI_TOP, batch.width, page.bottom);
+        ui::scrollbar(
+            batch,
+            atlas,
+            x + MOD_UI_COLUMN + 4.0,
+            MOD_UI_TOP,
+            page.bottom,
+            page.content,
+            ms.scroll.amount,
+        );
+        // Item geometry is drawn in a second pass, inside the same viewport.
+        let start = batch.vertices.len();
+        for (id, ix, iy) in items {
+            let stack = ItemStack::new(id.as_str(), 1);
+            self.draw_item(batch, &stack, ix, iy);
+        }
+        batch.clip_since(start, 0.0, MOD_UI_TOP, batch.width, page.bottom);
+        let atlas = &self.gui.atlas;
         let hover = ui::hovered(self.cursor, cx - 100.0, batch.height - 27.0, 200.0, 20.0);
         ui::button(
             batch,
@@ -1678,10 +1705,6 @@ impl Game<'_> {
             true,
             hover,
         );
-        for (id, ix, iy) in items {
-            let stack = ItemStack::new(id.as_str(), 1);
-            self.draw_item(batch, &stack, ix, iy);
-        }
     }
     /// A click on the mod screen: Done leaves it, a `list` row is the mod's
     /// `ui-events::select`.
@@ -1706,7 +1729,7 @@ impl Game<'_> {
             self.close_wasm_mod_screen(true);
             return;
         }
-        let Some(ms) = self.mods.screen.as_ref() else {
+        let Some(ms) = self.mods.screen.as_mut() else {
             return;
         };
         let Some((_, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
@@ -1716,8 +1739,21 @@ impl Game<'_> {
         let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
         // A key row waits for the key to bind.
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
+        let page = ModPageLayout::new(h, keys.len(), widgets, &mut ms.scroll);
+        if !page.contains(cursor) {
+            return;
+        }
+        if ms.scroll.press(
+            cursor,
+            x + MOD_UI_COLUMN + 4.0,
+            MOD_UI_TOP,
+            page.bottom,
+            page.content,
+        ) {
+            return;
+        }
         let picked = (0..keys.len()).find(|&i| {
-            let wy = MOD_UI_TOP + i as f32 * MOD_UI_KEY_ROW;
+            let wy = page.key_y(i);
             ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0)
         });
         if let Some(i) = picked {
@@ -1728,12 +1764,10 @@ impl Game<'_> {
             }
             return;
         }
-        let top = MOD_UI_TOP + keys.len() as f32 * MOD_UI_KEY_ROW;
-        let layout = Self::mod_ui_layout(h, top, widgets);
         let mut list_i = 0usize;
         // The `ui_select` call needs `&mut`: find the pick first.
         let mut hit = None;
-        for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
+        for (w, &(wy, wh)) in widgets.iter().zip(&page.widgets) {
             // A button is `select(id, 0)`.
             if let UiWidget::Button(b) = w
                 && ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0)
@@ -1745,7 +1779,11 @@ impl Game<'_> {
                 return;
             }
             let UiWidget::List(l) = w else { continue };
-            let scroll = ms.scrolls.get(list_i).copied().unwrap_or_default();
+            if ms.scrolls.len() <= list_i {
+                ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+            }
+            ms.scrolls[list_i].clamp(wy + 4.0, wy + wh - 4.0, l.rows.len() as f32 * 12.0);
+            let scroll = ms.scrolls[list_i];
             list_i += 1;
             let row = ((cursor.1 - (wy + 4.0) + scroll.amount) / 12.0) as i64;
             if ui::hovered(cursor, x + 1.0, wy + 1.0, MOD_UI_COLUMN - 7.0, wh - 2.0)
@@ -1762,7 +1800,7 @@ impl Game<'_> {
             self.show_mod_output();
         }
     }
-    /// The wheel over a `list` scrolls it.
+    /// The wheel over a `list` scrolls it; elsewhere it scrolls the page.
     pub(super) fn mod_screen_scroll(&mut self, delta: f32) {
         let (w, h) = self.gui_size();
         let cursor = self.cursor;
@@ -1773,21 +1811,110 @@ impl Game<'_> {
             return;
         };
         let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
-        let top =
-            MOD_UI_TOP + Self::mod_page_keys(&self.mods.mods, ms).len() as f32 * MOD_UI_KEY_ROW;
-        let layout = Self::mod_ui_layout(h, top, widgets);
+        let keys = Self::mod_page_keys(&self.mods.mods, ms);
+        let page = ModPageLayout::new(h, keys.len(), widgets, &mut ms.scroll);
+        page.wheel(ms, widgets, cursor, x, delta);
+    }
+
+    pub(super) fn mod_screen_drag(&mut self) {
+        let (_, h) = self.gui_size();
+        let Some(ms) = self.mods.screen.as_mut() else {
+            return;
+        };
+        let Some((_, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
+            return;
+        };
+        let keys = Self::mod_page_keys(&self.mods.mods, ms);
+        let page = ModPageLayout::new(h, keys.len(), widgets, &mut ms.scroll);
+        ms.scroll
+            .drag(self.cursor.1, MOD_UI_TOP, page.bottom, page.content);
+    }
+
+    pub(super) fn mod_screen_release(&mut self) {
+        if let Some(ms) = self.mods.screen.as_mut() {
+            ms.scroll.release();
+        }
+    }
+}
+
+/// Shared coordinates for painting, hit testing and wheel routing.
+#[cfg(feature = "mods")]
+struct ModPageLayout {
+    widgets: Vec<(f32, f32)>,
+    key_top: f32,
+    bottom: f32,
+    content: f32,
+}
+
+#[cfg(feature = "mods")]
+impl ModPageLayout {
+    fn new(h: f32, keys: usize, widgets: &[UiWidget], scroll: &mut ui::Scroll) -> Self {
+        let top = MOD_UI_TOP + keys as f32 * MOD_UI_KEY_ROW;
+        let mut layout = Game::mod_ui_layout(top, widgets);
+        let end = layout.last().map_or(top, |&(y, h)| y + h);
+        let content = (end - MOD_UI_TOP).max(0.0);
+        let bottom = (h - 34.0).max(MOD_UI_TOP);
+        scroll.clamp(MOD_UI_TOP, bottom, content);
+        for (y, _) in &mut layout {
+            *y -= scroll.amount;
+        }
+        Self {
+            widgets: layout,
+            key_top: MOD_UI_TOP - scroll.amount,
+            bottom,
+            content,
+        }
+    }
+
+    fn key_y(&self, i: usize) -> f32 {
+        self.key_top + i as f32 * MOD_UI_KEY_ROW
+    }
+
+    fn contains(&self, cursor: (f32, f32)) -> bool {
+        cursor.1 >= MOD_UI_TOP && cursor.1 < self.bottom
+    }
+
+    fn cursor(&self, cursor: (f32, f32)) -> (f32, f32) {
+        if self.contains(cursor) {
+            cursor
+        } else {
+            (f32::NAN, f32::NAN)
+        }
+    }
+
+    fn wheel(
+        &self,
+        ms: &mut ModScreen,
+        widgets: &[UiWidget],
+        cursor: (f32, f32),
+        x: f32,
+        delta: f32,
+    ) {
+        if !self.contains(cursor) {
+            return;
+        }
         let mut list_i = 0usize;
-        for (w, &(wy, wh)) in widgets.iter().zip(&layout) {
-            let UiWidget::List(l) = w else { continue };
-            let over = ui::hovered(cursor, x, wy, MOD_UI_COLUMN, wh);
-            ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
-            if over {
-                let content = l.rows.len() as f32 * 12.0;
-                ms.scrolls[list_i].wheel(delta, 12.0, wy + 4.0, wy + wh - 4.0, content);
+        for (widget, &(wy, wh)) in widgets.iter().zip(&self.widgets) {
+            let UiWidget::List(list) = widget else {
+                continue;
+            };
+            if ms.scrolls.len() <= list_i {
+                ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+            }
+            if ui::hovered(cursor, x, wy, MOD_UI_COLUMN, wh) {
+                ms.scrolls[list_i].wheel(
+                    delta,
+                    12.0,
+                    wy + 4.0,
+                    wy + wh - 4.0,
+                    list.rows.len() as f32 * 12.0,
+                );
                 return;
             }
             list_i += 1;
         }
+        ms.scroll
+            .wheel(delta, MOD_UI_KEY_ROW, MOD_UI_TOP, self.bottom, self.content);
     }
 }
 
@@ -1848,6 +1975,109 @@ const MOD_UI_KEY_ROW: f32 = 26.0;
 mod list_clip_tests {
     use super::*;
     use horizon_client::hud::HudAtlas;
+
+    fn screen() -> ModScreen {
+        ModScreen {
+            owner: 0,
+            settings: true,
+            under: Screen::Options,
+            scrolls: Vec::new(),
+            scroll: ui::Scroll::default(),
+            binding: None,
+        }
+    }
+
+    fn buttons() -> Vec<UiWidget> {
+        (0..19)
+            .map(|id| {
+                UiWidget::Button(horizon_mods::ButtonWidget {
+                    id,
+                    label: format!("Button {id}"),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn crowded_settings_reach_the_last_button_and_clamp_after_resize() {
+        let widgets = buttons();
+        let mut ms = screen();
+        let page = ModPageLayout::new(240.0, 6, &widgets, &mut ms.scroll);
+        assert_eq!(page.widgets.len(), 19);
+        assert_eq!(page.widgets[0], (196.0, 20.0));
+        page.wheel(&mut ms, &widgets, (110.0, 100.0), 100.0, -100.0);
+        let page = ModPageLayout::new(240.0, 6, &widgets, &mut ms.scroll);
+        assert_eq!(page.widgets[18], (186.0, 20.0));
+        assert!(!ui::hovered(
+            page.cursor((110.0, 207.0)),
+            100.0,
+            186.0,
+            200.0,
+            26.0
+        ));
+        assert!(ui::hovered(
+            page.cursor((110.0, 196.0)),
+            100.0,
+            186.0,
+            200.0,
+            20.0
+        ));
+        assert!(page.key_y(5) < 40.0);
+        ModPageLayout::new(900.0, 6, &widgets, &mut ms.scroll);
+        assert_eq!(ms.scroll.amount, 0.0);
+    }
+
+    #[test]
+    fn wheel_over_a_scrolled_list_keeps_the_page_still() {
+        let mut widgets = buttons();
+        widgets.insert(
+            0,
+            UiWidget::List(horizon_mods::ListWidget {
+                id: 99,
+                rows: (0..22).map(|i| format!("Row {i}")).collect(),
+                selected: None,
+            }),
+        );
+        let mut ms = screen();
+        let page = ModPageLayout::new(240.0, 6, &widgets, &mut ms.scroll);
+        // Scroll outside the column to bring the list above the first button.
+        page.wheel(&mut ms, &widgets, (90.0, 100.0), 100.0, -6.0);
+        assert_eq!(ms.scroll.amount, 156.0);
+        let page = ModPageLayout::new(240.0, 6, &widgets, &mut ms.scroll);
+        assert_eq!(page.widgets[0], (40.0, 80.0));
+        page.wheel(&mut ms, &widgets, (110.0, 60.0), 100.0, -2.0);
+        assert_eq!(ms.scrolls[0].amount, 24.0);
+        assert_eq!(ms.scroll.amount, 156.0);
+        // Neither title nor footer can scroll a hidden list or the page.
+        for y in [20.0, 220.0] {
+            page.wheel(&mut ms, &widgets, (110.0, y), 100.0, -1.0);
+        }
+        assert_eq!(ms.scrolls[0].amount, 24.0);
+        assert_eq!(ms.scroll.amount, 156.0);
+        page.wheel(&mut ms, &widgets, (110.0, 150.0), 100.0, -1.0);
+        assert_eq!(ms.scroll.amount, 182.0);
+    }
+
+    #[test]
+    fn each_list_keeps_its_scroll_across_wheel_events() {
+        let widgets: Vec<_> = (0..2)
+            .map(|id| {
+                UiWidget::List(horizon_mods::ListWidget {
+                    id,
+                    rows: (0..22).map(|i| format!("Row {i}")).collect(),
+                    selected: None,
+                })
+            })
+            .collect();
+        let mut ms = screen();
+        let page = ModPageLayout::new(400.0, 0, &widgets, &mut ms.scroll);
+        for y in [140.0, 60.0, 140.0] {
+            page.wheel(&mut ms, &widgets, (110.0, y), 100.0, -1.0);
+        }
+        assert_eq!(ms.scrolls[0].amount, 12.0);
+        assert_eq!(ms.scrolls[1].amount, 24.0);
+        assert_eq!(ms.scroll.amount, 0.0);
+    }
 
     #[test]
     fn list_rows_stay_inside_the_frame_scrolled_or_not() {
