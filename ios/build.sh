@@ -20,8 +20,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 target=aarch64-apple-ios
 platform=iPhoneOS
-profile_dir=release
-cargo_profile=(--release)
+profile_dir=ios-release
+cargo_profile=(--profile ios-release)
 identity=""
 provision=""
 bundle_id="${HORIZON_IOS_BUNDLE_ID:-io.github.worrcc.horizon}"

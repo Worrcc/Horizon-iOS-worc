@@ -1093,7 +1093,8 @@ impl Graphics {
         // and render threads are raised above four cores, where vanilla
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer.
-        let auto = horizon_threads::worker_count().saturating_sub(1).max(1);
+        let auto = ios_worker_count()
+            .unwrap_or_else(|| horizon_threads::worker_count().saturating_sub(1).max(1));
         if self.battery { auto.div_ceil(2) } else { auto }
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
@@ -1107,6 +1108,27 @@ impl Graphics {
             limit.min(30)
         }
     }
+}
+
+#[cfg(target_os = "ios")]
+fn ios_worker_count() -> Option<usize> {
+    let (performance, efficiency) = horizon_threads::core_levels()?;
+    Some(ios_workers_from_performance_efficiency(
+        performance,
+        efficiency,
+    ))
+}
+
+#[cfg(any(target_os = "ios", test))]
+fn ios_workers_from_performance_efficiency(performance: usize, efficiency: usize) -> usize {
+    efficiency
+        .saturating_add(performance.saturating_sub(2))
+        .max(2)
+}
+
+#[cfg(not(target_os = "ios"))]
+fn ios_worker_count() -> Option<usize> {
+    None
 }
 
 /// A preset's values for vanilla's options and Horizon's own.
@@ -1480,6 +1502,14 @@ mod tests {
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);
+    }
+
+    #[test]
+    fn ios_worker_count_uses_efficiency_cores_and_leaves_two_performance_cores() {
+        assert_eq!(ios_workers_from_performance_efficiency(2, 4), 4);
+        assert_eq!(ios_workers_from_performance_efficiency(6, 4), 8);
+        assert_eq!(ios_workers_from_performance_efficiency(1, 1), 2);
+        assert_eq!(ios_workers_from_performance_efficiency(0, 0), 2);
     }
 
     #[test]
