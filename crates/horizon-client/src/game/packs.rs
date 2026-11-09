@@ -394,6 +394,7 @@ impl Game<'_> {
             .borrow_mut()
             .set_resource_root(self.options.resources.clone());
         self.maps.slots.forget();
+        self.mod_canvas_forget();
         self.map_patches.clear();
         // Kept mod block entities name the old atlas's sprites.
         self.kept_block_entities.get_mut().clear();
@@ -505,7 +506,7 @@ pub(super) fn stage_pack(
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
     // each other: about a second each, side by side.
-    let mod_image = crate::game::mods::built_with_native_mods();
+    let mod_image = crate::game::mod_canvas::mod_image_slot();
     // The sound events, the GUI sprites' metadata and the language are read here too, not in
     // the frame that applies the reload (about 20 ms of it).
     let (render, atlas, panorama, (sounds, ui_metadata, language)) = std::thread::scope(|s| {

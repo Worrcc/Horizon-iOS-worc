@@ -170,6 +170,12 @@ pub(super) struct ModsState {
     /// Playing at the last frame, for `mod_input_frame`.
     #[cfg(feature = "mods")]
     pub(super) playing: bool,
+    /// Capability `render`'s canvas images, between frames.
+    #[cfg(feature = "mods")]
+    pub(super) canvas: super::mod_canvas::CanvasHost,
+    /// Capability `world-read`'s change counters and caches, between lends.
+    #[cfg(feature = "mods")]
+    pub(super) client_world: super::mod_client_world::ClientWorldHost,
 }
 
 /// The mappings `input.mapping` answers for, with the default key their
@@ -247,7 +253,10 @@ impl ModsState {
     /// Whether a mod draws a HUD panel or a corner panel.
     pub(super) fn has_panels(&self) -> bool {
         #[cfg(feature = "mods")]
-        if self.mods.panels().next().is_some() || self.mods.corner_panels().next().is_some() {
+        if self.mods.panels().next().is_some()
+            || self.mods.corner_panels().next().is_some()
+            || self.mods.canvas_panels().next().is_some()
+        {
             return true;
         }
         false
@@ -368,6 +377,8 @@ pub(super) fn content_root(
 ) -> std::path::PathBuf {
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Capability, Content, Package};
+    // Before every atlas is built: whether it keeps the mods' image page.
+    super::mod_canvas::note_canvas_mods(enabled, dev);
     let here = std::env::current_dir().unwrap_or_default();
     let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
     paths.retain(|p| !dev.contains(p));
@@ -721,13 +732,20 @@ impl Game<'_> {
         // A native implementation built into this game takes over its own id.
         let mut native = Vec::new();
         self.native_mods(&mut native);
-        let enabled = &self.settings.mods.enabled;
+        let enabled = self.settings.mods.enabled.clone();
         let on = |id: &str| {
             (enabled.contains(id) || dev_ids.iter().any(|d| d == id))
                 && !native.iter().any(|m| m.id == id)
         };
-        let mods = Mods::load_for(self.mod_runs(), &paths, on, vanilla_command);
-        self.mods.mods = mods;
+        self.return_client_world();
+        self.mods.mods = Mods::default();
+        // The mods' `init` may read the world (capability `world-read`).
+        self.lend_client_world(true);
+        let runs = self.mod_runs();
+        self.mods.mods.load_into(runs, &paths, on, vanilla_command);
+        self.return_client_world();
+        self.forget_client_world();
+        self.ensure_mod_canvas_page();
         self.mods.interactions.clear();
         self.mods.item_uses.clear();
         self.mods.use_fallbacks.clear();
@@ -976,6 +994,7 @@ impl Game<'_> {
             known_recipes,
             placing: self.mod_recipe_screen(),
             creative: self.creative,
+            world_id: self.mod_world_id(),
         }
     }
     /// The first block along the player's view within
@@ -1094,7 +1113,9 @@ impl Game<'_> {
         self.tick_wasm_mod_use();
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
+        self.lend_client_world(false);
         self.mods.mods.tick(self.ticks);
+        self.return_client_world();
         self.show_mod_output();
     }
     /// Restarts the dev mods rebuilt since the last check, once a second.
@@ -1108,7 +1129,11 @@ impl Game<'_> {
             return;
         }
         self.mods.checked = Some(Instant::now());
-        if self.mods.mods.reload_changed(vanilla_command) {
+        self.lend_client_world(true);
+        let reloaded = self.mods.mods.reload_changed(vanilla_command);
+        self.return_client_world();
+        self.forget_client_world();
+        if reloaded {
             let chosen = &self.settings.mods;
             self.mods.mods.set_bindings(|id| chosen.keys_of(id));
             self.list_mods();
@@ -1131,7 +1156,10 @@ impl Game<'_> {
             let snapshot = self.mod_snapshot();
             self.mods.mods.set_snapshot(snapshot);
         }
+        self.lend_client_world(false);
         self.mods.mods.frame(elapsed.as_secs_f32());
+        self.return_client_world();
+        self.upload_mod_canvas();
         self.show_mod_output();
     }
     /// `/command` typed in chat: true when a mod owns it.
@@ -1142,7 +1170,10 @@ impl Game<'_> {
         // The command may follow a teleport in the same tick.
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
-        if !self.mods.mods.command(command) {
+        self.lend_client_world(false);
+        let owned = self.mods.mods.command(command);
+        self.return_client_world();
+        if !owned {
             return false;
         }
         self.show_mod_output();
@@ -1150,7 +1181,9 @@ impl Game<'_> {
     }
     /// A chat line the player received.
     pub(super) fn mods_chat(&mut self, line: &str) {
+        self.lend_client_world(false);
         self.mods.mods.chat(line);
+        self.return_client_world();
         self.show_mod_output();
     }
     /// What mods showed: client mods' lines into the chat, server mods'
@@ -1306,6 +1339,8 @@ impl Game<'_> {
             let at = corners.place(corner, panel.width, panel.height);
             self.draw_shapes(batch, &panel.shapes, at);
         }
+        // Capability `render`'s canvas boxes, after the corner panels.
+        self.draw_canvas_panels(batch, corners);
     }
 
     /// A `ui` screen's title and widgets as the mod last pushed them; None

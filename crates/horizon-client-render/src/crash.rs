@@ -574,6 +574,9 @@ pub fn install(home: PathBuf, side: &'static str) {
             deliver(&home, panic_report(info, side));
         } else if is_worker_thread(std::thread::current().name()) {
             deliver(&home, worker_panic_report(info, side));
+            // The log writer is a thread of its own: lines still queued (the panic's among them)
+            // die with the process unless they are written first.
+            crate::logging::flush();
             // The crash ends the game, as the relayed report does on vanilla's main thread.
             std::process::exit(101);
         } else {

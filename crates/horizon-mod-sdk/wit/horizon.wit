@@ -83,6 +83,11 @@ interface game {
     /// any block, within distance (at most 1024). None outside a world.
     /// Health is the real value known to this client as of this tick.
     raycast-entity: func(distance: f32) -> option<entity-hit>;
+    /// API level 17: which world the player is in, for a mod that keeps
+    /// something per world (waypoints): `sp:<save folder>` in single player,
+    /// `mp:<address>` on a server (`mp:lan` for a LAN game found on the
+    /// network). None on the title screen.
+    world-id: func() -> option<string>;
 }
 
 /// Capability `chat`: messages only the local player sees.
@@ -450,6 +455,201 @@ interface render {
     /// Distance setting, when on, wins. One far terrain shows at a time: the
     /// first loaded mod's.
     set-far-terrain: func(far-terrain: option<far-terrain>);
+}
+
+/// Capability `render` (experimental), API level 17: the mod's own pixels on
+/// the HUD. Images live on one shared atlas page the game draws from; a mod
+/// fills them with `update-image` and shows them in a corner box with
+/// `set-corner`, beside the `render` shapes. Also the frame budget a mod
+/// with heavy `frame` work asks for, and how much of it is left.
+interface canvas {
+    use render.{corner, rect, point, fill-shape, quad-shape, sprite-shape, text-shape};
+    /// An image of the mod's, from `create-image`.
+    type image = u32;
+    /// A new image of `width` × `height` texels (each side 1 to 512; at most
+    /// 512 × 512 texels for all of a mod's images together), on the shared
+    /// mod-image atlas page. It starts transparent. An error when a side is
+    /// out of range, the mod's share is used up or the page is full.
+    create-image: func(width: u32, height: u32) -> result<image, string>;
+    /// Replaces the texels from (`x`, `y`) to (`x + width`, `y + height`) of
+    /// `image` with `rgba` (`width × height × 4` bytes, straight alpha, rows
+    /// top first). Shown from the next frame. At most 512 KiB a frame for
+    /// each mod: past it, an error and nothing changes. An unknown image, a
+    /// rectangle outside it or the wrong number of bytes is an error.
+    update-image: func(image: image, x: u32, y: u32, width: u32, height: u32, rgba: list<u8>) -> result<_, string>;
+    /// Frees `image` and its place on the page; an unknown one is ignored.
+    /// A mod's images go when it stops.
+    drop-image: func(image: image);
+    /// Part of an image, drawn stretched into a rectangle.
+    record image-shape {
+        image: image,
+        /// The texels of the image drawn (clipped to it).
+        src: rect,
+        /// Where, in GUI pixels from the box's top left.
+        dst: rect,
+        /// A tint, 0xAARRGGBB: 0xFFFFFFFF draws the image as it is, a lower
+        /// alpha fades it.
+        tint: u32,
+        /// Clipped to the circle inscribed in `dst` (a round minimap).
+        round: bool,
+    }
+    /// What a canvas corner box holds.
+    variant shape {
+        image(image-shape),
+        fill(fill-shape),
+        quad(quad-shape),
+        sprite(sprite-shape),
+        text(text-shape),
+    }
+    /// Replaces the mod's canvas box: shapes in GUI pixels from the top left
+    /// of a `width` × `height` box that the game places in `corner`, stacked
+    /// with the game's overlays, the mods' panels and their `render` corner
+    /// panels, under the status effects at the top right; hidden with the
+    /// HUD (F1), and the top left gives way to the debug screen (F3). Up to
+    /// 1024 shapes; an image shape of an unknown image draws nothing.
+    set-corner: func(corner: corner, width: f32, height: f32, shapes: list<shape>);
+    /// Removes the mod's canvas box.
+    clear-corner: func();
+    /// Asks for a CPU budget for each `frame` call, in microseconds: 100 by
+    /// default, at most 500. Returns what was granted (the Mods page shows
+    /// it). The mod has no clock: `work-left` says how much of it is left.
+    request-frame-budget: func(micros: u32) -> u32;
+    /// How much of this hook call's budget is left, about 1000000 at its
+    /// start and 0 once it is spent: a mod that works `while work-left() >
+    /// reserve` keeps to its budget. In `frame` calls the budget is the
+    /// granted one, measured on this device as the mod runs (host calls
+    /// included); in other hooks it is the hook's own fuel. Spending past it
+    /// is allowed up to the hook's fuel, past which the mod is stopped.
+    work-left: func() -> u64;
+}
+
+/// Capability `world-read` (experimental), API level 17: the blocks, biomes
+/// and light the player's game has loaded, as the window shows them, in
+/// single player and on any server alike (nothing the server didn't send),
+/// read in whole chunks for minimaps; and the block table and textures of
+/// the loaded resource packs.
+interface client-world {
+    /// The player's dimension.
+    record dimension-info {
+        /// `minecraft:overworld`, ...
+        id: string,
+        /// Its lowest block y and its height in blocks.
+        min-y: s32,
+        height: u32,
+        /// It has a roof (the Nether's bedrock ceiling).
+        ceiling: bool,
+    }
+    /// Where a face's colour comes from, besides its texture.
+    enum tint-source {
+        none,
+        grass,
+        foliage,
+        dry-foliage,
+        water,
+        /// The state's `constant-tint` (a lily pad, a redstone wire's power, a stem's age).
+        constant,
+    }
+    /// What a block state's model draws on one side: its first face there.
+    record face {
+        /// Its texture, an index into `block-states.sprites`; 0xFFFFFFFF when
+        /// the side draws nothing.
+        sprite: u32,
+        tint: tint-source,
+    }
+    /// Every block state the game knows, as the loaded resource packs draw
+    /// them (`block-table`). The lists by state are indexed by state id
+    /// (`columns`' ids).
+    record block-states {
+        /// Changes when the resource packs reload: build colours again then.
+        version: u64,
+        /// The blocks, `minecraft:grass_block`, ...
+        blocks: list<string>,
+        /// The texture names faces use, `block/grass_block_top` (a mod's with
+        /// its namespace), for `texture`.
+        sprites: list<string>,
+        /// Each state's block, an index into `blocks`.
+        state-block: list<u16>,
+        /// Each state's facts, bits from the lowest: air (1), drawn as nothing
+        /// (2: a barrier, light), water (4), lava (8), waterlogged (16),
+        /// see-through like glass or leaves (32), no collision like a plant
+        /// (64), a full face on top (128); and the light it gives (0 to 15) << 8.
+        state-flags: list<u16>,
+        /// What each state draws facing up, and facing south; a model with
+        /// nothing flat on either (a flower's crossed planes) gives its
+        /// first face for both.
+        state-top: list<face>,
+        state-side: list<face>,
+        /// Each state's tint for tint source `constant`, 0xRRGGBB (0 when none).
+        constant-tint: list<u32>,
+        /// Each state's vanilla map colour, 0xRRGGBB (0 for none): a fallback.
+        map-color: list<u32>,
+    }
+    /// A texture's pixels: its first frame when it is animated, at the size
+    /// the game holds block textures (every one the same).
+    record texture-pixels {
+        width: u32,
+        height: u32,
+        /// `width × height × 4` bytes, straight alpha, rows top first.
+        rgba: list<u8>,
+    }
+    /// Which block of each column `columns` reads.
+    variant layer {
+        /// The top block (what is under the open sky).
+        surface,
+        /// The floor under this height: the first block going down from it
+        /// (it included), as the game's own minimap maps caves and the Nether.
+        below(s32),
+    }
+    /// A chunk's 256 columns, x fastest: column `z * 16 + x`.
+    record chunk-columns {
+        /// The chunk's change counter, as `changes` counts: the same value
+        /// means the same blocks.
+        revision: u64,
+        /// Each column's top block's y in the layer, water and lava
+        /// included; -32768 for none (air all the way down).
+        tops: list<s16>,
+        /// For each column, `depth` state ids from its top block down
+        /// (air below the world's bottom).
+        states: list<u32>,
+        /// Each column's water depth from its top block down (0 when the
+        /// top block isn't water), at most 255.
+        water: list<u8>,
+        /// The light just above each top block: sky light << 4 | block light.
+        light: list<u8>,
+        /// Each column's grass, foliage and water colours, 0xRRGGBB, three
+        /// per column, at its top block's biome (as the game draws them,
+        /// before the biome blend).
+        tints: list<u32>,
+    }
+    /// The player's dimension; none on the title screen.
+    dimension: func() -> option<dimension-info>;
+    /// The block table (about 30000 states: read it in `init` or when its
+    /// version changes, not every frame). Empty lists on a game without
+    /// block models (a dedicated server).
+    block-table: func() -> block-states;
+    /// The block table's `version` now, without reading the table: cheap
+    /// enough to ask every tick, to know when the packs reloaded.
+    table-version: func() -> u64;
+    /// A texture by its name in `block-states.sprites`, from the loaded
+    /// resource packs (a higher pack's over a lower one's); none for one no
+    /// block model uses.
+    texture: func(name: string) -> option<texture-pixels>;
+    /// The chunks at these chunk coordinates (block x >> 4, z >> 4), each
+    /// column's `depth` blocks (1 to 16) from the top in `layer`; none for
+    /// a chunk the game hasn't loaded. At most 16 chunks a call: more, or a
+    /// depth out of range, is an error.
+    columns: func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<chunk-columns>>, string>;
+    /// The chunks within `radius` chunks of the player (at most 64) whose
+    /// change counter moved past `since`: changed, loaded or unloaded since
+    /// (an unloaded one now reads none), nearest first, at most 4096. Returns
+    /// the counter now, for the next call; 0 asks for every loaded chunk.
+    changes: func(since: u64, radius: u32) -> tuple<u64, list<tuple<s32, s32>>>;
+    /// Light at a block, sky light << 4 | block light; none where no chunk
+    /// is loaded.
+    light: func(x: s32, y: s32, z: s32) -> option<u8>;
+    /// The biome at a block (`minecraft:plains`), as the chunk stores it
+    /// (one per 4 × 4 × 4 cell); none where no chunk is loaded.
+    biome: func(x: s32, y: s32, z: s32) -> option<string>;
 }
 
 /// What the game calls. Only the hooks `init` asks for are ever called.
@@ -1256,6 +1456,8 @@ world horizon-ui-mod {
     import input;
     import recipes;
     import browser;
+    import canvas;
+    import client-world;
     export ui-events;
 }
 
@@ -1269,6 +1471,12 @@ world ui-host {
 world render-host {
     import render;
     import input;
+    import canvas;
+}
+
+/// The game's side of capability `world-read` (imports only).
+world world-read-host {
+    import client-world;
 }
 
 /// The game's side of capability `recipes` (imports only).

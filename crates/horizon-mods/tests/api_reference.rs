@@ -99,9 +99,11 @@ fn access(interface: &str, exported: bool) -> String {
     if interface == "log" {
         return "always granted".into();
     }
-    match Capability::ALL.iter().find(|c| c.interface() == interface) {
-        Some(c) => format!("capability `{c}`"),
-        None => "not granted by any capability".into(),
+    // As the game checks a component's imports: `canvas` is `render`'s,
+    // `browser` `ui`'s.
+    match Capability::of_import(&format!("horizon:mods/{interface}@0.1.0")) {
+        Ok(Some(c)) => format!("capability `{c}`"),
+        _ => "not granted by any capability".into(),
     }
 }
 

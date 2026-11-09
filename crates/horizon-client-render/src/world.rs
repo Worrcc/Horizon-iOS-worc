@@ -80,6 +80,10 @@ pub struct World {
     pub loaded_chunks: Vec<(i32, i32, bool)>,
     /// Chunks changed since the last save.
     pub modified: FxHashSet<(i32, i32)>,
+    /// Chunks whose blocks were written since mods last read them
+    /// (capability `world-read`'s change counters, `game/mod_client_world.rs`),
+    /// kept only while a running mod reads the world.
+    pub mod_writes: Option<FxHashSet<(i32, i32)>>,
     /// Block entities, and the order they tick in.
     pub block_entities: crate::block_entities::BlockEntities,
     /// Each chest's `ContainerOpenersCounter`: opener count and largest
@@ -208,6 +212,7 @@ impl World {
             loaded_entities: Vec::new(),
             loaded_chunks: Vec::new(),
             modified: FxHashSet::default(),
+            mod_writes: None,
             attachments: Default::default(),
             attachment_syncs: FxHashSet::default(),
             block_entities: Default::default(),
@@ -326,6 +331,9 @@ impl World {
                 writes.push(((x, y, z), previous, state.0));
             }
             self.modified.insert((x >> 4, z >> 4));
+            if let Some(writes) = &mut self.mod_writes {
+                writes.insert((x >> 4, z >> 4));
+            }
             // The mesher reads a 3x3x3 neighbourhood for AO, so a write marks
             // the sections it can reach: this section, the one above/below
             // only on a section face, and a neighbour column only on a chunk

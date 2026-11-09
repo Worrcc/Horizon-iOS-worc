@@ -65,7 +65,11 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             thread,
         );
         // The log's first line names the build, so a bug report that carries the log says which one it was.
-        log::info!("Horizon {}", crash::version());
+        // GitHub Actions sets GITHUB_SHA on every build, the iOS one among them.
+        match option_env!("HORIZON_COMMIT").or(option_env!("GITHUB_SHA")) {
+            Some(commit) => log::info!("Horizon {} (build {commit})", crash::version()),
+            None => log::info!("Horizon {}", crash::version()),
+        }
         crash::install(home.clone(), side);
     }
     let renderers = crate::mod_api::mods()
@@ -190,7 +194,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }
     raise_open_file_limit();
-    if let Err(error) = game::run_with() {
+    if let Err(error) = run_on_a_large_stack(game::run_with) {
         // A bad command line is the caller's mistake, not a crash: no report.
         let usage = error.is::<game::UsageError>();
         log::error!("Horizon: {error}");
@@ -213,6 +217,22 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         });
     }
     logging::flush();
+}
+
+/// The main thread's stack is 8 MB on Linux and macOS (and on Windows, build.rs), but iOS gives
+/// it 1 MB, and an app LiveContainer starts runs on LiveContainer's main thread, so no link flag
+/// reaches it. The loading screen's handoff alone (`Loading::finish`, `start_game`,
+/// `Game::new`, each holding a whole `Game`) needs about 2 MB: on a smaller stack the game runs
+/// on an 8 MB stack of its own, still on the main thread, which UIKit and winit need.
+/// iOS always switches: how much stack is left is read from what pthread reports for the
+/// thread, which a host app like LiveContainer need not match.
+fn run_on_a_large_stack<R>(run: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "ios")]
+    return stacker::grow(8 << 20, run);
+    #[cfg(all(unix, not(target_os = "ios")))]
+    return stacker::maybe_grow(4 << 20, 8 << 20, run);
+    #[cfg(not(unix))]
+    run()
 }
 
 /// The JVM raises its open-file limit to the hard limit as it starts

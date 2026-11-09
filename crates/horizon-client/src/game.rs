@@ -201,6 +201,8 @@ mod mob_index;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
+mod mod_canvas;
+mod mod_client_world;
 mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_panel;
@@ -2173,7 +2175,7 @@ impl UiResources {
                     horizon_client::gfx::panorama::Faces::load(root, defaults)
                 })
             });
-            let mod_image = crate::game::mods::built_with_native_mods();
+            let mod_image = crate::game::mod_canvas::mod_image_slot();
             let atlas = startup::time("ui.atlas", || {
                 HudAtlas::build_over_with_image(root, defaults, mod_image)
             });
@@ -14795,6 +14797,7 @@ impl Game<'_> {
         self.renderer = Some(renderer);
         self.skin_slots.forget();
         self.maps.slots.forget();
+        self.mod_canvas_forget();
         self.map_patches.clear();
         self.kept_block_entities.get_mut().clear();
         horizon_client::ui_theme::reset_atlas();

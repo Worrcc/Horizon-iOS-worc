@@ -106,9 +106,13 @@ pub enum Capability {
     /// The mobs on the server, and orders to the content mods' own (server
     /// mods; interface `entities`).
     Entities,
+    /// The blocks, biomes and light the player's game has loaded, and the
+    /// loaded packs' block table and textures (client mods; interface
+    /// `client-world`).
+    WorldRead,
 }
 impl Capability {
-    pub const ALL: [Capability; 13] = [
+    pub const ALL: [Capability; 14] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -122,6 +126,7 @@ impl Capability {
         Capability::World,
         Capability::Recipes,
         Capability::Entities,
+        Capability::WorldRead,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -146,6 +151,7 @@ impl Capability {
             Capability::World => "world",
             Capability::Recipes => "recipes",
             Capability::Entities => "entities",
+            Capability::WorldRead => "client-world",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -158,6 +164,7 @@ impl Capability {
                 | Capability::Input
                 | Capability::Recipes
                 | Capability::Entities
+                | Capability::WorldRead
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -184,6 +191,9 @@ impl Capability {
             Capability::Entities => {
                 "see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them"
             }
+            Capability::WorldRead => {
+                "see the blocks, biomes and light your game has loaded around you"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -198,9 +208,13 @@ impl Capability {
         if interface == "log" {
             return Ok(None);
         }
-        // A recipe viewer's panel is part of capability `ui`.
+        // A recipe viewer's panel is part of capability `ui`, a mod's own
+        // images of capability `render`.
         if interface == "browser" {
             return Ok(Some(Capability::Ui));
+        }
+        if interface == "canvas" {
+            return Ok(Some(Capability::Render));
         }
         Capability::ALL
             .into_iter()
@@ -226,6 +240,7 @@ impl fmt::Display for Capability {
             Capability::World => "world",
             Capability::Recipes => "recipes",
             Capability::Entities => "entities",
+            Capability::WorldRead => "world-read",
         };
         f.write_str(name)
     }
@@ -566,6 +581,40 @@ capabilities = ["game-read", "hud"]
         assert_eq!(p.manifest.id, "coords_hud");
         assert_eq!(p.wasm.as_deref(), Some(&b"\0asm"[..]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn world_read_is_an_experimental_client_capability_and_canvas_is_render() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
+        let e = Manifest::parse(&format!("{base}capabilities = [\"world-read\"]\n")).unwrap_err();
+        assert!(e.contains("experimental = [\"world-read\"]"), "{e}");
+        let m = Manifest::parse(&format!(
+            "{base}capabilities = [\"world-read\", \"render\"]\nexperimental = [\"world-read\", \"render\"]\n"
+        ))
+        .unwrap();
+        let imports = [
+            "horizon:mods/client-world@0.1.0",
+            "horizon:mods/canvas@0.1.0",
+        ];
+        assert_eq!(m.check_imports(imports), Ok(()));
+        let render_only = Manifest::parse(&format!(
+            "{base}capabilities = [\"render\"]\nexperimental = [\"render\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            render_only.check_imports(["horizon:mods/client-world@0.1.0"]),
+            Err("uses capability world-read, missing from horizon-mod.toml".into())
+        );
+        let server =
+            "id = \"w\"\nname = \"W\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n";
+        let e = Manifest::parse(&format!(
+            "{server}capabilities = [\"world-read\"]\nexperimental = [\"world-read\"]\n"
+        ))
+        .unwrap_err();
+        assert!(
+            e.contains("capability world-read is for client mods"),
+            "{e}"
+        );
     }
 
     #[test]
