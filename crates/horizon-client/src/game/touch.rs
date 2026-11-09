@@ -50,10 +50,10 @@ fn layout_of(size: [u32; 2]) -> (Layout, f32) {
     )
 }
 
-/// The window event a menu pointer output stands for, on `device`. `None` for the world's
+/// The window events a menu pointer output stands for, on `device`. Empty for the world's
 /// outputs.
-fn pointer_event(device: DeviceId, output: Output, scale: f32) -> Option<WindowEvent> {
-    Some(match output {
+fn pointer_event(device: DeviceId, output: Output, scale: f32) -> Vec<WindowEvent> {
+    vec![match output {
         Output::Pointer(x, y) => WindowEvent::CursorMoved {
             device_id: device,
             position: winit::dpi::PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale)),
@@ -67,13 +67,27 @@ fn pointer_event(device: DeviceId, output: Output, scale: f32) -> Option<WindowE
             },
             button: MouseButton::Left,
         },
+        Output::PointerRight => {
+            return vec![
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Right,
+                },
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Released,
+                    button: MouseButton::Right,
+                },
+            ];
+        }
         Output::Scroll(lines) => WindowEvent::MouseWheel {
             device_id: device,
             delta: MouseScrollDelta::LineDelta(0.0, lines),
             phase: TouchPhase::Moved,
         },
-        _ => return None,
-    })
+        _ => return Vec::new(),
+    }]
 }
 
 /// A touch button: a dark box (light while pressed) with a thin edge and its label.
@@ -156,7 +170,7 @@ impl MenuTouch {
         MenuTouchAction::Events(self.events(outputs, scale))
     }
 
-    /// Once a frame: a finger held still starts a drag.
+    /// Once a frame: a finger held still right clicks.
     pub(super) fn update(&mut self, size: [u32; 2]) -> Vec<WindowEvent> {
         if !self.controls.used {
             return Vec::new();
@@ -172,7 +186,7 @@ impl MenuTouch {
         };
         outputs
             .into_iter()
-            .filter_map(|o| pointer_event(device, o, scale))
+            .flat_map(|o| pointer_event(device, o, scale))
             .collect()
     }
 
@@ -290,7 +304,7 @@ impl Game<'_> {
         }
     }
 
-    /// Once a frame: held fingers start breaking or dragging.
+    /// Once a frame: held fingers start breaking or right click.
     pub(super) fn touch_update(&mut self, event_loop: &dyn EventLoopCtl) {
         if !ENABLED || !self.touch.controls.used {
             return;
@@ -371,13 +385,16 @@ impl Game<'_> {
                 self.physical_keys.remove(&key);
                 pressed
             }
-            Output::Pointer(..) | Output::PointerButton(_) | Output::Scroll(_) => {
+            Output::Pointer(..)
+            | Output::PointerButton(_)
+            | Output::PointerRight
+            | Output::Scroll(_) => {
                 let (Some(device), Some(id)) =
                     (self.touch.device, self.window.as_ref().map(|w| w.id()))
                 else {
                     return;
                 };
-                if let Some(event) = pointer_event(device, output, scale) {
+                for event in pointer_event(device, output, scale) {
                     self.handle_window_event(
                         event_loop,
                         id,

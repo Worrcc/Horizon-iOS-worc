@@ -10,8 +10,9 @@
 //!   perspective and pause;
 //! - the hotbar: tap a slot to select it.
 //!
-//! On menus the first finger is the pointer: a tap clicks, a quick swipe scrolls, and a press
-//! that stays put a moment holds the button down to drag (sliders, scroll bars, stacks).
+//! On menus the first finger is the pointer: a tap left clicks, a quick swipe scrolls, and
+//! moving after a short hold drags (sliders, scroll bars, stacks). Holding still for a long
+//! press right clicks once; that finger then does nothing until lifted.
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use winit::{
@@ -19,10 +20,12 @@ use winit::{
     keyboard::KeyCode,
 };
 
-/// A finger kept still this long breaks blocks (look side) or starts a drag (menus).
+/// A finger kept still this long breaks blocks (look side).
 pub const HOLD: Duration = Duration::from_millis(300);
-/// On menus a press held this long, unmoved, becomes a drag instead of a scroll.
+/// On menus movement after a press held this long starts a drag instead of a scroll.
 pub const POINTER_HOLD: Duration = Duration::from_millis(150);
+/// On menus a finger held still this long right clicks once.
+pub const LONG_PRESS: Duration = Duration::from_millis(500);
 /// Movement under this many GUI pixels still counts as a tap.
 pub const TAP_SLOP: f32 = 6.0;
 /// The joystick's ring, in GUI pixels from where the finger landed.
@@ -152,6 +155,8 @@ pub enum Output {
     Pointer(f32, f32),
     /// Press or release the menu pointer's left button.
     PointerButton(bool),
+    /// Press and release the menu pointer's right button.
+    PointerRight,
     /// Scroll a menu by this many lines (positive is up, as a wheel turned away).
     Scroll(f32),
 }
@@ -161,6 +166,7 @@ enum PointerMode {
     Pending,
     Pressed,
     Scrolling,
+    Spent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -308,7 +314,7 @@ impl TouchControls {
                                     out.push(Output::Pointer(x, y));
                                 }
                             }
-                            PointerMode::Pending => {}
+                            PointerMode::Pending | PointerMode::Spent => {}
                             PointerMode::Pressed => out.push(Output::Pointer(x, y)),
                             PointerMode::Scrolling => out.push(Output::Scroll(dy / SCROLL_LINE)),
                         }
@@ -327,7 +333,7 @@ impl TouchControls {
         out
     }
 
-    /// Once a frame: fingers held still turn into breaking (world) or a drag (menus).
+    /// Once a frame: fingers held still turn into breaking (world) or a right click (menus).
     pub fn update(&mut self, now: Instant) -> Vec<Output> {
         let mut out = Vec::new();
         for finger in self.fingers.values_mut() {
@@ -343,10 +349,10 @@ impl TouchControls {
                 }
                 Finger::Pointer { start, mode, .. }
                     if matches!(mode, PointerMode::Pending)
-                        && now.duration_since(*start) >= POINTER_HOLD =>
+                        && now.duration_since(*start) >= LONG_PRESS =>
                 {
-                    *mode = PointerMode::Pressed;
-                    out.push(Output::PointerButton(true));
+                    *mode = PointerMode::Spent;
+                    out.push(Output::PointerRight);
                 }
                 _ => {}
             }
@@ -418,8 +424,8 @@ impl TouchControls {
                 Some(key) => vec![Output::Key(key, false)],
                 None => vec![Output::Mouse(MouseButton::Right, false)],
             },
-            Finger::Pointer { mode, .. } => match mode {
-                PointerMode::Pending if !cancelled => {
+            Finger::Pointer { start, mode, .. } => match mode {
+                PointerMode::Pending if !cancelled && now.duration_since(start) < LONG_PRESS => {
                     vec![Output::PointerButton(true), Output::PointerButton(false)]
                 }
                 PointerMode::Pressed => vec![Output::PointerButton(false)],
@@ -632,18 +638,140 @@ mod tests {
         assert!(menu(&mut c, 3, TouchPhase::Ended, (50.0, 84.0), t).is_empty());
         // Held still, then moved: a drag.
         menu(&mut c, 4, TouchPhase::Started, (50.0, 60.0), t);
-        assert_eq!(
-            c.update(t + POINTER_HOLD),
-            vec![Output::PointerButton(true)]
-        );
+        assert!(c.update(t + POINTER_HOLD).is_empty());
         assert_eq!(
             menu(&mut c, 4, TouchPhase::Moved, (70.0, 60.0), t + POINTER_HOLD),
-            vec![Output::Pointer(70.0, 60.0)]
+            vec![Output::PointerButton(true), Output::Pointer(70.0, 60.0)]
         );
         assert_eq!(
             menu(&mut c, 4, TouchPhase::Ended, (70.0, 60.0), t + POINTER_HOLD),
             vec![Output::PointerButton(false)]
         );
+    }
+
+    fn menu_at(
+        controls: &mut TouchControls,
+        phase: TouchPhase,
+        p: (f32, f32),
+        now: Instant,
+    ) -> Vec<Output> {
+        controls.touch(1, phase, p, &LAYOUT, false, now)
+    }
+
+    #[test]
+    fn menu_tap_left_clicks_on_lift() {
+        for duration in [
+            Duration::from_millis(80),
+            POINTER_HOLD,
+            LONG_PRESS - Duration::from_millis(1),
+        ] {
+            let mut c = TouchControls::default();
+            let t = Instant::now();
+            assert_eq!(
+                menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t),
+                vec![Output::Pointer(50.0, 60.0)]
+            );
+            assert!(menu_at(&mut c, TouchPhase::Moved, (51.0, 60.0), t + duration).is_empty());
+            assert!(c.update(t + duration).is_empty());
+            assert_eq!(
+                menu_at(&mut c, TouchPhase::Ended, (51.0, 60.0), t + duration),
+                vec![Output::PointerButton(true), Output::PointerButton(false)]
+            );
+        }
+    }
+
+    #[test]
+    fn menu_long_press_right_clicks_before_lift() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert!(c.update(t + POINTER_HOLD).is_empty());
+        assert!(
+            c.update(t + LONG_PRESS - Duration::from_millis(1))
+                .is_empty()
+        );
+        assert_eq!(c.update(t + LONG_PRESS), vec![Output::PointerRight]);
+        assert!(c.update(t + LONG_PRESS * 2).is_empty());
+        assert!(menu_at(&mut c, TouchPhase::Ended, (50.0, 60.0), t + LONG_PRESS * 2).is_empty());
+    }
+
+    #[test]
+    fn menu_hold_then_move_drags_until_lift() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t),
+            vec![Output::Pointer(50.0, 60.0)]
+        );
+        assert!(c.update(t + POINTER_HOLD).is_empty());
+        // Small movement keeps the pointer at its down position until the drag starts.
+        assert!(menu_at(&mut c, TouchPhase::Moved, (51.0, 60.0), t + POINTER_HOLD).is_empty());
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Moved, (56.0, 60.0), t + POINTER_HOLD),
+            vec![Output::PointerButton(true), Output::Pointer(56.0, 60.0)]
+        );
+        assert!(c.update(t + LONG_PRESS).is_empty());
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Moved, (70.0, 65.0), t + LONG_PRESS),
+            vec![Output::Pointer(70.0, 65.0)]
+        );
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Ended, (70.0, 65.0), t + LONG_PRESS),
+            vec![Output::PointerButton(false)]
+        );
+    }
+
+    #[test]
+    fn menu_quick_swipe_scrolls_without_clicking() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert_eq!(
+            menu_at(
+                &mut c,
+                TouchPhase::Moved,
+                (50.0, 66.0),
+                t + Duration::from_millis(50)
+            ),
+            vec![Output::Scroll(0.5)]
+        );
+        assert!(c.update(t + LONG_PRESS).is_empty());
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Moved, (50.0, 90.0), t + LONG_PRESS),
+            vec![Output::Scroll(2.0)]
+        );
+        assert!(menu_at(&mut c, TouchPhase::Ended, (50.0, 90.0), t + LONG_PRESS).is_empty());
+    }
+
+    #[test]
+    fn menu_long_press_spends_finger_before_movement() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert!(menu_at(&mut c, TouchPhase::Moved, (51.0, 60.0), t + POINTER_HOLD).is_empty());
+        assert_eq!(c.update(t + LONG_PRESS), vec![Output::PointerRight]);
+        assert!(menu_at(&mut c, TouchPhase::Moved, (70.0, 90.0), t + LONG_PRESS).is_empty());
+        assert!(c.update(t + LONG_PRESS * 2).is_empty());
+        assert!(menu_at(&mut c, TouchPhase::Moved, (50.0, 60.0), t + LONG_PRESS * 2).is_empty());
+        assert!(menu_at(&mut c, TouchPhase::Ended, (50.0, 60.0), t + LONG_PRESS * 2).is_empty());
+    }
+
+    #[test]
+    fn menu_cancelled_hold_does_not_click() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert!(c.update(t + POINTER_HOLD).is_empty());
+        assert!(
+            menu_at(
+                &mut c,
+                TouchPhase::Cancelled,
+                (50.0, 60.0),
+                t + POINTER_HOLD
+            )
+            .is_empty()
+        );
+        assert!(c.update(t + LONG_PRESS).is_empty());
     }
 
     #[test]
