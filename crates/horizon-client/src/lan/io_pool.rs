@@ -607,7 +607,11 @@ impl Conn {
         {
             return self.end(now, "Disconnected");
         }
-        if !self.left && now.duration_since(self.last_read) > self.timeout {
+        // A memory pipe shares the client's process: suspension is not a lost network peer.
+        if matches!(self.io, Io::Tcp(_))
+            && !self.left
+            && now.duration_since(self.last_read) > self.timeout
+        {
             return self.end(now, horizon_protocol::Error::timed_out().to_string());
         }
         if !self.draining
@@ -799,12 +803,36 @@ mod tests {
 
     #[test]
     fn a_silent_client_times_out() {
-        let (a, b) = Pipe::pair();
-        let mut client = Connection::local(a);
-        let served = serve(Connection::local(b), quiet, Duration::from_millis(300));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = Connection::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let server = Connection::from_stream(listener.accept().unwrap().0).unwrap();
+        let served = serve(server, quiet, Duration::from_millis(300));
         assert_eq!(served.next(), Seen::Left("Timed out".into()));
         assert_eq!(served.next(), Seen::Closed);
         assert!(client.recv().is_err());
+    }
+
+    #[test]
+    fn a_silent_local_client_stays_connected_past_the_timeout() {
+        let (a, b) = Pipe::pair();
+        let mut client = Connection::local(a);
+        let served = serve(Connection::local(b), quiet, Duration::from_millis(300));
+        // Confirm adoption before waiting across several timeout sweeps.
+        served.send(vec![body(1, 2)], None);
+        assert_eq!(client.recv().unwrap(), packet(&body(1, 2)));
+        assert_eq!(
+            served.seen.recv_timeout(Duration::from_millis(900)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        client.send(&body(2, 3)).unwrap();
+        assert_eq!(served.next(), Seen::Packet(2, body(2, 3)[1..].to_vec()));
+        served.send(vec![body(3, 4)], None);
+        assert_eq!(client.recv().unwrap(), packet(&body(3, 4)));
+        // A real close still ends a local connection.
+        client.writer.shutdown();
+        assert_eq!(served.next(), Seen::Left("Disconnected".into()));
+        assert_eq!(served.next(), Seen::Closed);
     }
 
     /// A client that reads nothing holds its disconnect unwritten; a close

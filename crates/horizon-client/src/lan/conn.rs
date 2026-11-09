@@ -465,7 +465,10 @@ fn serve_connection(
     counted: Option<super::Counted>,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
-    c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
+    // Local peers suspend together, including during login and reconfiguration.
+    c.reader
+        .set_read_timeout((!c.is_memory()).then_some(LOGIN_TIMEOUT))
+        .map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
     let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
         handshake::Serverbound::Intention(i) => i,
@@ -888,7 +891,9 @@ fn login_and_configure(
             _ => return Err("unexpected packet during login".into()),
         }
     }
-    c.reader.set_read_timeout(Some(READ_TIMEOUT)).map_err(e)?;
+    c.reader
+        .set_read_timeout((!c.is_memory()).then_some(READ_TIMEOUT))
+        .map_err(e)?;
     // Configuration.
     let sync_data = shared.sync();
     let sync: &SyncData = &sync_data;
@@ -1267,6 +1272,7 @@ fn play(
     let watch = Arc::new(KeepAliveWatch {
         start: Instant::now(),
         alive: Arc::new(AtomicI64::new(-1)),
+        memory: c.is_memory(),
     });
     let sender = PlayerSender {
         pending,
@@ -1600,6 +1606,8 @@ struct KeepAliveWatch {
     start: Instant,
     /// The id of the last keep-alive the client answered (-1: none yet).
     alive: Arc<AtomicI64>,
+    /// Local players suspend with the server; silence cannot mean a lost network peer.
+    memory: bool,
 }
 impl KeepAliveWatch {
     /// keepConnectionAlive sends a keep-alive 15 s after the last and drops
@@ -1607,7 +1615,8 @@ impl KeepAliveWatch {
     /// what was sent in the last 30 s.
     fn timed_out(&self) -> bool {
         let answered = u64::try_from(self.alive.load(Ordering::Relaxed)).unwrap_or(0);
-        self.start.elapsed() > Duration::from_millis(answered) + 2 * KEEP_ALIVE_EVERY
+        !self.memory
+            && self.start.elapsed() > Duration::from_millis(answered) + 2 * KEEP_ALIVE_EVERY
     }
 }
 
@@ -1922,15 +1931,19 @@ mod tests {
     #[test]
     fn a_silent_client_times_out() {
         let ago = |s| Instant::now().checked_sub(Duration::from_secs(s)).unwrap();
-        let watch = |start, answered| KeepAliveWatch {
+        let watch = |start, answered, memory| KeepAliveWatch {
             start,
             alive: Arc::new(AtomicI64::new(answered)),
+            memory,
         };
-        assert!(!watch(ago(29), -1).timed_out());
-        assert!(watch(ago(31), -1).timed_out());
+        assert!(!watch(ago(29), -1, false).timed_out());
+        assert!(watch(ago(31), -1, false).timed_out());
         // Answered the keep-alive sent 15 s in: fine until 45 s.
-        assert!(!watch(ago(44), 15_000).timed_out());
-        assert!(watch(ago(46), 15_000).timed_out());
+        assert!(!watch(ago(44), 15_000, false).timed_out());
+        assert!(watch(ago(46), 15_000, false).timed_out());
+        // Suspension can outlast any network deadline, with or without a prior answer.
+        assert!(!watch(ago(86_400), -1, true).timed_out());
+        assert!(!watch(ago(86_400), 15_000, true).timed_out());
     }
 
     #[test]
