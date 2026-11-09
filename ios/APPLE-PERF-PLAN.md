@@ -125,6 +125,23 @@ and the touched crates' tests.
 - Step 3.1 (pass audit) can run in parallel as a read-only Codex investigation.
 - Steps 3.2-6 after the device numbers come back.
 
+## First device results (2026-11-09, A16, build a7e31eb)
+
+- Low Power Mode was on the whole run (so battery mode: 60 cap, 2 workers), resolution 100%
+  (saved options kept), render distance 8. Thermal stayed Nominal; the governor never acted.
+- Steady state 58-60 FPS, CPU ~3 ms, GPU 8-10 ms per frame, 380-580 MB resident.
+- First minute in a world: 37-48 FPS with GPU 21-26 ms while chunks and the Diorama map fill.
+- **Stutter is the problem, not average FPS**: 1% lows 25-90 ms, spikes to 150 ms, around chunk
+  loading and the iOS keyboard.
+- The battery temperature is blocked by the sandbox (never shown): removed.
+- Found: leaving the app ~30 s disconnects the player from their own single-player world.
+
+New order:
+1. Done next: perf-log fixes, slow-frame span breakdown in the `perf:` line, background disconnect fix.
+2. Find and fix the stutter sources from the breakdown.
+3. **Step 3 (GPU pass merging) is on hold**: GPU time has headroom at 60 FPS; revisit with
+   Low Power Mode off at a 120 cap, where GPU time decides the frame rate.
+
 ## Open questions
 
 1. CPU baseline for `target-cpu`: apple-a14 drops iPhone XS/XR/11 (A12/A13). apple-a12 is the
