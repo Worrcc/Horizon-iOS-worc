@@ -65,7 +65,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
             thread,
         );
         // The log's first line names the build, so a bug report that carries the log says which one it was.
-        match option_env!("HORIZON_COMMIT") {
+        // GitHub Actions sets GITHUB_SHA on every build, the iOS one among them.
+        match option_env!("HORIZON_COMMIT").or(option_env!("GITHUB_SHA")) {
             Some(commit) => log::info!("Horizon {} (build {commit})", crash::version()),
             None => log::info!("Horizon {}", crash::version()),
         }
