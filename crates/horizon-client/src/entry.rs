@@ -190,7 +190,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
     }
     raise_open_file_limit();
-    if let Err(error) = game::run_with() {
+    if let Err(error) = run_on_a_large_stack(game::run_with) {
         // A bad command line is the caller's mistake, not a crash: no report.
         let usage = error.is::<game::UsageError>();
         log::error!("Horizon: {error}");
@@ -220,6 +220,18 @@ pub fn main_with(mods: crate::mod_api::Mods) {
 /// sockets and region files as the host allows, not the soft default (often
 /// 1024 in a container). The same here; macOS caps it at `OPEN_MAX`, as the
 /// JVM does there.
+/// The main thread's stack is 8 MB on Linux and macOS (and on Windows, build.rs), but iOS gives
+/// it 1 MB, and an app LiveContainer starts runs on LiveContainer's main thread, so no link flag
+/// reaches it. The loading screen's handoff alone (`Loading::finish`, `start_game`,
+/// `Game::new`, each holding a whole `Game`) needs about 2 MB: on a smaller stack the game runs
+/// on an 8 MB stack of its own, still on the main thread, which UIKit and winit need.
+fn run_on_a_large_stack<R>(run: impl FnOnce() -> R) -> R {
+    #[cfg(unix)]
+    return stacker::maybe_grow(4 << 20, 8 << 20, run);
+    #[cfg(not(unix))]
+    run()
+}
+
 fn raise_open_file_limit() {
     #[cfg(unix)]
     {
