@@ -44,11 +44,10 @@ thread_local! {
 }
 
 /// The window is up: its sizes go in the log (what a wrong-sized picture comes down to), and
-/// the screen is asked for its full frame rate.
-pub(super) fn log_window(window: &std::sync::Arc<Window>) {
+/// the screen is asked for the initial frame cap.
+pub(super) fn log_window(window: &std::sync::Arc<Window>, cap: i32) {
     WINDOW.set(Some(window.clone()));
-    // ProMotion screens: up to 120 Hz rather than iOS's 60 (the frame limit still applies).
-    horizon_ios::prefer_frame_rate(120.0);
+    horizon_ios::prefer_frame_rate(cap as f32);
     let (inner, outer) = (window.inner_size(), window.outer_size());
     log::info!(
         "Horizon: iOS window {}x{} px (screen frame {}x{} px) at scale {}: {}",
@@ -294,6 +293,7 @@ pub(super) fn show_error(title: &'static str, message: String) -> Result<()> {
 impl Game<'_> {
     /// `applicationWillResignActive`: Control Center, a call, the app switcher, the home screen.
     pub(super) fn enter_background(&mut self, event_loop: &ActiveEventLoop) {
+        self.phone_perf.suspend();
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {
             // iOS sends no Focused: a lost focus pauses (Gui.setPauseScreen) and lets go of
             // held buttons.

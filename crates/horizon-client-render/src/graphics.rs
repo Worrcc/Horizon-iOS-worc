@@ -753,6 +753,8 @@ pub struct Graphics {
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
     pub battery: bool,
+    #[cfg(target_os = "ios")]
+    pub thermal_throttling: bool,
     /// Reuse the shader pack's last shadow map when sun, view, scene revision and
     /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
     /// (or every `shadowInterval`), and a hit with a stale key shows old shadows.
@@ -823,6 +825,8 @@ impl Default for Graphics {
             hdr_lighting: true,
             hdr_key: "key.keyboard.unknown".into(),
             battery: false,
+            #[cfg(target_os = "ios")]
+            thermal_throttling: true,
             shadow_cache: false,
             api: GraphicsApi::Auto,
             translucent_batching: true,
@@ -835,10 +839,23 @@ fn bool_text(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
 impl Graphics {
+    fn first_run_defaults(ios: bool, missing: bool) -> Self {
+        let mut graphics = Self::default();
+        if ios && missing {
+            graphics.resolution_scale = 75;
+            graphics.upscaling = Upscaling::Native;
+        }
+        graphics
+    }
     pub fn load(dir: &Path) -> Self {
         let mut g: Self = fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                Self::first_run_defaults(
+                    cfg!(target_os = "ios"),
+                    error.kind() == std::io::ErrorKind::NotFound,
+                )
+            });
         g.blue_map.servers = match fs::read_to_string(dir.join(crate::bluemap::SERVERS_FILE)) {
             Ok(text) => crate::bluemap::Settings::parse_servers(&text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -961,6 +978,8 @@ impl Graphics {
                 }
                 "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "batteryMode" => g.battery = flag(g.battery),
+                #[cfg(target_os = "ios")]
+                "thermalThrottling" => g.thermal_throttling = flag(g.thermal_throttling),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
@@ -1036,6 +1055,10 @@ impl Graphics {
             bool_text(self.hdr_smooth_gradients),
             bool_text(self.gpu_culling),
         );
+        #[cfg(target_os = "ios")]
+        {
+            text += &format!("thermalThrottling:{}\n", bool_text(self.thermal_throttling));
+        }
         text += &self.blue_map.serialize();
         text
     }
@@ -1095,12 +1118,23 @@ impl Graphics {
         // laptop while a world loaded: a teleport there took ~15% longer.
         let auto = ios_worker_count()
             .unwrap_or_else(|| horizon_threads::worker_count().saturating_sub(1).max(1));
-        if self.battery { auto.div_ceil(2) } else { auto }
+        if self.battery_enabled() {
+            auto.div_ceil(2)
+        } else {
+            auto
+        }
+    }
+    fn battery_enabled(&self) -> bool {
+        #[cfg(target_os = "ios")]
+        if horizon_ios::low_power_mode() {
+            return true;
+        }
+        self.battery
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a
     /// world or while another window has focus.
     pub fn battery_limit(&self, limit: i32, in_world: bool, focused: bool) -> i32 {
-        if !self.battery {
+        if !self.battery_enabled() {
             limit
         } else if in_world && focused {
             limit.min(60)
@@ -1168,6 +1202,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn phone_graphics_defaults_only_for_a_missing_graphics_file() {
+        for (ios, missing, scale) in [
+            (true, true, 75),
+            (true, false, 100),
+            (false, true, 100),
+            (false, false, 100),
+        ] {
+            let g = Graphics::first_run_defaults(ios, missing);
+            assert_eq!(g.resolution_scale, scale);
+            assert_eq!(g.upscaling, Upscaling::Native);
+        }
+        let g = Graphics::parse("resolutionScale:90\nupscaling:balanced\n");
+        assert_eq!(g.resolution_scale, 90);
+        assert_eq!(g.upscaling, Upscaling::Balanced);
+    }
+
+    #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
         if cfg!(windows) {
@@ -1233,6 +1284,8 @@ mod tests {
             hdr_lighting: false,
             hdr_key: "key.keyboard.h".into(),
             battery: true,
+            #[cfg(target_os = "ios")]
+            thermal_throttling: false,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
             translucent_batching: false,

@@ -105,6 +105,8 @@ pub enum H {
     HdrUiBrightness,
     HdrLighting,
     BatteryMode,
+    #[cfg(target_os = "ios")]
+    ThermalThrottling,
     ShadowCache,
     GraphicsApi,
     TranslucentBatching,
@@ -454,11 +456,19 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                 ),
                 (
                     "Power",
-                    vec![h(
-                        H::BatteryMode,
-                        None,
-                        "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
-                    )],
+                    vec![
+                        h(
+                            H::BatteryMode,
+                            None,
+                            "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
+                        ),
+                        #[cfg(target_os = "ios")]
+                        h(
+                            H::ThermalThrottling,
+                            None,
+                            "horizon.options.thermal_throttling.tooltip",
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -864,6 +874,11 @@ impl H {
                 Text::translate("Shortcut: %s", &[crate::keybinds::display_name(&g.hdr_key)])
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
+            #[cfg(target_os = "ios")]
+            H::ThermalThrottling => labelled(
+                "horizon.options.thermal_throttling",
+                on_off(g.thermal_throttling),
+            ),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
@@ -988,6 +1003,8 @@ impl H {
             H::Hdr => g.hdr = !g.hdr,
             H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
+            #[cfg(target_os = "ios")]
+            H::ThermalThrottling => g.thermal_throttling = !g.thermal_throttling,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
@@ -1101,6 +1118,8 @@ impl Item {
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
+            #[cfg(target_os = "ios")]
+            Item::Horizon(H::ThermalThrottling) => g.thermal_throttling,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Horizon(H::TranslucentBatching) => {
                 g.translucent_batching && crate::graphics::translucent_batching_offered()
@@ -1158,6 +1177,10 @@ impl Item {
     }
     /// A preset no longer describes the settings once one of them changes.
     fn touched(self, s: &mut Settings) {
+        #[cfg(target_os = "ios")]
+        if self == Item::Horizon(H::ThermalThrottling) {
+            return;
+        }
         let presetless = matches!(
             self,
             Item::Horizon(
