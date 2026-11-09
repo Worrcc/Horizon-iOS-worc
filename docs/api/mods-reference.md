@@ -287,11 +287,25 @@ Access: exported by the mod: the game calls it.
 
 What the game calls on a mod that shows widgets (capability `ui`): what the player did with them.
 
+### enum `pointer-kind`
+
+API level 18: pointer action on the mod's canvas screen.
+
+| Case | |
+| --- | --- |
+| `down` |  |
+| `up` |  |
+| `drag` |  |
+| `move` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `select` | `func(id: u32, row: u32)` | A row of one of the mod's `list` widgets was picked: the widget's `id` and the row, on the screen or the settings page that showed it. |
 | `closed` | `func()` | The player left the mod's screen (Esc or Done); not for a screen the mod closed itself or one that went away with the mod. |
 | `settings-opened` | `func()` | The player opened the mod's settings page in Options > Mods: call `ui::set-settings` now to fill it with fresh widgets. |
+| `pointer` | `func(kind: pointer-kind, x: f32, y: f32, button: u32)` | GUI pixels from the window top left; buttons 0 left, 1 right, 2 middle. Drag is movement with a button held. Missing exports are ignored. |
+| `scroll` | `func(x: f32, y: f32, steps: f32)` | Wheel at GUI coordinates; positive steps away from the player. |
+| `screen-key` | `func(key: string, down: bool)` | A key.keyboard.* key pressed or released on the canvas screen. Escape closes the screen instead. Missing exports are ignored. |
 
 ## `input`
 
@@ -546,10 +560,14 @@ What a canvas corner box holds.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
-| `create-image` | `func(width: u32, height: u32) -> result<image, string>` | A new image of `width` × `height` texels (each side 1 to 512; at most 512 × 512 texels for all of a mod's images together), on the shared mod-image atlas page. It starts transparent. An error when a side is out of range, the mod's share is used up or the page is full. |
-| `update-image` | `func(image: image, x: u32, y: u32, width: u32, height: u32, rgba: list<u8>) -> result<_, string>` | Replaces the texels from (`x`, `y`) to (`x + width`, `y + height`) of `image` with `rgba` (`width × height × 4` bytes, straight alpha, rows top first). Shown from the next frame. At most 512 KiB a frame for each mod: past it, an error and nothing changes. An unknown image, a rectangle outside it or the wrong number of bytes is an error. |
+| `create-image` | `func(width: u32, height: u32) -> result<image, string>` | A new image of `width` × `height` texels (each side 1 to 1024; at most 1024 × 1024 texels for all of a mod's images together), on the shared mod-image atlas page. It starts transparent. An error when a side is out of range, the mod's share is used up or the page is full. |
+| `update-image` | `func(image: image, x: u32, y: u32, width: u32, height: u32, rgba: list<u8>) -> result<_, string>` | Replaces the texels from (`x`, `y`) to (`x + width`, `y + height`) of `image` with `rgba` (`width × height × 4` bytes, straight alpha, rows top first). Shown from the next frame. At most 1024 KiB a frame for each mod: past it, an error and nothing changes. An unknown image, a rectangle outside it or the wrong number of bytes is an error. |
 | `drop-image` | `func(image: image)` | Frees `image` and its place on the page; an unknown one is ignored. A mod's images go when it stops. |
 | `set-corner` | `func(corner: corner, width: f32, height: f32, shapes: list<shape>)` | Replaces the mod's canvas box: shapes in GUI pixels from the top left of a `width` × `height` box that the game places in `corner`, stacked with the game's overlays, the mods' panels and their `render` corner panels, under the status effects at the top right; hidden with the HUD (F1), and the top left gives way to the debug screen (F3). Up to 1024 shapes; an image shape of an unknown image draws nothing. |
+| `set-placed` | `func(anchor: corner, dx: f32, dy: f32, width: f32, height: f32, shapes: list<shape>)` | API level 18: replaces the mod's canvas box, offset inward from the anchor in GUI pixels, clamped fully on screen. Same limits as set-corner; independent of corner stacking and hidden with F1. |
+| `open-canvas-screen` | `func(title: string, shapes: list<shape>)` | API level 18: opens the mod's full-window canvas (capabilities ui and render). Up to 4096 shapes in GUI pixels from the window top left, clipped to the window. Hides its HUD box; Escape sends ui-events.closed. |
+| `set-canvas-screen` | `func(shapes: list<shape>)` | Replaces the open canvas screen's shapes; ignored without a screen. |
+| `close-canvas-screen` | `func()` | Closes the mod's canvas screen without a closed event. |
 | `clear-corner` | `func()` | Removes the mod's canvas box. |
 | `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500. Returns what was granted (the Mods page shows it). The mod has no clock: `work-left` says how much of it is left. |
 | `work-left` | `func() -> u64` | How much of this hook call's budget is left, about 1000000 at its start and 0 once it is spent: a mod that works `while work-left() > reserve` keeps to its budget. In `frame` calls the budget is the granted one, measured on this device as the mod runs (host calls included); in other hooks it is the hook's own fuel. Spending past it is allowed up to the hook's fuel, past which the mod is stopped. |

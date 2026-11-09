@@ -158,6 +158,9 @@ pub(super) struct ModsState {
     /// A `ui` mod's screen or settings page while it is up.
     #[cfg(feature = "mods")]
     screen: Option<ModScreen>,
+    /// The full-window canvas and its held pointer buttons.
+    #[cfg(feature = "mods")]
+    pub(super) canvas_screen: Option<super::mod_canvas_screen::CanvasScreenHost>,
     /// The HUD font's advances for `render.text-width`, made once.
     #[cfg(feature = "mods")]
     font_widths: std::sync::Arc<[f32]>,
@@ -756,6 +759,7 @@ impl Game<'_> {
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));
         // Entries were replaced wholesale: a screen's owner index is stale.
         self.mods.screen = None;
+        self.mods.canvas_screen = None;
         // Content mods may have changed the items: remade on the next read.
         self.mods.recipes = None;
         self.list_mods();
@@ -1276,7 +1280,13 @@ impl Game<'_> {
                     continue;
                 }
                 Output::CloseScreen { owner } => {
-                    if self.mods.screen.as_ref().is_some_and(|s| s.owner == owner) {
+                    if self.mods.screen.as_ref().is_some_and(|s| s.owner == owner)
+                        || self
+                            .mods
+                            .canvas_screen
+                            .as_ref()
+                            .is_some_and(|s| s.owner == owner)
+                    {
                         self.close_wasm_mod_screen(false);
                     }
                     continue;
@@ -1456,6 +1466,15 @@ impl Game<'_> {
         if self.native_mod_screen.is_some() || (self.title.is_some() && !settings) {
             return;
         }
+        if !settings && self.mods.mods.canvas_screen(owner).is_some() {
+            let under = self.mods.screen.as_ref().map_or(self.screen, |s| s.under);
+            self.mods.screen = None;
+            self.open_mod_canvas_screen(owner, under);
+            return;
+        }
+        if let Some(canvas) = self.mods.canvas_screen.take() {
+            self.screen = canvas.under;
+        }
         if settings {
             self.mods.mods.ui_settings_opened(owner);
             let keys = self.mods.mods.keys_of(owner);
@@ -1480,6 +1499,9 @@ impl Game<'_> {
     /// Leaves the mod screen: back to Options for a settings page, to what
     /// it covered for a mod's own. `tell` is Esc/Done, heard as `closed`.
     pub(super) fn close_wasm_mod_screen(&mut self, tell: bool) {
+        if self.close_mod_canvas_screen(tell) {
+            return;
+        }
         let Some(ms) = self.mods.screen.take() else {
             return;
         };
@@ -1499,6 +1521,9 @@ impl Game<'_> {
     /// The mod's screen or settings page: its title over widgets stacked
     /// down the middle, a Done button, Esc to leave (vanilla's menus).
     pub(super) fn draw_mod_screen(&mut self, batch: &mut HudBatch) {
+        if self.draw_mod_canvas_screen(batch) {
+            return;
+        }
         let Some(ms) = self.mods.screen.as_mut() else {
             // The screen was dropped while it was up: back to the world,
             // mouse held again like any return to Playing.

@@ -143,9 +143,9 @@ pub fn map_slot_sprite(slot: usize) -> Option<&'static str> {
 /// The atlas slot the minimap extra draws into.
 pub const MINIMAP_SPRITE: &str = "horizon/minimap";
 /// A mod's own image (`native_mod_image`), drawn with `native_sprite`; big
-/// enough for a world map's 1024 blocks at a block a pixel.
+/// enough for several sandboxed mods' 1024-square images on a shared page.
 pub const MOD_IMAGE_SPRITE: &str = "horizon/modimage";
-pub const MOD_IMAGE_SIZE: u32 = 1024;
+pub const MOD_IMAGE_SIZE: u32 = 2048;
 /// Atlas slots for downloaded player skins (`skins/<sha1>`), 64x64 each.
 /// Vanilla registers a texture per skin. Here the slots are shared
 /// (`skins::SkinSlots`): skins drawn in the last frame keep theirs, and a
@@ -854,8 +854,8 @@ impl HudAtlas {
     }
     /// The atlas above, with a slot for a native mod's own image
     /// (`horizon/modimage`) only when `mod_image` says a mod is loaded that
-    /// draws one: the slot costs 4 MiB of pixels, so a game without native
-    /// mods holds none of them.
+    /// draws one: the slot costs 16 MiB of pixels, shared by native and
+    /// sandboxed mods; a game without either holds none of them.
     pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
         let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
         atlas.text_shader = pack_text::load(root, defaults);

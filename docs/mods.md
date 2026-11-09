@@ -78,7 +78,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box, and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
-| `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 512, 512 × 512 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 512 KiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default); `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. The game measures how fast the mod burns fuel on this device (Pulley on iOS is slower) and sets each call's budget from it. **Experimental:** `experimental = ["render"]` |
+| `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 1024, 1024 × 1024 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 1 MiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default); `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. The game measures how fast the mod burns fuel on this device (Pulley on iOS is slower) and sets each call's budget from it. **Experimental:** `experimental = ["render"]` |
 | `client-world` | `world-read` | API level 17. What this game has loaded, in single player and on any server (only what the server sent): `columns(chunks, layer, depth)`: up to 16 chunks a call, each column's top block in the layer (the surface, or the floor below a height as the game's minimap maps caves and the Nether) and up to 16 state ids down from it, its water depth, the light above it and its biome's grass, foliage and water colours; `changes(since, radius)`: the chunks changed, loaded or unloaded since a counter, nearest first; `block-table()`: every block state's block, facts (air, water, see-through, ...), the texture its model shows up and south with its tint source, and its map colour, from the loaded packs (its `version` changes on a resource reload; `table-version()` reads it alone, cheap enough every tick); `texture(name)`: a block texture's RGBA from the loaded packs, so a mod averages its own colours; `dimension()`, `light(x, y, z)`, `biome(x, y, z)`. **Experimental:** `experimental = ["world-read"]` |
 | `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
 | `recipes` | `recipes` | `items()`: every item in the registry's order, with its name in the player's language and its tags; `all()`: every recipe (crafting, smelting, blasting, smoking, campfire, stonecutting, smithing, brewing), its slots as the stacks that fit each, its results, cooking time and experience, and the recipe book's id for it; `known()`: the book ids the player's recipe book holds; `place(book-id, all)`: the recipe book's click on a recipe, in the open inventory's or crafting table's grid (refused for a recipe the player's book doesn't hold, as vanilla's server refuses it); `give(stack)`: in creative mode, the stack into the player's inventory, as from the creative inventory. The recipes are the world's in single player and on Horizon's servers, vanilla 26.3's on any other server (a client is sent no others), while `known` follows that server's book. The game makes the tables once, when a mod first reads them. **Experimental:** `experimental = ["recipes"]` |
@@ -1046,11 +1046,64 @@ is unchanged, so mods built before them load as they did, and a mod that
 uses them is refused by an older Horizon with "made for a newer Horizon".
 The SDK example `canvas-test` paints a gradient into a round box and says the
 top block under the player. Images live on the HUD atlas's mod-image page
-(1024 × 1024), which the game keeps while a client mod that is on imports
+(2048 × 2048 RGBA, 16 MiB), which the game keeps while a client mod that is on imports
 `canvas` (or a native mod is built in; the two share it, so a native mod's
 `native_mod_image` may cover canvas images). A chunk's change counter moves
 when a block in it is written, when it loads, is sent again or unloads; light
 or biome updates alone don't move it.
+
+**API level 18: placed boxes and canvas screens.** `canvas.set-placed(anchor,
+dx, dy, width, height, shapes)` places the mod's box at GUI pixel offsets inward
+from any corner, independently of the overlay stack. Offsets are clamped after
+window resizes; oversized boxes are clipped to the window. `set-corner`,
+`set-placed` and `clear-corner` replace or remove the same box (up to 1024 shapes,
+hidden with F1). Both box calls keep sizes between 0 and 1024 GUI pixels.
+
+With both `ui` and `render` declared (including their experimental opt-ins),
+`canvas.open-canvas-screen(title, shapes)` opens a full-window surface;
+`set-canvas-screen(shapes)` replaces its shapes and `close-canvas-screen()`
+closes it. The screen holds up to 4096 shapes, in GUI pixels from the window's
+top left, clipped to its bounds, over the usual dimmed menu background. Its
+owner's HUD canvas box is hidden while it is open. It does not pause the game,
+and the mod's registered `frame` hook keeps running. Escape closes it and calls
+`ui-events.closed`; a programmatic close does not send that event.
+
+Canvas screens receive optional `ui-events.pointer(kind, x, y, button)` (`down`,
+`up`, `drag`, `move`; buttons 0 left, 1 right, 2 middle), `scroll(x, y, steps)`
+(positive away from the player), and `screen-key(key, down)` (`key.keyboard.*`,
+including `key.keyboard.left.shift`). Escape belongs to the game. The SDK's
+`Mod` trait provides `ui_pointer`, `ui_scroll` and `ui_screen_key` defaults. Level-17
+components may omit all three exports and retain their original UI callbacks.
+iOS menu touches follow the existing mouse path as button 0; a held touch drags
+with that button. The menu touch layer has no long-press right-click equivalent.
+Images may now be 1024 texels per side, with a total of 1024 × 1024 texels per
+mod and 1 MiB of updates per frame. The shared page remains shared with native
+mods' `native_mod_image`.
+
+`canvas-test` shows `set-placed` and opens a screen with M (or `/canvas`). The
+scenario runner used by `cargo horizon-mod test` also accepts canvas input:
+
+```toml
+[[step]]
+command = "canvas"
+expect.canvas-screen = { open = true, title = "Canvas test", shapes = 1 }
+expect.canvas = { placed = true, dx = 12.0, dy = 20.0, x = 347.0, y = 20.0 }
+
+[[step]]
+pointer = { kind = "down", x = 40.0, y = 50.0, button = 0 }
+scroll = { x = 40.0, y = 50.0, steps = 1.0 }
+screen-key = { key = "key.keyboard.left.shift", down = true }
+
+[[step]]
+screen-key = { key = "key.keyboard.escape", down = true }
+expect.canvas-screen = { open = false }
+```
+
+Events run after a step's command, before assertions. `expect.canvas` can check
+`placed`, inward `dx`/`dy` and clamped `x`/`y` (the runner's GUI is 427 × 240),
+beside its existing corner, size, shape/image and round-image counts.
+`expect.canvas-screen` checks `open`, `title`, shape count and `texts` (the text
+shapes in drawing order).
 
 ## Horizon's official mods
 

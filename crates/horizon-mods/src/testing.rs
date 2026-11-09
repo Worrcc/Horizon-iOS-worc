@@ -425,6 +425,29 @@ impl TestGame {
     pub fn canvas(&self) -> Option<&crate::CanvasPanel> {
         self.mods.canvas_panels().next().map(|(_, p)| p)
     }
+    /// The mod's full-window canvas, until closed.
+    pub fn canvas_screen(&self) -> Option<&crate::CanvasScreen> {
+        self.mods.canvas_screen(0)
+    }
+    /// A pointer action in GUI pixels on the open canvas screen.
+    pub fn pointer(&mut self, kind: crate::PointerKind, x: f32, y: f32, button: u32) {
+        self.snapshot();
+        self.mods.ui_pointer(0, kind, x, y, button);
+    }
+    /// Wheel steps at GUI coordinates on the open canvas screen.
+    pub fn scroll(&mut self, x: f32, y: f32, steps: f32) {
+        self.snapshot();
+        self.mods.ui_scroll(0, x, y, steps);
+    }
+    /// A canvas key; Escape leaves the screen and sends closed.
+    pub fn screen_key(&mut self, key: &str, down: bool) {
+        self.snapshot();
+        if key == "key.keyboard.escape" && down && self.canvas_screen().is_some() {
+            self.mods.ui_closed(0);
+        } else {
+            self.mods.ui_screen_key(0, key, down);
+        }
+    }
     /// The texels the mod's images sent since the last call, as the game
     /// writes them into its atlas once a frame.
     pub fn canvas_uploads(&mut self) -> Vec<crate::CanvasUpload> {
@@ -658,7 +681,7 @@ pub struct ClockSet {
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `join`, `player`, `clock`, `ticks`, `frames`, `chat`, `command`,
-/// `break`, `place`, `leave`; then the blocks the mod set are made, and
+/// `pointer`, `scroll`, `screen-key`, `break`, `place`, `leave`; then the blocks the mod set are made, and
 /// `expect` is checked against what the mod showed and changed during the
 /// step. For a server mod, `player`, `chat`, `command`, `break`
 /// and `place` are the doing of the player named by `as`, or of the first
@@ -679,6 +702,10 @@ pub struct Step {
     frames: u64,
     chat: Option<String>,
     command: Option<String>,
+    /// Canvas screen events, after commands and before assertions.
+    pointer: Option<PointerStep>,
+    scroll: Option<ScrollStep>,
+    screen_key: Option<ScreenKeyStep>,
     /// Server mods: a player joins, leaves, breaks or places a block.
     join: Option<String>,
     leave: Option<String>,
@@ -693,6 +720,50 @@ pub struct Step {
     blocks: Vec<BlockSet>,
     #[serde(default)]
     expect: Expect,
+}
+
+/// A canvas pointer action in GUI pixels.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointerStep {
+    kind: PointerAction,
+    x: f32,
+    y: f32,
+    #[serde(default)]
+    button: u32,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PointerAction {
+    Down,
+    Up,
+    Drag,
+    Move,
+}
+impl From<&PointerAction> for crate::PointerKind {
+    fn from(kind: &PointerAction) -> Self {
+        match kind {
+            PointerAction::Down => Self::Down,
+            PointerAction::Up => Self::Up,
+            PointerAction::Drag => Self::Drag,
+            PointerAction::Move => Self::Move,
+        }
+    }
+}
+/// Wheel steps at GUI coordinates.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScrollStep {
+    x: f32,
+    y: f32,
+    steps: f32,
+}
+/// A key.keyboard.* press or release.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenKeyStep {
+    key: String,
+    down: bool,
 }
 
 /// What a step checks; a part left out is not checked.
@@ -722,12 +793,19 @@ pub struct Expect {
     /// The mod's canvas box (capability `render`); with no box, any part
     /// asked for fails.
     canvas: Option<CanvasExpect>,
+    canvas_screen: Option<CanvasScreenExpect>,
 }
 
 /// What a step checks of the canvas box; a part left out is not checked.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CanvasExpect {
+    placed: Option<bool>,
+    dx: Option<f32>,
+    dy: Option<f32>,
+    /// The clamped top left for the runner's 427 × 240 GUI.
+    x: Option<f32>,
+    y: Option<f32>,
     corner: Option<String>,
     width: Option<f32>,
     height: Option<f32>,
@@ -736,6 +814,50 @@ pub struct CanvasExpect {
     images: Option<usize>,
     /// Image shapes clipped round.
     round: Option<usize>,
+}
+
+/// The open full-window canvas; zero shapes can also assert its absence.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CanvasScreenExpect {
+    open: Option<bool>,
+    title: Option<String>,
+    shapes: Option<usize>,
+    texts: Option<Vec<String>>,
+}
+impl CanvasScreenExpect {
+    fn check(&self, game: &TestGame) -> Result<(), String> {
+        let screen = game.canvas_screen();
+        if let Some(open) = self.open {
+            same("canvas screen open", &open, &screen.is_some())?;
+        }
+        if let Some(title) = &self.title {
+            same(
+                "canvas screen title",
+                title,
+                &screen.map_or(String::new(), |s| s.title.clone()),
+            )?;
+        }
+        if let Some(shapes) = self.shapes {
+            same(
+                "canvas screen shapes",
+                &shapes,
+                &screen.map_or(0, |s| s.shapes.len()),
+            )?;
+        }
+        if let Some(texts) = &self.texts {
+            let actual: Vec<String> = screen
+                .into_iter()
+                .flat_map(|s| &s.shapes)
+                .filter_map(|s| match s {
+                    crate::CanvasShape::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+                .collect();
+            same("canvas screen texts", texts, &actual)?;
+        }
+        Ok(())
+    }
 }
 
 impl Script {
@@ -892,6 +1014,15 @@ impl Step {
             Some(p) => game.player_command(p, line),
             None => game.command(line),
         });
+        if let Some(p) = &self.pointer {
+            game.pointer((&p.kind).into(), p.x, p.y, p.button);
+        }
+        if let Some(s) = &self.scroll {
+            game.scroll(s.x, s.y, s.steps);
+        }
+        if let Some(k) = &self.screen_key {
+            game.screen_key(&k.key, k.down);
+        }
         for (b, placed) in [(&self.broken, false), (&self.place, true)] {
             if let (Some(b), Some(p)) = (b, &who) {
                 let pos = BlockPos {
@@ -1020,6 +1151,9 @@ impl Step {
             let got = game.panel().map(|p| corner_name(p.corner).to_string());
             same("corner", &Some(want.clone()), &got)?;
         }
+        if let Some(want) = &e.canvas_screen {
+            want.check(game)?;
+        }
         if let Some(want) = &e.canvas {
             want.check(game)?;
         }
@@ -1031,7 +1165,12 @@ impl CanvasExpect {
     fn check(&self, game: &TestGame) -> Result<(), String> {
         let panel = game.mods.canvas_panels().next();
         let Some((owner, p)) = panel else {
-            let any = self.corner.is_some()
+            let any = self.placed.is_some()
+                || self.dx.is_some()
+                || self.dy.is_some()
+                || self.x.is_some()
+                || self.y.is_some()
+                || self.corner.is_some()
                 || self.width.is_some()
                 || self.height.is_some()
                 || self.shapes.is_some_and(|n| n > 0)
@@ -1042,6 +1181,20 @@ impl CanvasExpect {
                 Ok(())
             };
         };
+        if let Some(want) = self.placed {
+            same("canvas placed", &want, &p.placed.is_some())?;
+        }
+        let origin = p.placed_origin((427.0, 240.0));
+        for (label, want, actual) in [
+            ("canvas dx", self.dx, p.placed.map(|v| v.0)),
+            ("canvas dy", self.dy, p.placed.map(|v| v.1)),
+            ("canvas x", self.x, origin.map(|v| v.0)),
+            ("canvas y", self.y, origin.map(|v| v.1)),
+        ] {
+            if let Some(want) = want {
+                same(label, &Some(want), &actual)?;
+            }
+        }
         let images: Vec<_> = (p.shapes.iter())
             .filter_map(|s| match s {
                 crate::CanvasShape::Image(i) => Some(i),

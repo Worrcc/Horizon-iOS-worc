@@ -34,8 +34,8 @@ id = "test_canvas_guest"
 name = "Test Canvas Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "render", "world-read"]
-experimental = ["render", "world-read"]
+capabilities = ["game-read", "ui", "render", "world-read"]
+experimental = ["ui", "render", "world-read"]
 "#;
 
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
@@ -100,6 +100,44 @@ fn mods_dir() -> &'static Path {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
             let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
+            if name == "horizon_mods_test_ui_guest" {
+                let (stripped, mut metadata) = wit_component::metadata::decode(&core).unwrap();
+                for (_, interface) in metadata.resolve.interfaces.iter_mut() {
+                    if interface.name.as_deref() == Some("ui-events") {
+                        interface.functions.retain(|name, _| {
+                            matches!(name.as_str(), "select" | "closed" | "settings-opened")
+                        });
+                        interface.types.retain(|name, _| name != "pointer-kind");
+                    }
+                }
+                let mut legacy = stripped.clone().unwrap();
+                wit_component::embed_component_metadata(
+                    &mut legacy,
+                    &metadata.resolve,
+                    metadata.world,
+                    wit_component::StringEncoding::UTF8,
+                )
+                .unwrap();
+                let hmod = Package::write(&manifest, &componentize(&legacy).unwrap()).unwrap();
+                std::fs::write(dir.join("legacy_ui.hmod"), hmod).unwrap();
+                let interfaces = &metadata.resolve.interfaces;
+                metadata.resolve.worlds[metadata.world]
+                    .exports
+                    .retain(|_, item| {
+                        !matches!(item, wit_parser::WorldItem::Interface { id, .. }
+                        if interfaces[*id].name.as_deref() == Some("ui-events"))
+                    });
+                let mut legacy = stripped.unwrap();
+                wit_component::embed_component_metadata(
+                    &mut legacy,
+                    &metadata.resolve,
+                    metadata.world,
+                    wit_component::StringEncoding::UTF8,
+                )
+                .unwrap();
+                let hmod = Package::write(&manifest, &componentize(&legacy).unwrap()).unwrap();
+                std::fs::write(dir.join("legacy_no_ui.hmod"), hmod).unwrap();
+            }
         }
         dir
     })
@@ -277,8 +315,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read"]
     assert_eq!(level("coords_hud.hmod"), 0);
     // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
     assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
-    // canvas-test paints an image and reads chunks (level 17).
-    assert_eq!(level("canvas_test.hmod"), 17);
+    // canvas-test uses a placed box and a canvas screen (level 18).
+    assert_eq!(level("canvas_test.hmod"), 18);
 }
 
 #[test]
@@ -1549,13 +1587,16 @@ fn canvas_guest() -> TestGame {
 #[test]
 fn canvas_images_are_checked_capped_and_uploaded() {
     let mut game = canvas_guest();
-    for bad in ["image 0 4", "image 513 1"] {
+    for bad in ["image 0 4", "image 1025 1"] {
         let e = answer(&mut game, bad).unwrap_err();
-        assert!(e.contains("1 to 512 texels a side"), "{e}");
+        assert!(e.contains("1 to 1024 texels a side"), "{e}");
     }
-    assert_eq!(answer(&mut game, "image 512 512").as_deref(), Ok("image 1"));
+    assert_eq!(
+        answer(&mut game, "image 1024 1024").as_deref(),
+        Ok("image 1")
+    );
     let e = answer(&mut game, "image 1 1").unwrap_err();
-    assert!(e.contains("at most 262144 texels"), "{e}");
+    assert!(e.contains("at most 1048576 texels"), "{e}");
     answer(&mut game, "drop 1").unwrap();
     assert_eq!(answer(&mut game, "image 64 32").as_deref(), Ok("image 2"));
     // A new image goes up whole and clear, before anything is drawn on it.
@@ -1574,12 +1615,12 @@ fn canvas_images_are_checked_capped_and_uploaded() {
     }
     let e = answer(&mut game, "update_short 2").unwrap_err();
     assert!(e.contains("16 bytes, not 15"), "{e}");
-    // 8 KiB a call: 64 fit in a frame's 512 KiB, the 65th waits a frame.
-    for _ in 0..64 {
+    // 8 KiB a call: 128 fit in a frame's 1 MiB, the 129th waits a frame.
+    for _ in 0..128 {
         answer(&mut game, "update 2 0 0 64 32").unwrap();
     }
     let e = answer(&mut game, "update 2 0 0 64 32").unwrap_err();
-    assert!(e.contains("over 512 KiB"), "{e}");
+    assert!(e.contains("over 1024 KiB"), "{e}");
     assert_eq!(game.canvas_uploads().len(), 1);
     answer(&mut game, "update 2 0 0 64 32").unwrap();
     // The box draws image 2; an image dropped draws nothing.
@@ -1697,4 +1738,176 @@ fn the_frame_budget_converges() {
     );
     assert!((240.0..=360.0).contains(&median), "{median} µs");
     assert_eq!(game.status(), &Status::Running);
+}
+
+/// Placed boxes replace corner boxes, retain offsets through a resize and
+/// clamp independently of the overlay stack, including non-finite inputs.
+#[test]
+fn canvas_placed_boxes_replace_and_clamp() {
+    let mut game = canvas_guest();
+    answer(&mut game, "placed 0 12 20 32 24 1100").unwrap();
+    let p = game.canvas().unwrap();
+    assert_eq!(p.placed, Some((12.0, 20.0)));
+    assert_eq!(p.shapes.len(), 1024);
+    assert_eq!(p.placed_origin((427.0, 240.0)), Some((12.0, 20.0)));
+    answer(&mut game, "placed 3 12 20 32 24 1").unwrap();
+    let p = game.canvas().unwrap();
+    assert_eq!(p.placed_origin((427.0, 240.0)), Some((383.0, 196.0)));
+    assert_eq!(p.placed_origin((100.0, 80.0)), Some((56.0, 36.0)));
+    answer(&mut game, "placed 1 -90 1000 32 24 1").unwrap();
+    assert_eq!(
+        game.canvas().unwrap().placed_origin((100.0, 80.0)),
+        Some((68.0, 56.0))
+    );
+    answer(&mut game, "placed 2 1000 -10 32 24 1").unwrap();
+    assert_eq!(
+        game.canvas().unwrap().placed_origin((100.0, 80.0)),
+        Some((68.0, 56.0))
+    );
+    answer(&mut game, "placed 0 NaN inf 2000 -1 0").unwrap();
+    let p = game.canvas().unwrap();
+    assert_eq!(
+        (p.width, p.height, p.placed),
+        (1024.0, 0.0, Some((0.0, 0.0)))
+    );
+    assert_eq!(p.placed_origin((100.0, 80.0)), Some((0.0, 0.0)));
+    answer(&mut game, "box 99").unwrap();
+    assert!(game.canvas().unwrap().placed.is_none());
+    answer(&mut game, "clear").unwrap();
+    assert!(game.canvas().is_none());
+}
+
+/// Real guest callbacks, screen limits, replacement, close notification and
+/// frame updates, driven through the same scripts as cargo horizon-mod test.
+#[test]
+fn canvas_screen_events_and_scenarios() {
+    let mut game = canvas_guest();
+    let script = Script::parse(r#"
+[[step]]
+command = "placed 3 8 12 32 24 1"
+expect.canvas = { placed = true, dx = 8.0, dy = 12.0, x = 387.0, y = 204.0 }
+[[step]]
+command = "screen_set 2"
+expect.canvas-screen = { open = false, shapes = 0 }
+[[step]]
+command = "screen 4100"
+expect.canvas-screen = { open = true, title = "Canvas guest", shapes = 4096 }
+[[step]]
+pointer = { kind = "down", x = 10.5, y = 20.0, button = 0 }
+[[step]]
+pointer = { kind = "drag", x = 12.0, y = 24.0, button = 0 }
+[[step]]
+pointer = { kind = "up", x = 12.0, y = 24.0, button = 0 }
+[[step]]
+pointer = { kind = "move", x = 13.0, y = 25.0, button = 0 }
+[[step]]
+pointer = { kind = "down", x = 13.0, y = 25.0, button = 1 }
+scroll = { x = 13.0, y = 25.0, steps = 2.0 }
+screen-key = { key = "key.keyboard.left.shift", down = true }
+[[step]]
+screen-key = { key = "key.keyboard.left.shift", down = false }
+[[step]]
+screen-key = { key = "key.keyboard.left", down = true }
+[[step]]
+screen-key = { key = "key.keyboard.left", down = false }
+[[step]]
+command = "events"
+expect.feedback = "down 10.5 20 0;drag 12 24 0;up 12 24 0;move 13 25 0;down 13 25 1;scroll 13 25 2;key key.keyboard.left.shift true;key key.keyboard.left.shift false;key key.keyboard.left true;key key.keyboard.left false"
+[[step]]
+command = "screen_set 4200"
+expect.canvas-screen = { shapes = 4096 }
+[[step]]
+command = "screen_frames"
+[[step]]
+frames = 2
+expect.canvas-screen = { shapes = 1 }
+[[step]]
+screen-key = { key = "key.keyboard.escape", down = true }
+expect.canvas-screen = { open = false, shapes = 0 }
+[[step]]
+pointer = { kind = "down", x = 0.0, y = 0.0 }
+scroll = { x = 0.0, y = 0.0, steps = -1.0 }
+screen-key = { key = "key.keyboard.left", down = true }
+command = "events"
+expect.feedback = "closed"
+[[step]]
+command = "screen 2"
+[[step]]
+command = "screen_close"
+expect.canvas-screen = { open = false }
+[[step]]
+command = "events"
+expect.feedback = ""
+"#).unwrap();
+    script.run(&mut game).unwrap();
+    assert!(
+        game.canvas().is_some(),
+        "closing a screen keeps the HUD box"
+    );
+}
+
+/// Screen imports require both permissions even though canvas's existing
+/// image and HUD calls continue to need render alone.
+#[test]
+fn canvas_screens_require_ui_and_render() {
+    let package = Package::read(&mods_dir().join("horizon_mods_test_canvas_guest.hmod")).unwrap();
+    let manifest = CANVAS_MANIFEST.replace("\"ui\", ", "");
+    let bytes = Package::write(&manifest, package.wasm.as_ref().unwrap()).unwrap();
+    let dir = mods_dir().join("canvas_no_ui");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mod.hmod");
+    std::fs::write(&path, bytes).unwrap();
+    let mods = Mods::load(&[path], |_| true, |_| false);
+    assert!(matches!(&mods.entries()[0].status, Status::Failed(s) if s.contains("capability ui")));
+}
+
+/// A pre-18 UI export keeps its original callbacks even with no new hooks.
+#[test]
+fn legacy_ui_events_still_work() {
+    let mut mods = load("legacy_ui.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("ui_screen"));
+    mods.drain();
+    mods.ui_select(0, 7, 2);
+    mods.ui_closed(0);
+    let lines: Vec<_> = mods
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Chat { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines, ["selected 7:2", "closed"]);
+    mods.ui_settings_opened(0);
+    assert_eq!(mods.settings_widgets(0).len(), 2);
+}
+
+/// Older components with no ui-events export still load and run normally.
+#[test]
+fn missing_ui_events_are_optional() {
+    let mut mods = load("legacy_no_ui.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("ui_screen"));
+    mods.drain();
+    mods.ui_select(0, 7, 2);
+    mods.ui_closed(0);
+    mods.ui_settings_opened(0);
+    assert!(mods.drain().is_empty());
+    assert_eq!(mods.entries()[0].status, Status::Running);
+}
+
+/// The example opens its full-window gradient from its registered key.
+#[test]
+fn canvas_example_opens_on_its_key() {
+    let mut mods = load("canvas_test.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.set_snapshot(player());
+    assert!(mods.canvas_screen(0).is_none());
+    mods.key("key.keyboard.m", true);
+    mods.frame(1.0 / 60.0);
+    let screen = mods.canvas_screen(0).unwrap();
+    assert_eq!(screen.title, "Canvas test");
+    assert_eq!(screen.shapes.len(), 1);
+    assert!(mods.drain().contains(&Output::OpenScreen { owner: 0 }));
 }

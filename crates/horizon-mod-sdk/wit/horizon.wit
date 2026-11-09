@@ -230,6 +230,16 @@ interface ui-events {
     /// The player opened the mod's settings page in Options > Mods: call
     /// `ui::set-settings` now to fill it with fresh widgets.
     settings-opened: func();
+    /// API level 18: pointer action on the mod's canvas screen.
+    enum pointer-kind { down, up, drag, move }
+    /// GUI pixels from the window top left; buttons 0 left, 1 right, 2 middle.
+    /// Drag is movement with a button held. Missing exports are ignored.
+    pointer: func(kind: pointer-kind, x: f32, y: f32, button: u32);
+    /// Wheel at GUI coordinates; positive steps away from the player.
+    scroll: func(x: f32, y: f32, steps: f32);
+    /// A key.keyboard.* key pressed or released on the canvas screen.
+    /// Escape closes the screen instead. Missing exports are ignored.
+    screen-key: func(key: string, down: bool);
 }
 
 /// Capability `input` (experimental: the manifest needs
@@ -466,14 +476,14 @@ interface canvas {
     use render.{corner, rect, point, fill-shape, quad-shape, sprite-shape, text-shape};
     /// An image of the mod's, from `create-image`.
     type image = u32;
-    /// A new image of `width` × `height` texels (each side 1 to 512; at most
-    /// 512 × 512 texels for all of a mod's images together), on the shared
+    /// A new image of `width` × `height` texels (each side 1 to 1024; at most
+    /// 1024 × 1024 texels for all of a mod's images together), on the shared
     /// mod-image atlas page. It starts transparent. An error when a side is
     /// out of range, the mod's share is used up or the page is full.
     create-image: func(width: u32, height: u32) -> result<image, string>;
     /// Replaces the texels from (`x`, `y`) to (`x + width`, `y + height`) of
     /// `image` with `rgba` (`width × height × 4` bytes, straight alpha, rows
-    /// top first). Shown from the next frame. At most 512 KiB a frame for
+    /// top first). Shown from the next frame. At most 1024 KiB a frame for
     /// each mod: past it, an error and nothing changes. An unknown image, a
     /// rectangle outside it or the wrong number of bytes is an error.
     update-image: func(image: image, x: u32, y: u32, width: u32, height: u32, rgba: list<u8>) -> result<_, string>;
@@ -508,6 +518,18 @@ interface canvas {
     /// HUD (F1), and the top left gives way to the debug screen (F3). Up to
     /// 1024 shapes; an image shape of an unknown image draws nothing.
     set-corner: func(corner: corner, width: f32, height: f32, shapes: list<shape>);
+    /// API level 18: replaces the mod's canvas box, offset inward from the
+    /// anchor in GUI pixels, clamped fully on screen. Same limits as
+    /// set-corner; independent of corner stacking and hidden with F1.
+    set-placed: func(anchor: corner, dx: f32, dy: f32, width: f32, height: f32, shapes: list<shape>);
+    /// API level 18: opens the mod's full-window canvas (capabilities ui and
+    /// render). Up to 4096 shapes in GUI pixels from the window top left,
+    /// clipped to the window. Hides its HUD box; Escape sends ui-events.closed.
+    open-canvas-screen: func(title: string, shapes: list<shape>);
+    /// Replaces the open canvas screen's shapes; ignored without a screen.
+    set-canvas-screen: func(shapes: list<shape>);
+    /// Closes the mod's canvas screen without a closed event.
+    close-canvas-screen: func();
     /// Removes the mod's canvas box.
     clear-corner: func();
     /// Asks for a CPU budget for each `frame` call, in microseconds: 100 by

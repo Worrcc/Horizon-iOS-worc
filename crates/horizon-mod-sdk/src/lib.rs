@@ -45,7 +45,7 @@ wit_bindgen::generate!({
 });
 
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
-pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
+pub use exports::horizon::mods::ui_events::{Guest as __UiEventsGuest, PointerKind};
 pub use horizon::mods::{
     browser, canvas, chat, client_world, command, game, hud, input, log, recipes, render, storage,
     ui,
@@ -95,6 +95,12 @@ pub trait Mod: Sized + 'static {
     /// A row of one of the mod's `list` widgets was picked (capability
     /// `ui`): the widget's `id` and the row.
     fn ui_select(&mut self, _id: u32, _row: u32) {}
+    /// Pointer action on the canvas screen, in GUI pixels (API level 18).
+    fn ui_pointer(&mut self, _kind: PointerKind, _x: f32, _y: f32, _button: u32) {}
+    /// Wheel on the canvas screen; positive steps away from the player.
+    fn ui_scroll(&mut self, _x: f32, _y: f32, _steps: f32) {}
+    /// A key.keyboard.* key on the canvas screen, excluding Escape.
+    fn ui_screen_key(&mut self, _key: &str, _down: bool) {}
     /// The player left the mod's screen (Esc or Done; capability `ui`).
     fn ui_closed(&mut self) {}
     /// The player opened the mod's settings page (capability `ui`): call
@@ -185,6 +191,15 @@ macro_rules! export_mod {
                 }
             }
             impl $crate::__UiEventsGuest for Export {
+                fn pointer(kind: $crate::PointerKind, x: f32, y: f32, button: u32) {
+                    with(|m| $crate::Mod::ui_pointer(m, kind, x, y, button))
+                }
+                fn scroll(x: f32, y: f32, steps: f32) {
+                    with(|m| $crate::Mod::ui_scroll(m, x, y, steps))
+                }
+                fn screen_key(key: String, down: bool) {
+                    with(|m| $crate::Mod::ui_screen_key(m, &key, down))
+                }
                 fn select(id: u32, row: u32) {
                     with(|m| $crate::Mod::ui_select(m, id, row))
                 }

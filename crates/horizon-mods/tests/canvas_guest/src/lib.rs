@@ -8,15 +8,17 @@
 //! `/columns N DEPTH` (N chunks around 0, 0) and `/changes SINCE RADIUS`
 //! say what `game.world-id` and `client-world` read.
 use horizon_mod_sdk::{
-    Mod, Registration,
+    Mod, PointerKind, Registration,
     canvas::{self, ImageShape, Shape},
     client_world::{self, Layer},
     game,
-    render::{Corner, Rect},
+    render::{Corner, FillShape, Rect},
 };
 
 struct Guest {
     working: bool,
+    events: Vec<String>,
+    screen_frames: bool,
     /// Work done in frames, so the loop isn't optimised away.
     spun: u64,
 }
@@ -35,6 +37,13 @@ impl Mod for Guest {
             "update_short",
             "drop",
             "box",
+            "placed",
+            "clear",
+            "screen",
+            "screen_set",
+            "screen_close",
+            "events",
+            "screen_frames",
             "budget",
             "work",
             "world_id",
@@ -49,12 +58,25 @@ impl Mod for Guest {
         Ok((
             Guest {
                 working: false,
+                events: Vec::new(),
+                screen_frames: false,
                 spun: 0,
             },
             hooks,
         ))
     }
     fn frame(&mut self, _seconds: f32) {
+        if self.screen_frames {
+            canvas::set_canvas_screen(&[Shape::Fill(FillShape {
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0,
+                },
+                color: 0xFF00_FF00,
+            })]);
+        }
         if !self.working {
             return;
         }
@@ -64,6 +86,24 @@ impl Mod for Guest {
                 self.spun = std::hint::black_box(self.spun.wrapping_mul(31).wrapping_add(i));
             }
         }
+    }
+    fn ui_pointer(&mut self, kind: PointerKind, x: f32, y: f32, button: u32) {
+        let kind = match kind {
+            PointerKind::Down => "down",
+            PointerKind::Up => "up",
+            PointerKind::Drag => "drag",
+            PointerKind::Move => "move",
+        };
+        self.events.push(format!("{kind} {x} {y} {button}"));
+    }
+    fn ui_scroll(&mut self, x: f32, y: f32, steps: f32) {
+        self.events.push(format!("scroll {x} {y} {steps}"));
+    }
+    fn ui_screen_key(&mut self, key: &str, down: bool) {
+        self.events.push(format!("key {key} {down}"));
+    }
+    fn ui_closed(&mut self) {
+        self.events.push("closed".into());
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         let n = nums(args);
@@ -105,6 +145,68 @@ impl Mod for Guest {
                 );
                 "shown".into()
             }
+            "placed" => {
+                let f: Vec<f32> = args
+                    .split_whitespace()
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                let at = |i: usize| f.get(i).copied().unwrap_or(0.0);
+                let corner = match at(0) as u32 {
+                    0 => Corner::TopLeft,
+                    1 => Corner::TopRight,
+                    2 => Corner::BottomLeft,
+                    _ => Corner::BottomRight,
+                };
+                let shape = Shape::Fill(FillShape {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 8.0,
+                        h: 8.0,
+                    },
+                    color: 0xFFFF_FFFF,
+                });
+                canvas::set_placed(
+                    corner,
+                    at(1),
+                    at(2),
+                    at(3),
+                    at(4),
+                    &vec![shape; at(5) as usize],
+                );
+                "placed".into()
+            }
+            "clear" => {
+                canvas::clear_corner();
+                "cleared".into()
+            }
+            "screen" | "screen_set" => {
+                let shape = Shape::Fill(FillShape {
+                    rect: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 8.0,
+                        h: 8.0,
+                    },
+                    color: 0xFFFF_FFFF,
+                });
+                let shapes = vec![shape; at(0) as usize];
+                if name == "screen" {
+                    canvas::open_canvas_screen("Canvas guest", &shapes);
+                } else {
+                    canvas::set_canvas_screen(&shapes);
+                }
+                "screen shapes".into()
+            }
+            "screen_close" => {
+                canvas::close_canvas_screen();
+                "closed".into()
+            }
+            "screen_frames" => {
+                self.screen_frames = true;
+                "frames on".into()
+            }
+            "events" => std::mem::take(&mut self.events).join(";"),
             "budget" => format!("granted {}", canvas::request_frame_budget(at(0))),
             "work" => {
                 self.working = args.trim() == "on";

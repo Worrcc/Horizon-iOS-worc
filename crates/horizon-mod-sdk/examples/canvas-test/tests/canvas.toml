@@ -8,7 +8,7 @@ z = -12.5
 
 [[step]]
 ticks = 1
-expect.canvas = { corner = "top-right", width = 68.0, height = 68.0, shapes = 2, images = 1, round = 1 }
+expect.canvas = { corner = "top-right", width = 68.0, height = 68.0, placed = true, dx = 12.0, dy = 20.0, x = 347.0, y = 20.0, shapes = 2, images = 1, round = 1 }
 expect.chat = ["No block under you"]
 
 # x 3, z -13 is column 3 + 16 * 3 of chunk (0, -1).
@@ -43,3 +43,22 @@ expect.chat = ["No block under you"]
 title-screen = true
 command = "top"
 expect.error = "Not in a world"
+
+[[step]]
+command = "canvas"
+expect.canvas-screen = { open = true, title = "Canvas test", shapes = 1 }
+
+[[step]]
+pointer = { kind = "down", x = 30.0, y = 40.0, button = 0 }
+
+[[step]]
+pointer = { kind = "drag", x = 40.0, y = 50.0, button = 0 }
+
+[[step]]
+pointer = { kind = "up", x = 40.0, y = 50.0, button = 0 }
+scroll = { x = 40.0, y = 50.0, steps = 1.0 }
+screen-key = { key = "key.keyboard.left", down = true }
+
+[[step]]
+screen-key = { key = "key.keyboard.escape", down = true }
+expect.canvas-screen = { open = false }

@@ -1,9 +1,9 @@
 id = "canvas_test"
 name = "Canvas Test"
 version = "0.1.0"
-description = "A 64 × 64 gradient in a round box at the top right, and the block under you in chat whenever it changes (/top asks again). Shows capability render's canvas and capability world-read."
+description = "A 64 × 64 gradient in a round box placed at the top right (M opens a canvas screen), and the block under you in chat whenever it changes (/top asks again). Shows capability render's canvas and capability world-read."
 authors = ["Horizon"]
 api = "0.1"
 side = "client"
-capabilities = ["game-read", "chat", "render", "world-read"]
-experimental = ["render", "world-read"]
+capabilities = ["game-read", "chat", "render", "world-read", "ui", "input"]
+experimental = ["render", "world-read", "ui", "input"]

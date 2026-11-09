@@ -1,4 +1,4 @@
-//! Capability `render`'s `canvas` interface (API level 17): a mod's own
+//! Capability `render`'s `canvas` interface (API level 18): a mod's own
 //! images on one shared atlas page, its canvas corner box, and the frame
 //! budget it asks for (docs/mods.md, "Canvas").
 //!
@@ -28,16 +28,16 @@ use std::{
 
 /// The side of the shared image page, in texels (the game's
 /// `MOD_IMAGE_SIZE`).
-pub const CANVAS_PAGE: u32 = 1024;
+pub const CANVAS_PAGE: u32 = 2048;
 /// The page is handed out in cells of this many texels square.
 const CELL: u32 = 16;
 const CELLS: usize = (CANVAS_PAGE / CELL) as usize;
 /// The longest side of one image.
-pub const IMAGE_SIDE: u32 = 512;
-/// Texels all of a mod's images may hold together (1 MiB of RGBA).
-pub const IMAGE_TEXELS: u64 = 512 * 512;
+pub const IMAGE_SIDE: u32 = 1024;
+/// Texels all of a mod's images may hold together (4 MiB of RGBA).
+pub const IMAGE_TEXELS: u64 = 1024 * 1024;
 /// RGBA bytes a mod may upload with `update-image` between two frames.
-pub const UPLOAD_BYTES: usize = 512 << 10;
+pub const UPLOAD_BYTES: usize = 1024 << 10;
 /// The frame budget a mod has until it asks, and the most it may have, in µs.
 pub const FRAME_BUDGET: u32 = 100;
 pub const FRAME_BUDGET_MAX: u32 = 500;
@@ -58,7 +58,7 @@ const RATE_WEIGHT: f64 = 0.25;
 /// Which cells of the page are taken, a bit per cell, a row per cell row.
 #[derive(Debug)]
 pub(super) struct Page {
-    rows: [u64; CELLS],
+    rows: [u128; CELLS],
 }
 impl Default for Page {
     fn default() -> Self {
@@ -66,8 +66,12 @@ impl Default for Page {
     }
 }
 /// A run of `w` cells from `x`, as a row's bits.
-fn bits(x: usize, w: usize) -> u64 {
-    let run = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+fn bits(x: usize, w: usize) -> u128 {
+    let run = if w >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << w) - 1
+    };
     run << x
 }
 impl Page {
@@ -145,15 +149,47 @@ impl Image {
     }
 }
 
-/// A mod's canvas box: shapes in a `width` × `height` box the game places
-/// in `corner`, stacked with the other overlays.
+/// A mod's canvas box: stacked in a corner, or placed at inward offsets.
 #[derive(Clone, Debug)]
 pub struct CanvasPanel {
     pub corner: RenderCorner,
+    /// Inward offsets for set-placed; none for a stacked corner box.
+    pub placed: Option<(f32, f32)>,
     pub width: f32,
     pub height: f32,
     pub shapes: Vec<CanvasShape>,
 }
+
+impl CanvasPanel {
+    /// The placed box's top left in GUI pixels, clamped after a resize too.
+    /// A box larger than the window is clipped to the window by the game.
+    pub fn placed_origin(&self, size: (f32, f32)) -> Option<(f32, f32)> {
+        let (dx, dy) = self.placed?;
+        let x = (size.0 - self.width).max(0.0);
+        let y = (size.1 - self.height).max(0.0);
+        let right = matches!(
+            self.corner,
+            RenderCorner::TopRight | RenderCorner::BottomRight
+        );
+        let bottom = matches!(
+            self.corner,
+            RenderCorner::BottomLeft | RenderCorner::BottomRight
+        );
+        Some((
+            if right { x - dx } else { dx }.clamp(0.0, x),
+            if bottom { y - dy } else { dy }.clamp(0.0, y),
+        ))
+    }
+}
+
+/// A mod's full-window canvas, in GUI pixels from the window top left.
+#[derive(Clone, Debug)]
+pub struct CanvasScreen {
+    pub title: String,
+    pub shapes: Vec<CanvasShape>,
+}
+/// The most shapes a full-window canvas may hold.
+pub const SCREEN_SHAPES: usize = 4096;
 
 /// The granted frame budget and how fast the mod burns fuel here.
 #[derive(Clone, Copy, Debug)]
@@ -277,6 +313,7 @@ pub(super) struct CanvasState {
     /// RGBA bytes `update-image` took since the game last took the uploads.
     uploaded: usize,
     pub(super) panel: Option<CanvasPanel>,
+    pub(super) screen: Option<CanvasScreen>,
     pub(super) budget: Budget,
     pub(super) work: Work,
     pub(super) times: FrameTimes,
@@ -298,6 +335,7 @@ impl CanvasState {
             texels: 0,
             uploaded: 0,
             panel: None,
+            screen: None,
             budget: Budget::default(),
             work: Work::default(),
             times: FrameTimes::default(),
@@ -352,12 +390,11 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
-/// Shapes as `set-corner` keeps them: at most [`SHAPES`], texts and sprite
-/// names clipped as `render`'s are.
-fn clip_canvas(shapes: Vec<CanvasShape>) -> Vec<CanvasShape> {
+/// Up to `limit` canvas shapes; texts and sprite names clipped as render's are.
+fn clip_canvas(shapes: Vec<CanvasShape>, limit: usize) -> Vec<CanvasShape> {
     shapes
         .into_iter()
-        .take(SHAPES)
+        .take(limit)
         .map(|shape| match shape {
             CanvasShape::Image(mut i) => {
                 for r in [&mut i.src, &mut i.dst] {
@@ -457,10 +494,43 @@ impl canvas::Host for State {
         };
         self.canvas.panel = Some(CanvasPanel {
             corner,
+            placed: None,
             width: size(width),
             height: size(height),
-            shapes: clip_canvas(shapes),
+            shapes: clip_canvas(shapes, SHAPES),
         });
+    }
+    fn set_placed(
+        &mut self,
+        anchor: RenderCorner,
+        dx: f32,
+        dy: f32,
+        width: f32,
+        height: f32,
+        shapes: Vec<CanvasShape>,
+    ) {
+        self.set_corner(anchor, width, height, shapes);
+        self.canvas.panel.as_mut().expect("just set").placed = Some((finite(dx), finite(dy)));
+    }
+    fn open_canvas_screen(&mut self, title: String, shapes: Vec<CanvasShape>) {
+        self.ui.screen = None;
+        self.canvas.screen = Some(CanvasScreen {
+            title: clip(title),
+            shapes: clip_canvas(shapes, SCREEN_SHAPES),
+        });
+        self.ui.open = true;
+        self.ui.close = false;
+    }
+    fn set_canvas_screen(&mut self, shapes: Vec<CanvasShape>) {
+        if let Some(screen) = &mut self.canvas.screen {
+            screen.shapes = clip_canvas(shapes, SCREEN_SHAPES);
+        }
+    }
+    fn close_canvas_screen(&mut self) {
+        if self.canvas.screen.take().is_some() {
+            self.ui.close = true;
+            self.ui.open = false;
+        }
     }
     fn clear_corner(&mut self) {
         self.canvas.panel = None;
@@ -530,6 +600,18 @@ impl Mods {
             Some((i, panel))
         })
     }
+    /// The canvas screen mod `owner` last opened, until it closes.
+    pub fn canvas_screen(&self, owner: usize) -> Option<&CanvasScreen> {
+        self.entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .canvas
+            .screen
+            .as_ref()
+    }
     /// Where mod `owner`'s image is on the page; none for one it doesn't have.
     pub fn canvas_image(&self, owner: usize, image: u32) -> Option<ImageRect> {
         let run = self.entries.get(owner)?.run.as_ref()?;
@@ -565,22 +647,22 @@ mod tests {
     #[test]
     fn the_page_hands_out_free_cells_and_takes_them_back() {
         let mut page = Page::default();
-        // A 512 × 512 image is 32 × 32 cells: four fill the page.
-        let quarters: Vec<_> = (0..4).map(|_| page.alloc(32, 32)).collect();
+        // A 1024 × 1024 image is 64 × 64 cells: four fill the page.
+        let quarters: Vec<_> = (0..4).map(|_| page.alloc(64, 64)).collect();
         assert_eq!(
             quarters,
-            [Some((0, 0)), Some((32, 0)), Some((0, 32)), Some((32, 32))]
+            [Some((0, 0)), Some((64, 0)), Some((0, 64)), Some((64, 64))]
         );
         assert_eq!(page.alloc(1, 1), None);
-        page.free((32, 0, 32, 32));
-        assert_eq!(page.alloc(1, 1), Some((32, 0)));
-        assert_eq!(page.alloc(32, 32), None);
-        assert_eq!(page.alloc(31, 32), Some((33, 0)));
-        assert_eq!(page.alloc(1, 31), Some((32, 1)));
+        page.free((64, 0, 64, 64));
+        assert_eq!(page.alloc(1, 1), Some((64, 0)));
+        assert_eq!(page.alloc(64, 64), None);
+        assert_eq!(page.alloc(63, 64), Some((65, 0)));
+        assert_eq!(page.alloc(1, 63), Some((64, 1)));
         assert_eq!(page.alloc(1, 1), None);
         assert_eq!(page.alloc(0, 4), None);
-        assert_eq!(page.alloc(65, 1), None);
-        assert_eq!(bits(0, 64), u64::MAX);
+        assert_eq!(page.alloc(129, 1), None);
+        assert_eq!(bits(0, 128), u128::MAX);
     }
 
     #[test]

@@ -202,6 +202,7 @@ mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
 mod mod_canvas;
+mod mod_canvas_screen;
 mod mod_client_world;
 mod mod_input;
 #[cfg(feature = "mods")]
@@ -17829,6 +17830,9 @@ impl Game<'_> {
             );
             self.sync_toggle(SNEAK);
             self.sync_toggle(SPRINT);
+        }
+        if self.mod_canvas_screen_event(&event) {
+            return;
         }
         // `PackSelectionScreen.onFilesDrop` on the Create New World screen.
         if let WindowEvent::DroppedFile(path) = &event

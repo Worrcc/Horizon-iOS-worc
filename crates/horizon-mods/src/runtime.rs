@@ -12,7 +12,7 @@ use std::{
 };
 use wasmtime::{
     Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
-    component::{Component, HasSelf, Linker, Val},
+    component::{Component, HasSelf, Instance, Linker, TypedFunc, Val},
 };
 
 mod bindings {
@@ -73,12 +73,50 @@ pub use server_bindings::{
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
+/// Canvas-screen pointer actions (API level 18).
+pub use ui_bindings::exports::horizon::mods::ui_events::PointerKind;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
 /// ui`), for the game to draw with its menus' own widgets.
 pub use ui_bindings::horizon::mods::ui::{
     ButtonWidget, ItemWidget, ListWidget, Screen as UiScreen, TextWidget, Widget as UiWidget,
 };
 use ui_bindings::{UiHost, horizon::mods::ui};
+
+/// Resolve each callback separately: level-17 UI exports lack the three
+/// canvas callbacks, and older mods may have no ui-events interface at all.
+#[derive(Default)]
+struct UiCallbacks {
+    select: Option<TypedFunc<(u32, u32), ()>>,
+    closed: Option<TypedFunc<(), ()>>,
+    settings_opened: Option<TypedFunc<(), ()>>,
+    pointer: Option<TypedFunc<(PointerKind, f32, f32, u32), ()>>,
+    scroll: Option<TypedFunc<(f32, f32, f32), ()>>,
+    screen_key: Option<TypedFunc<(String, bool), ()>>,
+}
+impl UiCallbacks {
+    fn new(store: &mut Store<State>, instance: &Instance) -> Self {
+        let Some(interface) =
+            instance.get_export_index(&mut *store, None, "horizon:mods/ui-events@0.1.0")
+        else {
+            return Self::default();
+        };
+        macro_rules! callback {
+            ($name:literal) => {
+                instance
+                    .get_export_index(&mut *store, Some(&interface), $name)
+                    .and_then(|index| instance.get_typed_func(&mut *store, index).ok())
+            };
+        }
+        Self {
+            select: callback!("select"),
+            closed: callback!("closed"),
+            settings_opened: callback!("settings-opened"),
+            pointer: callback!("pointer"),
+            scroll: callback!("scroll"),
+            screen_key: callback!("screen-key"),
+        }
+    }
+}
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
 mod render_bindings {
     wasmtime::component::bindgen!({
@@ -125,8 +163,9 @@ use world_read_bindings::WorldReadHost;
 mod canvas_host;
 mod client_world_host;
 pub use canvas_host::{
-    CANVAS_PAGE, CanvasImageShape, CanvasPanel, CanvasShape, CanvasUpload, FRAME_BUDGET,
-    FRAME_BUDGET_MAX, IMAGE_SIDE, IMAGE_TEXELS, ImageRect, UPLOAD_BYTES,
+    CANVAS_PAGE, CanvasImageShape, CanvasPanel, CanvasScreen, CanvasShape, CanvasUpload,
+    FRAME_BUDGET, FRAME_BUDGET_MAX, IMAGE_SIDE, IMAGE_TEXELS, ImageRect, SCREEN_SHAPES,
+    UPLOAD_BYTES,
 };
 pub use client_world_host::{
     BlockFace, BlockTable, CHANGES_MAX, CHANGES_RADIUS, COLUMN_CHUNKS, COLUMN_DEPTH, ChunkColumns,
@@ -575,9 +614,8 @@ impl Entry {
 
 struct Running {
     store: Store<State>,
-    /// The mod's `ui-events` export; none for a mod built before `ui`, or a
-    /// server mod.
-    ui: Option<UiHost>,
+    /// Optional UI callbacks; empty for a mod built before ui or a server mod.
+    ui: UiCallbacks,
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
@@ -628,6 +666,18 @@ struct UiState {
     /// The calls since the last hook ended, for [`Output`].
     open: bool,
     close: bool,
+}
+
+impl UiState {
+    /// Screen changes from one hook, including init, with its installed owner.
+    fn drain(&mut self, owner: usize, out: &mut Vec<Output>) {
+        if std::mem::take(&mut self.open) {
+            out.push(Output::OpenScreen { owner });
+        }
+        if std::mem::take(&mut self.close) {
+            out.push(Output::CloseScreen { owner });
+        }
+    }
 }
 
 /// Capability `ui`'s panel beside container screens (`browser`).
@@ -853,6 +903,12 @@ impl Mods {
             if let (Status::Failed(reason), Some(m)) = (&entry.status, &entry.manifest) {
                 log::warn!("Horizon: mod {} did not start: {reason}", m.id);
             }
+            if let Some(run) = &mut entry.run {
+                run.store
+                    .data_mut()
+                    .ui
+                    .drain(mods.entries.len(), &mut mods.out);
+            }
             mods.entries.push(entry);
         }
     }
@@ -982,6 +1038,17 @@ impl Mods {
         m.check_imports(imports.iter().map(String::as_str))?;
         // A function this Horizon doesn't have: say so, not wasmtime's linking error.
         let functions = crate::api_level::imports(wasm)?;
+        if functions.iter().any(|f| {
+            matches!(
+                f.as_str(),
+                "canvas.open-canvas-screen"
+                    | "canvas.set-canvas-screen"
+                    | "canvas.close-canvas-screen"
+            )
+        }) && !m.capabilities.contains(&crate::Capability::Ui)
+        {
+            return Err("canvas screens need capability ui as well as render".into());
+        }
         let (level, function) = crate::api_level::needed(functions.iter().map(String::as_str));
         if let Some(why) = crate::api_level::too_new(level, function) {
             return Err(why);
@@ -1034,12 +1101,12 @@ impl Mods {
                 .horizon_mods_server_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Hooks::Server(exports, r), None)
+            (Hooks::Server(exports, r), UiCallbacks::default())
         } else {
             let exports = HorizonMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             // `ui-events` is a mod built since `ui`'s; older mods have no export
             // and stay callable through `events` alone.
-            let ui = UiHost::new(&mut store, &instance).ok();
+            let ui = UiCallbacks::new(&mut store, &instance);
             let r = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
@@ -1200,17 +1267,8 @@ impl Mods {
             }
         }
         let data = run.store.data_mut();
-        let (open, close) = (
-            std::mem::take(&mut data.ui.open),
-            std::mem::take(&mut data.ui.close),
-        );
         self.out.append(&mut data.out);
-        if open {
-            self.out.push(Output::OpenScreen { owner: i });
-        }
-        if close {
-            self.out.push(Output::CloseScreen { owner: i });
-        }
+        data.ui.drain(i, &mut self.out);
         match result {
             Ok(r) => Some(r),
             Err(e) => {
@@ -1659,36 +1717,55 @@ impl Mods {
     }
     /// A `list` widget's row was picked on a surface of mod `i`.
     pub fn ui_select(&mut self, i: usize, id: u32, row: u32) {
-        self.ui_event(i, |ui, s| {
-            ui.horizon_mods_ui_events().call_select(s, id, row)
-        });
+        self.ui_event(i, |ui| ui.select, (id, row));
     }
     /// The player left mod `i`'s screen (Esc or Done).
     pub fn ui_closed(&mut self, i: usize) {
-        self.ui_event(i, |ui, s| ui.horizon_mods_ui_events().call_closed(s));
+        if let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) {
+            run.store.data_mut().canvas.screen = None;
+        }
+        self.ui_event(i, |ui| ui.closed, ());
     }
     /// The player opened mod `i`'s settings page.
     pub fn ui_settings_opened(&mut self, i: usize) {
-        self.ui_event(i, |ui, s| {
-            ui.horizon_mods_ui_events().call_settings_opened(s)
-        });
+        self.ui_event(i, |ui| ui.settings_opened, ());
     }
     /// A `ui-events` call on mod `i`; no export, no call (mods built
     /// before `ui` have none).
-    fn ui_event(
+    fn ui_event<P>(
         &mut self,
         i: usize,
-        f: impl FnOnce(&UiHost, &mut Store<State>) -> wasmtime::Result<()>,
-    ) {
-        let has_ui = self
+        get: impl FnOnce(&UiCallbacks) -> Option<TypedFunc<P, ()>>,
+        args: P,
+    ) where
+        P: wasmtime::component::ComponentNamedList + wasmtime::component::Lower + 'static,
+    {
+        let Some(func) = self
             .entries
             .get(i)
             .and_then(|e| e.run.as_ref())
-            .is_some_and(|r| r.ui.is_some());
-        if has_ui {
-            self.call(i, FUEL_EVENT, |run| {
-                f(run.ui.as_ref().expect("checked above"), &mut run.store)
-            });
+            .and_then(|r| get(&r.ui))
+        else {
+            return;
+        };
+        self.call(i, FUEL_EVENT, |run| func.call(&mut run.store, args));
+    }
+    /// Pointer action on the owner's open canvas screen; absent hooks are ignored.
+    pub fn ui_pointer(&mut self, i: usize, kind: PointerKind, x: f32, y: f32, button: u32) {
+        if self.canvas_screen(i).is_some() && x.is_finite() && y.is_finite() {
+            self.ui_event(i, |ui| ui.pointer, (kind, x, y, button));
+        }
+    }
+    /// Wheel steps at GUI coordinates on the owner's open canvas screen.
+    pub fn ui_scroll(&mut self, i: usize, x: f32, y: f32, steps: f32) {
+        if self.canvas_screen(i).is_some() && x.is_finite() && y.is_finite() && steps.is_finite() {
+            self.ui_event(i, |ui| ui.scroll, (x, y, steps));
+        }
+    }
+    /// A key on the owner's open canvas screen; Escape belongs to the game.
+    pub fn ui_screen_key(&mut self, i: usize, key: &str, down: bool) {
+        if self.canvas_screen(i).is_some() && key != "key.keyboard.escape" {
+            self.ui_event(i, |ui| ui.screen_key, (key.to_owned(), down));
         }
     }
     /// What mods asked to show since the last call.
@@ -1722,6 +1799,9 @@ impl Mods {
                 Ok(run) => {
                     log::info!("Horizon: mod {id} reloaded");
                     entry.run = run;
+                    if let Some(run) = &mut entry.run {
+                        run.store.data_mut().ui.drain(i, &mut self.out);
+                    }
                     entry.status = Status::Running;
                 }
                 Err(e) => {
@@ -3156,12 +3236,16 @@ impl ui::Host for State {
     fn open_screen(&mut self, mut screen: ui::Screen) {
         screen.title = clip(screen.title);
         screen.widgets = clip_widgets(screen.widgets);
+        self.canvas.screen = None;
         self.ui.screen = Some(screen);
         self.ui.open = true;
+        self.ui.close = false;
     }
     fn close_screen(&mut self) {
         self.ui.screen = None;
+        self.canvas.screen = None;
         self.ui.close = true;
+        self.ui.open = false;
     }
     fn set_settings(&mut self, widgets: Vec<ui::Widget>) {
         self.ui.settings = clip_widgets(widgets);
@@ -3303,6 +3387,61 @@ mod entity_tests {
             .unwrap()
             .0 = RAYCAST_MAX + 1.0;
         assert!(game::Host::raycast_entity(&mut s, f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn level_17_canvas_components_still_link() {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        let mut resolve = Resolve::default();
+        let package = resolve
+            .push_str(
+                "horizon.wit",
+                include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+            )
+            .unwrap();
+        for (_, interface) in resolve.interfaces.iter_mut() {
+            if interface.name.as_deref() == Some("canvas") {
+                interface.functions.retain(|name, _| {
+                    !matches!(
+                        name.as_str(),
+                        "set-placed"
+                            | "open-canvas-screen"
+                            | "set-canvas-screen"
+                            | "close-canvas-screen"
+                    )
+                });
+            }
+        }
+        let world = resolve
+            .select_world(&[package], Some("render-host"))
+            .unwrap();
+        resolve.worlds[world].exports.clear();
+        let interfaces = &resolve.interfaces;
+        resolve.worlds[world].imports.retain(|_, item| matches!(item, wit_parser::WorldItem::Interface { id, .. } if matches!(interfaces[*id].name.as_deref(), Some("canvas" | "render"))));
+        let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
+        let wasm = wit_component::ComponentEncoder::default()
+            .module(&module)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let functions = crate::api_level::imports(&wasm).unwrap();
+        assert_eq!(
+            crate::api_level::needed(functions.iter().map(String::as_str)).0,
+            17
+        );
+        let mut mods = Mods::default();
+        let (engine, linker) = mods.engine().unwrap();
+        let component = Component::new(engine, wasm).unwrap();
+        let mut store = Store::new(engine, state());
+        store.set_fuel(FUEL_INIT).unwrap();
+        linker.instantiate(&mut store, &component).unwrap();
     }
 
     #[test]

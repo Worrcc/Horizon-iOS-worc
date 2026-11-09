@@ -24,7 +24,7 @@ use {
 /// resources were read: the atlas keeps the page for it.
 static WANTED: AtomicBool = AtomicBool::new(false);
 
-/// Whether the HUD atlas holds the mod-image page (4 MiB): a native mod is
+/// Whether the HUD atlas holds the mod-image page (16 MiB): a native mod is
 /// built in, or a client mod that is on draws its own images.
 pub(super) fn mod_image_slot() -> bool {
     super::mods::built_with_native_mods() || WANTED.load(Ordering::Relaxed)
@@ -120,6 +120,14 @@ impl Game<'_> {
     /// The mods' canvas boxes, stacked with the other panels in `corners`.
     pub(super) fn draw_canvas_panels(&self, batch: &mut HudBatch, corners: &mut Corners) {
         for (owner, panel) in self.mods.mods.canvas_panels() {
+            if self
+                .mods
+                .canvas_screen
+                .as_ref()
+                .is_some_and(|s| s.owner == owner)
+            {
+                continue;
+            }
             let corner = match panel.corner {
                 RenderCorner::TopLeft => Corner::TopLeft,
                 RenderCorner::TopRight => Corner::TopRight,
@@ -130,20 +138,42 @@ impl Game<'_> {
             if self.debug && corner == Corner::TopLeft {
                 continue;
             }
-            let at = corners.place(corner, panel.width, panel.height);
-            for shape in &panel.shapes {
-                let plain = match shape {
-                    CanvasShape::Image(image) => {
-                        self.draw_canvas_image(batch, owner, image, at);
-                        continue;
-                    }
-                    CanvasShape::Fill(f) => Shape::Fill(*f),
-                    CanvasShape::Quad(q) => Shape::Quad(*q),
-                    CanvasShape::Sprite(s) => Shape::Sprite(s.clone()),
-                    CanvasShape::Text(t) => Shape::Text(t.clone()),
-                };
-                self.draw_shapes(batch, std::slice::from_ref(&plain), at);
+            let at = panel
+                .placed_origin((batch.width, batch.height))
+                .unwrap_or_else(|| corners.place(corner, panel.width, panel.height));
+            let start = batch.vertices.len();
+            self.draw_canvas_shapes(batch, owner, &panel.shapes, at);
+            if panel.placed.is_some() {
+                batch.clip_since(
+                    start,
+                    at.0,
+                    at.1,
+                    (at.0 + panel.width).min(batch.width),
+                    (at.1 + panel.height).min(batch.height),
+                );
             }
+        }
+    }
+    /// Shared canvas primitives, from the box or window's top left.
+    pub(super) fn draw_canvas_shapes(
+        &self,
+        batch: &mut HudBatch,
+        owner: usize,
+        shapes: &[CanvasShape],
+        at: (f32, f32),
+    ) {
+        for shape in shapes {
+            let plain = match shape {
+                CanvasShape::Image(image) => {
+                    self.draw_canvas_image(batch, owner, image, at);
+                    continue;
+                }
+                CanvasShape::Fill(f) => Shape::Fill(*f),
+                CanvasShape::Quad(q) => Shape::Quad(*q),
+                CanvasShape::Sprite(s) => Shape::Sprite(s.clone()),
+                CanvasShape::Text(t) => Shape::Text(t.clone()),
+            };
+            self.draw_shapes(batch, std::slice::from_ref(&plain), at);
         }
     }
     /// One image shape: its `src` texels, clipped to the image, stretched
