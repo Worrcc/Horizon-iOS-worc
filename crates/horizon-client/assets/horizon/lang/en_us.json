@@ -1,4 +1,12 @@
 {
+  "horizon.perf.heat_state": "Heat: %s",
+  "horizon.perf.heat_temperature": "Heat: %s (%s °C)",
+  "horizon.perf.heat.nominal": "Nominal",
+  "horizon.perf.heat.fair": "Fair",
+  "horizon.perf.heat.serious": "Serious",
+  "horizon.perf.heat.critical": "Critical",
+  "horizon.options.thermal_throttling": "Thermal Throttling",
+  "horizon.options.thermal_throttling.tooltip": "Reduces frame rate and resolution while the device is hot; restores them after cooling.",
   "horizon.options.controller": "Controller",
   "horizon.options.three_d_skin_layers": "3D Skin Layers",
   "horizon.options.vibration": "Vibration",

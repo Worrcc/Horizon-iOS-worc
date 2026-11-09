@@ -330,6 +330,15 @@ impl Settings {
             .and_then(|mode| self.video_modes.iter().position(|m| *m == mode))
             .map_or(-1, |i| i as i32)
     }
+    fn first_run_defaults(ios: bool, missing: bool) -> Self {
+        let mut settings = Self::default();
+        if ios && missing {
+            settings.render_distance = 8;
+            settings.simulation_distance = 6;
+            settings.max_fps = 60;
+        }
+        settings
+    }
     pub fn load(path: &Path) -> Self {
         let horizon = path
             .parent()
@@ -362,12 +371,15 @@ impl Settings {
                     ..Self::parse(&text)
                 }
             }
-            Err(_) => Self {
+            Err(error) => Self {
                 horizon,
                 controller,
                 extras,
                 mods,
-                ..Self::default()
+                ..Self::first_run_defaults(
+                    cfg!(target_os = "ios"),
+                    error.kind() == std::io::ErrorKind::NotFound,
+                )
             },
         };
         settings.describe_for_crashes();
@@ -846,6 +858,28 @@ pub enum Opt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phone_defaults_only_for_a_missing_options_file() {
+        for (ios, missing, expected) in [
+            (true, true, (8, 6, 60)),
+            (true, false, (12, 12, 120)),
+            (false, true, (12, 12, 120)),
+            (false, false, (12, 12, 120)),
+        ] {
+            let s = Settings::first_run_defaults(ios, missing);
+            assert_eq!(
+                (s.render_distance, s.simulation_distance, s.max_fps),
+                expected
+            );
+        }
+        let s = Settings::parse("renderDistance:18\nsimulationDistance:10\nmaxFps:150\n");
+        assert_eq!(
+            (s.render_distance, s.simulation_distance, s.max_fps),
+            (18, 10, 150)
+        );
+    }
+
     #[test]
     fn the_narrator_reads_its_status_and_the_voice_under_master() {
         let s = Settings::parse("narrator:2\nsoundCategory_master:0.5\nsoundCategory_voice:0.5\n");

@@ -8,6 +8,54 @@
 pub mod controllers;
 pub mod keychain;
 
+/// The system's current thermal pressure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ThermalState {
+    #[default]
+    Nominal,
+    Fair,
+    Serious,
+    Critical,
+}
+
+pub fn thermal_state() -> ThermalState {
+    #[cfg(target_os = "ios")]
+    {
+        use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState as T};
+        // Safety: Foundation's process singleton is safe to read on any thread.
+        match unsafe { NSProcessInfo::processInfo().thermalState() } {
+            T::Fair => ThermalState::Fair,
+            T::Serious => ThermalState::Serious,
+            T::Critical => ThermalState::Critical,
+            _ => ThermalState::Nominal,
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    ThermalState::Nominal
+}
+
+pub fn low_power_mode() -> bool {
+    #[cfg(target_os = "ios")]
+    // Safety: Foundation's process singleton is safe to read on any thread.
+    return unsafe { objc2_foundation::NSProcessInfo::processInfo().isLowPowerModeEnabled() };
+    #[cfg(not(target_os = "ios"))]
+    false
+}
+
+/// Battery temperature in degrees Celsius, if IOKit permits access. Both readings and failures
+/// are cached for five seconds across all callers. This is not the CPU or GPU temperature.
+pub fn battery_temperature_c() -> Option<f32> {
+    #[cfg(target_os = "ios")]
+    return battery_temperature::read();
+    #[cfg(not(target_os = "ios"))]
+    None
+}
+
+#[cfg(any(target_os = "ios", test))]
+mod battery_temperature;
+
+pub mod thermal;
+
 /// An alert shown with [`show_alert`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AlertId(u64);
@@ -77,8 +125,8 @@ pub fn describe_window(window: &impl raw_window_handle::HasWindowHandle) -> Stri
 /// Asks iOS to run the screen at up to `max` Hz (ProMotion's 120). iOS picks the screen's rate
 /// from what the app's display links prefer, so without one a ProMotion iPhone stays at 60 Hz and
 /// the game, which presents once per screen refresh, can't pass 60 FPS whatever its settings.
-/// Needs `CADisableMinimumFrameDurationOnPhone` in the app's Info.plist. Call it once, on the
-/// main thread.
+/// Needs `CADisableMinimumFrameDurationOnPhone` in the app's Info.plist. Call on the main thread
+/// whenever the effective cap changes.
 pub fn prefer_frame_rate(max: f32) {
     #[cfg(target_os = "ios")]
     ios::prefer_frame_rate(max);
@@ -356,29 +404,34 @@ mod ios {
     }
 
     pub(super) fn prefer_frame_rate(max: f32) {
-        use objc2::{msg_send, msg_send_id, sel};
+        use objc2::{msg_send_id, sel};
         use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes};
         use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
-        if MainThreadMarker::new().is_none() || FRAME_RATE_LINK.with_borrow(Option::is_some) {
+        if MainThreadMarker::new().is_none() {
             return;
         }
-        // Safety: a plain NSObject subclass with no ivars, initialised by NSObject's init; the
-        // display link and run loop used on the main thread, the selector the target defines.
-        unsafe {
-            let target: Retained<FrameRateTarget> = msg_send_id![FrameRateTarget::alloc(), init];
-            let link = CADisplayLink::displayLinkWithTarget_selector(&target, sel!(tick:));
-            let ranges: bool =
-                msg_send![&link, respondsToSelector: sel!(setPreferredFrameRateRange:)];
-            if ranges {
+        let max = if max >= 260.0 {
+            120.0
+        } else {
+            max.clamp(1.0, 120.0)
+        };
+        FRAME_RATE_LINK.with_borrow_mut(|stored| {
+            // Safety: NSObject's init, our tick selector, and a link used only on the main thread.
+            unsafe {
+                let link = stored.get_or_insert_with(|| {
+                    let target: Retained<FrameRateTarget> =
+                        msg_send_id![FrameRateTarget::alloc(), init];
+                    let link = CADisplayLink::displayLinkWithTarget_selector(&target, sel!(tick:));
+                    link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
+                    link
+                });
                 link.setPreferredFrameRateRange(CAFrameRateRange {
-                    minimum: 80f32.min(max),
+                    minimum: max.min(60.0),
                     maximum: max,
                     preferred: max,
                 });
             }
-            link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes);
-            FRAME_RATE_LINK.set(Some(link));
-        }
+        });
     }
 
     pub(super) fn open_url(url: &str) {
