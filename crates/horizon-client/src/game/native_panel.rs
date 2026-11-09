@@ -79,6 +79,26 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    fn search(&mut self, layout: &Layout) -> &mut EditBox {
+        let search = self.search.get_or_insert_with(|| {
+            let mut edit = EditBox::new(0.0, 0.0, 0.0, 0.0);
+            edit.max_length = 50;
+            edit.focused = false;
+            edit
+        });
+        [search.x, search.y, search.width, search.height] = layout.search;
+        search
+    }
+    /// Focus only a visible panel's search, keeping its text and selection.
+    fn focus_search(&mut self, layout: Option<&Layout>) -> bool {
+        let Some(layout) = layout else {
+            return false;
+        };
+        let search = self.search(layout);
+        search.focused = true;
+        search.reset_blink();
+        true
+    }
     /// What the panel shows: a native mod's (one `on`), else a
     /// WebAssembly mod's.
     pub(super) fn shown(&self, on: impl Fn(&str) -> bool) -> Option<&Shown> {
@@ -285,17 +305,6 @@ impl Game<'_> {
             Some((first + n, stack))
         })
     }
-    fn browser_search(&mut self, layout: &Layout) -> &mut EditBox {
-        let search = self.panel.search.get_or_insert_with(|| {
-            let mut edit = EditBox::new(0.0, 0.0, 0.0, 0.0);
-            edit.max_length = 50;
-            edit.focused = false;
-            edit
-        });
-        [search.x, search.y, search.width, search.height] = layout.search;
-        search
-    }
-
     /// The items' page arrows and grid.
     fn draw_browser_items(&mut self, batch: &mut HudBatch, layout: &Layout) {
         let pages = self.browser_pages(layout);
@@ -379,7 +388,7 @@ impl Game<'_> {
             self.draw_browser_items(batch, &layout);
         }
         let hint = self.translate("gui.recipebook.search_hint", "Search...");
-        let search = self.browser_search(&layout);
+        let search = self.panel.search(&layout);
         // The hint shows in an empty box without focus, as the recipe book's.
         search.suggestion = (search.value.is_empty() && !search.focused).then_some(hint);
         let mut search = search.clone();
@@ -462,6 +471,28 @@ impl Game<'_> {
         self.screen == Screen::Inventory
             && self.panel.of.is_some()
             && self.panel.search.as_ref().is_some_and(|s| s.focused)
+    }
+    /// Ctrl+F (Cmd+F on macOS) takes focus before container keys or typing.
+    /// A hidden panel, including one with no room, leaves the key alone.
+    pub(super) fn mod_browser_focus_search(&mut self, key: winit::keyboard::PhysicalKey) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        if self.screen != Screen::Inventory
+            || key != PhysicalKey::Code(KeyCode::KeyF)
+            || !self.has_control_down_with_quirk()
+        {
+            return false;
+        }
+        let Some(batch) = self.browser_batch() else {
+            return false;
+        };
+        let layout = self
+            .browser_sync()
+            .and_then(|_| self.browser_layout(&batch));
+        if !self.panel.focus_search(layout.as_ref()) {
+            return false;
+        }
+        self.recipe_blur_search();
+        true
     }
     /// A key press while the search box has focus.
     pub(super) fn mod_browser_key(&mut self, event: &winit::event::KeyEvent) {
@@ -590,7 +621,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserStack, Owner, Panel, RecipePage};
+    use super::{BrowserStack, Layout, Owner, Panel, RecipePage};
     use crate::game::native_hooks::{NativeRecipeLayout, NativeRecipeView};
 
     fn stack(item: &str) -> BrowserStack {
@@ -610,6 +641,57 @@ mod tests {
             note: String::new(),
             action: Some(true),
         }
+    }
+
+    #[test]
+    fn search_focus_keeps_text_selection_and_page() {
+        let layout = Layout {
+            area: [280.0, 0.0, 100.0, 240.0],
+            grid: (288.0, 29.0),
+            columns: 4,
+            rows: 10,
+            arrows_y: 8.0,
+            search: [288.0, 216.0, 72.0, 16.0],
+        };
+        let mut panel = Panel::default();
+        assert!(panel.focus_search(Some(&layout)));
+        let search = panel.search.as_mut().unwrap();
+        assert!(search.focused);
+        assert_eq!(
+            [search.x, search.y, search.width, search.height],
+            layout.search
+        );
+
+        search.set_value("iron ingot");
+        search.cursor = 4;
+        search.highlight = 10;
+        search.focused = false;
+        panel.sent = "iron ingot".into();
+        panel.page = 2;
+        // Refocusing also works after the container was closed and reopened.
+        assert!(panel.focus_search(Some(&layout)));
+        let search = panel.search.as_ref().unwrap();
+        assert!(search.focused);
+        assert_eq!(search.value, "iron ingot");
+        assert_eq!((search.cursor, search.highlight), (4, 10));
+        assert_eq!(panel.sent, "iron ingot");
+        assert_eq!(panel.page, 2);
+    }
+
+    #[test]
+    fn hidden_panel_does_not_take_search_focus() {
+        let mut panel = Panel::default();
+        assert!(!panel.focus_search(None));
+        assert!(panel.search.is_none());
+
+        let mut search = horizon_client::ui::EditBox::new(0.0, 0.0, 72.0, 16.0);
+        search.set_value("coal");
+        search.focused = false;
+        panel.search = Some(search);
+        assert!(!panel.focus_search(None));
+        let search = panel.search.as_ref().unwrap();
+        assert!(!search.focused);
+        assert_eq!(search.value, "coal");
     }
 
     /// A native mod's items and recipe page are what the panel holds, and

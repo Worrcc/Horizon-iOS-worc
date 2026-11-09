@@ -299,7 +299,8 @@ pub struct Snapshot {
     pub recipes: Option<Arc<Recipes>>,
     /// The `book-id`s of the recipes the player's book holds.
     pub known_recipes: Arc<[i32]>,
-    /// The open screen takes recipes (`recipes.place`).
+    /// The open inventory, crafting table, furnace, blast furnace or smoker
+    /// takes recipes (`recipes.place`); false for spectators.
     pub placing: bool,
     /// The player is in creative mode (`recipes.give`).
     pub creative: bool,
@@ -499,7 +500,8 @@ pub enum Output {
         strength: f32,
         seconds: f32,
     },
-    /// `recipes.place`: the recipe book's click on this display id, all of
+    /// `recipes.place`: the recipe book's click on this display id in the
+    /// inventory, crafting table, furnace, blast furnace or smoker, all of
     /// it when `all`.
     PlaceRecipe {
         book_id: i32,

@@ -113,6 +113,19 @@ fn sprite(name: &str) -> String {
     format!("gui/sprites/recipe_book/{name}")
 }
 
+/// The inventory/crafting grid or the open container's recipe book.
+fn container_book(container_open: bool, container: Option<&BlockEntity>) -> Option<BookType> {
+    match container {
+        None if !container_open => Some(BookType::Crafting),
+        Some(BlockEntity::Furnace(f)) => Some(match f.kind {
+            FurnaceKind::Furnace => BookType::Furnace,
+            FurnaceKind::BlastFurnace => BookType::BlastFurnace,
+            FurnaceKind::Smoker => BookType::Smoker,
+        }),
+        _ => None,
+    }
+}
+
 impl Game<'_> {
     /// The book the open screen has, if any.
     fn active_book(&self) -> Option<BookType> {
@@ -123,15 +136,7 @@ impl Game<'_> {
         if self.mount_active() || self.native_screen_height().is_some() {
             return None;
         }
-        match self.container_kind() {
-            None if self.container.is_none() => Some(BookType::Crafting),
-            Some(BlockEntity::Furnace(f)) => Some(match f.kind {
-                FurnaceKind::Furnace => BookType::Furnace,
-                FurnaceKind::BlastFurnace => BookType::BlastFurnace,
-                FurnaceKind::Smoker => BookType::Smoker,
-            }),
-            _ => None,
-        }
+        container_book(self.container.is_some(), self.container_kind())
     }
     fn book_open(&self, book: BookType) -> bool {
         self.level.recipe_book.open[book.index()]
@@ -166,6 +171,13 @@ impl Game<'_> {
             s.focused = true;
             s.reset_blink();
         }
+    }
+    /// Another field took keyboard focus from the recipe book.
+    pub(super) fn recipe_blur_search(&mut self) {
+        if let Some(search) = self.recipe_ui.search.as_mut() {
+            search.focused = false;
+        }
+        self.recipe_ui.search_drag = false;
     }
     /// Text typed (or one backspace) into the search box.
     pub(super) fn recipe_text(&mut self, text: Option<&str>, backspace: bool) {
@@ -993,20 +1005,21 @@ impl Game<'_> {
         self.place_recipe(book_type, entry_index, use_max);
         true
     }
-    /// Whether the open screen takes `native_place_recipe`: a crafting grid's
-    /// book (the inventory's or a crafting table's).
+    /// Whether the open screen takes `recipes.place`/`native_place_recipe`:
+    /// the inventory, crafting table, furnace, blast furnace or smoker book.
     pub(super) fn mod_recipe_screen(&self) -> bool {
-        self.screen == Screen::Inventory
-            && self.active_book() == Some(BookType::Crafting)
-            && !self.spectator()
+        self.active_book().is_some() && !self.spectator()
     }
-    /// `native_place_recipe`: the book's click on the recipe with this display
-    /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
+    /// `recipes.place`/`native_place_recipe`: the book's click on the recipe
+    /// with this display id, refused as `handlePlaceRecipe` refuses it (no book,
     /// not in the player's book; an impossible one in `place_recipe`).
     pub(super) fn mod_place_recipe(&mut self, display_id: i32, all: bool) {
         if !self.mod_recipe_screen() || !self.recipe_ui.client.displays().contains(&display_id) {
             return;
         }
+        let Some(book_type) = self.active_book() else {
+            return;
+        };
         self.ensure_book();
         let Some(index) = self
             .recipe_ui
@@ -1017,7 +1030,7 @@ impl Game<'_> {
             return;
         };
         self.recipe_ui.ghost.clear();
-        self.place_recipe(BookType::Crafting, index, all);
+        self.place_recipe(book_type, index, all);
     }
     /// `ServerboundPlaceRecipePacket`: the server places the recipe
     /// (`ServerPlaceRecipe` on the menu engine) and answers with a ghost
@@ -1603,6 +1616,29 @@ impl Game<'_> {
             }
         }
         tooltip
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockEntity, BookType, container_book};
+
+    #[test]
+    fn recipe_book_matches_the_open_menu() {
+        // Both inventory and crafting table use the grid, without a block entity.
+        assert_eq!(container_book(false, None), Some(BookType::Crafting));
+        for (block, expected) in [
+            ("minecraft:furnace", BookType::Furnace),
+            ("minecraft:blast_furnace", BookType::BlastFurnace),
+            ("minecraft:smoker", BookType::Smoker),
+        ] {
+            let container = BlockEntity::for_block(block).unwrap();
+            assert_eq!(container_book(true, Some(&container)), Some(expected));
+        }
+        let chest = BlockEntity::Chest(vec![None; 27]);
+        assert_eq!(container_book(true, Some(&chest)), None);
+        // A missing container must not fall back to the inventory's grid.
+        assert_eq!(container_book(true, None), None);
     }
 }
 

@@ -18796,6 +18796,13 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && self.mod_browser_focus_search(event.physical_key) =>
+                {
+                    // The panel's search shortcut consumes the press.
+                    typed = None;
+                }
+                WindowEvent::KeyboardInput { event, .. }
                     if self.recipe_search_focused()
                         && event.state == ElementState::Pressed
                         && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
