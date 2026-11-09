@@ -876,6 +876,22 @@ interface browser {
     poll: func() -> list<event>;
 }
 
+/// Capability `ui` (experimental), API level 19: bookmarks beside the browser.
+interface browser-ext {
+    use browser.{stack, click};
+    variant event {
+        /// A click on the bookmark panel's item at this index of `set-bookmarks`.
+        bookmark-clicked(click),
+    }
+    /// A second panel left of the screen's window, as JEI's bookmarks (an empty
+    /// list hides it). At most 1024. Hidden while the screen's recipe book is open.
+    set-bookmarks: func(items: list<stack>);
+    /// With true, an empty `browser.set-items` keeps the panel and its search box up.
+    keep-empty: func(keep: bool);
+    /// What the player did on the bookmark panel since the last poll, at most 256 kept.
+    poll: func() -> list<event>;
+}
+
 /// Capability `players`, server mods only (manifest `api = "0.3"`,
 /// experimental): the players on the server, and messages to them.
 interface players {
@@ -1480,6 +1496,7 @@ world horizon-ui-mod {
     import input;
     import recipes;
     import browser;
+    import browser-ext;
     import canvas;
     import client-world;
     export ui-events;
@@ -1507,4 +1524,5 @@ world world-read-host {
 world recipes-host {
     import recipes;
     import browser;
+    import browser-ext;
 }

@@ -15,6 +15,27 @@ use horizon_mods as m;
 /// A WebAssembly mod's panel, converted once per `set-items` or
 /// `set-recipes`.
 impl Game<'_> {
+    pub(super) fn bookmarks_wasm_sync(&mut self, owner: &Owner) {
+        let Owner::Wasm(index) = owner else {
+            self.panel.bookmarks = Default::default();
+            return;
+        };
+        let Some((version, items)) = self.mods.mods.browser_bookmarks(*index) else {
+            self.panel.bookmarks = Default::default();
+            return;
+        };
+        let b = &mut self.panel.bookmarks;
+        if b.of == Some((*index, version)) {
+            return;
+        }
+        b.items = items.iter().map(stack).collect();
+        b.stacks = b
+            .items
+            .iter()
+            .map(|s| super::native_panel::browser_stack(world_items!(self), s))
+            .collect();
+        b.of = Some((*index, version));
+    }
     pub(super) fn panel_wasm_sync(&mut self) {
         let Some((index, version, items)) = self.mods.mods.browser_items() else {
             self.panel.wasm = None;

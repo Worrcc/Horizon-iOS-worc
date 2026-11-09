@@ -210,7 +210,7 @@ impl Capability {
         }
         // A recipe viewer's panel is part of capability `ui`, a mod's own
         // images of capability `render`.
-        if interface == "browser" {
+        if matches!(interface, "browser" | "browser-ext") {
             return Ok(Some(Capability::Ui));
         }
         if interface == "canvas" {

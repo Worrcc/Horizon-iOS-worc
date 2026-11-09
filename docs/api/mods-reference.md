@@ -40,7 +40,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `canvas`, `client-world`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `log`, `game`, `chat`, `hud`, `storage`, `command`
 - Exports (what the mod provides): `ui-events`, `events`
 
 ## World `ui-host`
@@ -68,7 +68,7 @@ The game's side of capability `world-read` (imports only).
 
 The game's side of capability `recipes` (imports only).
 
-- Imports (what the game offers): `recipes`, `browser`
+- Imports (what the game offers): `recipes`, `browser`, `browser-ext`
 - Exports (what the mod provides): 
 
 ## `log`
@@ -846,6 +846,32 @@ A recipe to show. Each slot, and the result, cycles through its stacks, one a se
 | `set-items` | `func(items: list<stack>)` | The panel's items, at most 8192 (an empty list hides the panel). |
 | `set-recipes` | `func(title: string, tabs: list<stack>, tab: u32, recipes: list<recipe-view>)` | Shows these recipes in the panel instead of its items, as many as fit a page, under `title` and a back button, with a row of `tabs` (each an icon; `tab` is the selected one) between them; an empty list of recipes shows the items again. At most 256 recipes and 16 tabs. |
 | `poll` | `func() -> list<event>` | What the player did on the panel since the last poll, at most 256 kept. |
+
+## `browser-ext`
+
+Access: capability `ui`.
+
+Capability `ui` (experimental), API level 19: bookmarks beside the browser.
+
+### type `stack`
+
+`type stack = stack`
+
+### type `click`
+
+`type click = click`
+
+### variant `event`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `bookmark-clicked` | `click` | A click on the bookmark panel's item at this index of `set-bookmarks`. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-bookmarks` | `func(items: list<stack>)` | A second panel left of the screen's window, as JEI's bookmarks (an empty list hides it). At most 1024. Hidden while the screen's recipe book is open. |
+| `keep-empty` | `func(keep: bool)` | With true, an empty `browser.set-items` keeps the panel and its search box up. |
+| `poll` | `func() -> list<event>` | What the player did on the bookmark panel since the last poll, at most 256 kept. |
 
 ## `players`
 

@@ -16,7 +16,7 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, chat, command, game,
+    Mod, Registration, browser, browser_ext, chat, command, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -119,6 +119,9 @@ impl Mod for Guest {
             "recipes",
             "browser",
             "browser_poll",
+            "bookmarks",
+            "browser_keep_empty",
+            "bookmarks_poll",
             "browser_recipes",
             "recipe_place",
             "recipe_give",
@@ -441,6 +444,30 @@ impl Mod for Guest {
                     Some(Err(e)) => format!("give {id}: {e}"),
                     None => format!("give {id}: no such item"),
                 });
+            }
+            "bookmarks" => {
+                let count = args.parse().unwrap_or(0);
+                let mut items = vec![
+                    browser::Stack {
+                        item: "minecraft:stone".into(),
+                        count: 7,
+                        components: "[minecraft:damage=1]".into(),
+                    };
+                    count
+                ];
+                if count > 1024 {
+                    items[0].item = "é".repeat(300);
+                    items[0].components = "界".repeat(4200);
+                }
+                browser_ext::set_bookmarks(&items);
+            }
+            "browser_keep_empty" => browser_ext::keep_empty(args == "true"),
+            "bookmarks_poll" => {
+                let events = browser_ext::poll();
+                chat::show(&format!("{} bookmark events", events.len()));
+                for browser_ext::Event::BookmarkClicked(c) in events.into_iter().take(1) {
+                    chat::show(&format!("bookmark {} {}", c.index, c.right));
+                }
             }
             "browser_poll" => {
                 let stack = |s: &browser::Stack| format!("{} x{}{}", s.item, s.count, s.components);

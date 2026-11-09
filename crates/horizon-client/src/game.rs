@@ -254,6 +254,8 @@ mod native_motion;
 mod native_mounts;
 mod native_net;
 mod native_panel;
+#[cfg(feature = "mods")]
+mod native_panel_bookmarks;
 mod native_panel_recipes;
 mod native_projectiles;
 mod native_quick_move;

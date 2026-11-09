@@ -158,6 +158,10 @@ impl Game<'_> {
     pub(super) fn book_covers_menu(&self, width: f32) -> bool {
         width < NARROW && self.active_book().is_some_and(|b| self.book_open(b))
     }
+    #[cfg(feature = "mods")]
+    pub(super) fn recipe_book_open(&self) -> bool {
+        self.active_book().is_some_and(|b| self.book_open(b))
+    }
     /// Whether typed keys go to the search box.
     pub(super) fn recipe_search_focused(&self) -> bool {
         self.active_book().is_some_and(|b| self.book_open(b))

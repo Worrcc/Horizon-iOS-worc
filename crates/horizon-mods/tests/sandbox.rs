@@ -313,8 +313,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest draws far terrain (`render.set-far-terrain`, level 7).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
+    // The UI guest also uses the additive browser extension (level 19).
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 19);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -1242,6 +1242,59 @@ fn recipes_reads_the_tables() {
         said(&mut mods, "recipes"),
         ["0 items, 0 recipes, 0 known, 0 brewing"]
     );
+}
+
+#[test]
+fn browser_extension_keeps_empty_panels_and_delivers_bounded_bookmarks() {
+    use horizon_mods::{BrowserClick, BrowserExtEvent};
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let command = |mods: &mut Mods, text: &str| {
+        assert!(mods.command(text));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(mods.browser_items().is_none());
+    command(&mut mods, "browser_keep_empty true");
+    let (owner, _, items) = mods.browser_items().unwrap();
+    assert!(items.is_empty());
+    command(&mut mods, "bookmarks 1025");
+    let (version, bookmarks) = mods.browser_bookmarks(owner).unwrap();
+    assert_eq!(bookmarks.len(), 1024);
+    assert_eq!(bookmarks[0].item, "é".repeat(256));
+    assert_eq!(bookmarks[0].components, "界".repeat(4096));
+    assert_eq!(
+        (
+            bookmarks[1].item.as_str(),
+            bookmarks[1].count,
+            bookmarks[1].components.as_str()
+        ),
+        ("minecraft:stone", 7, "[minecraft:damage=1]")
+    );
+    for index in 0..300 {
+        mods.browser_ext_event(
+            owner,
+            BrowserExtEvent::BookmarkClicked(BrowserClick { index, right: true }),
+        );
+    }
+    assert_eq!(
+        command(&mut mods, "bookmarks_poll"),
+        ["256 bookmark events", "bookmark 44 true"]
+    );
+    assert_eq!(command(&mut mods, "bookmarks_poll"), ["0 bookmark events"]);
+    // Extension events do not change the old browser event contract.
+    assert_eq!(command(&mut mods, "browser_poll"), ["0 events"]);
+    command(&mut mods, "bookmarks");
+    let (next, bookmarks) = mods.browser_bookmarks(owner).unwrap();
+    assert_ne!(next, version);
+    assert!(bookmarks.is_empty());
+    command(&mut mods, "browser_keep_empty false");
+    assert!(mods.browser_items().is_none());
+    assert!(mods.browser_bookmarks(usize::MAX).is_none());
 }
 
 #[test]

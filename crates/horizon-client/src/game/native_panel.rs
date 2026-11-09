@@ -18,11 +18,11 @@ use horizon_client::{
 };
 
 /// One slot of the panel, in GUI pixels.
-const SLOT: f32 = 18.0;
+pub(super) const SLOT: f32 = 18.0;
 /// The most columns the panel takes, and the fewest it shows with.
-const COLUMNS: (usize, usize) = (12, 2);
+pub(super) const COLUMNS: (usize, usize) = (12, 2);
 /// The gap between the window and the panel, and the screen's edges.
-const MARGIN: f32 = 8.0;
+pub(super) const MARGIN: f32 = 8.0;
 
 /// Items a panel may hold.
 const ITEMS: usize = 8192;
@@ -71,6 +71,8 @@ pub(super) struct Panel {
     /// The mod's items as stacks; `None` for an item the game doesn't have.
     stacks: Vec<Option<ItemStack>>,
     page: usize,
+    #[cfg(feature = "mods")]
+    pub(super) bookmarks: super::native_panel_bookmarks::Bookmarks,
     search: Option<EditBox>,
     /// The search text the mod last heard.
     sent: String,
@@ -171,13 +173,13 @@ pub(super) struct Layout {
     pub(super) search: [f32; 4],
 }
 impl Layout {
-    fn per_page(&self) -> usize {
+    pub(super) fn per_page(&self) -> usize {
         self.columns * self.rows
     }
     pub(super) fn width(&self) -> f32 {
         self.columns as f32 * SLOT
     }
-    fn slot(&self, n: usize) -> (f32, f32) {
+    pub(super) fn slot(&self, n: usize) -> (f32, f32) {
         (
             self.grid.0 + (n % self.columns) as f32 * SLOT,
             self.grid.1 + (n / self.columns) as f32 * SLOT,
@@ -231,6 +233,8 @@ impl Game<'_> {
                 .map(|shown| super::native_panel_recipes::Pages::new(items, shown, old));
             self.panel.of = Some(of.clone());
         }
+        #[cfg(feature = "mods")]
+        self.bookmarks_wasm_sync(&of.0);
         Some(of.0)
     }
     /// What the panel shows now.
@@ -310,6 +314,26 @@ impl Game<'_> {
         let pages = self.browser_pages(layout);
         self.panel.page = self.panel.page.min(pages - 1);
         let page = self.panel.page;
+        let first = page * layout.per_page();
+        let stacks = self
+            .panel
+            .stacks
+            .iter()
+            .skip(first)
+            .take(layout.per_page())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.draw_browser_grid(batch, layout, &stacks, page, pages);
+    }
+    /// Shared slots, highlights, accessibility widgets and page arrows.
+    pub(super) fn draw_browser_grid(
+        &mut self,
+        batch: &mut HudBatch,
+        layout: &Layout,
+        stacks: &[Option<ItemStack>],
+        page: usize,
+        pages: usize,
+    ) {
         let cursor = self.cursor;
         if pages > 1 {
             let labels = [
@@ -342,9 +366,8 @@ impl Game<'_> {
             let x = (layout.grid.0 + (layout.width() - w) / 2.0).floor();
             batch.text(atlas, &text, x, layout.arrows_y + 5.0, u32::MAX, true);
         }
-        let first = page * layout.per_page();
         for n in 0..layout.per_page() {
-            let Some(stack) = self.panel.stacks.get(first + n) else {
+            let Some(stack) = stacks.get(n) else {
                 break;
             };
             let Some(stack) = stack.clone() else {
@@ -378,27 +401,34 @@ impl Game<'_> {
         if self.browser_sync().is_none() {
             return;
         }
-        let Some(layout) = self.browser_layout(batch) else {
-            return;
-        };
-        let cursor = self.cursor;
-        if self.panel.recipes.is_some() {
-            self.draw_browser_recipes(batch, &layout);
-        } else {
-            self.draw_browser_items(batch, &layout);
+        #[cfg(feature = "mods")]
+        let bookmark_tooltip = self.draw_browser_bookmarks(batch);
+        let layout = self.browser_layout(batch);
+        if let Some(layout) = &layout {
+            if self.panel.recipes.is_some() {
+                self.draw_browser_recipes(batch, layout);
+            } else {
+                self.draw_browser_items(batch, layout);
+            }
+            let hint = self.translate("gui.recipebook.search_hint", "Search...");
+            let search = self.panel.search(layout);
+            // The hint shows in an empty box without focus, as the recipe book's.
+            search.suggestion = (search.value.is_empty() && !search.focused).then_some(hint);
+            let mut search = search.clone();
+            search.draw(batch, &self.gui.atlas, None);
+            self.panel.search = Some(search);
         }
-        let hint = self.translate("gui.recipebook.search_hint", "Search...");
-        let search = self.panel.search(&layout);
-        // The hint shows in an empty box without focus, as the recipe book's.
-        search.suggestion = (search.value.is_empty() && !search.focused).then_some(hint);
-        let mut search = search.clone();
-        search.draw(batch, &self.gui.atlas, None);
-        self.panel.search = Some(search);
+        let cursor = self.cursor;
         if self.carried.is_some() {
             self.draw_carried(batch);
-        } else if let Some(stack) = self.browser_pointed_stack(&layout) {
+        } else if let Some(stack) = layout.as_ref().and_then(|l| self.browser_pointed_stack(l)) {
             self.draw_stack_tooltip(batch, &stack.1, cursor.0, cursor.1);
         } else {
+            #[cfg(feature = "mods")]
+            if let Some(stack) = bookmark_tooltip {
+                self.draw_stack_tooltip(batch, &stack, cursor.0, cursor.1);
+                return;
+            }
             self.draw_slot_tooltip(batch);
         }
     }
@@ -413,6 +443,13 @@ impl Game<'_> {
         let Some(batch) = self.browser_batch() else {
             return false;
         };
+        #[cfg(feature = "mods")]
+        if self.bookmarks_press(&batch, &owner, right) {
+            if let Some(search) = self.panel.search.as_mut() {
+                search.focused = false;
+            }
+            return true;
+        }
         let Some(layout) = self.browser_layout(&batch) else {
             return false;
         };
@@ -556,10 +593,15 @@ impl Game<'_> {
     /// (the `Key` event): the panel's, else a slot's.
     pub(super) fn mod_browser_pointed(&mut self) -> Option<BrowserStack> {
         let batch = self.browser_batch()?;
-        let stack = match self
-            .browser_sync()
-            .and_then(|_| self.browser_layout(&batch))
+        let owner = self.browser_sync();
+        #[cfg(feature = "mods")]
+        if owner.is_some()
+            && let Some(layout) = self.bookmarks_layout(&batch)
+            && inside(self.cursor, layout.area)
         {
+            return self.bookmarks_hovered(&layout).map(|(_, sent, _)| sent);
+        }
+        let stack = match owner.and_then(|_| self.browser_layout(&batch)) {
             // The panel's stacks as the mod sent them.
             Some(layout) if inside(self.cursor, layout.area) => {
                 return Some(self.browser_pointed_stack(&layout)?.0);

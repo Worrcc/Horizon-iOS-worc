@@ -47,8 +47,8 @@ wit_bindgen::generate!({
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::{Guest as __UiEventsGuest, PointerKind};
 pub use horizon::mods::{
-    browser, canvas, chat, client_world, command, game, hud, input, log, recipes, render, storage,
-    ui,
+    browser, browser_ext, canvas, chat, client_world, command, game, hud, input, log, recipes,
+    render, storage, ui,
 };
 
 /// `client_world::BlockStates::state_flags`' bits (capability `world-read`).

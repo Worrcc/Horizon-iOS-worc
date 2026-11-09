@@ -147,11 +147,15 @@ pub use recipes_bindings::horizon::mods::browser::{
     Layout as BrowserLayout, RecipeView as BrowserRecipe, SlotClick as BrowserSlotClick,
     Stack as BrowserStack,
 };
+pub use recipes_bindings::horizon::mods::browser_ext::Event as BrowserExtEvent;
 /// What capability `recipes` reads (WIT `interface recipes`).
 pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
-use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
+use recipes_bindings::{
+    RecipesHost,
+    horizon::mods::{browser, browser_ext, recipes},
+};
 /// Capability `world-read`'s imports (docs/mods.md): the player's loaded world.
 mod world_read_bindings {
     wasmtime::component::bindgen!({
@@ -722,6 +726,23 @@ impl BrowserState {
     }
 }
 
+/// Additive browser state; defaults preserve older mods' panel visibility.
+#[derive(Default)]
+struct BrowserExtState {
+    bookmarks: Vec<BrowserStack>,
+    keep_empty: bool,
+    version: u64,
+    events: std::collections::VecDeque<BrowserExtEvent>,
+}
+impl BrowserExtState {
+    fn push(&mut self, event: BrowserExtEvent) {
+        if self.events.len() == BROWSER_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+}
+
 struct State {
     name: String,
     id: String,
@@ -741,6 +762,7 @@ struct State {
     far_terrain: Option<ModFarTerrain>,
     input: InputState,
     browser: BrowserState,
+    browser_ext: BrowserExtState,
     /// Capability `storage`'s folder; made on first `set`.
     data_dir: PathBuf,
     /// Bytes `storage::set` may still write before this hook call ends
@@ -1074,6 +1096,7 @@ impl Mods {
             far_terrain: None,
             input: InputState::default(),
             browser: BrowserState::default(),
+            browser_ext: BrowserExtState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
             item_spawn_budget: (None, 0),
@@ -1464,17 +1487,36 @@ impl Mods {
             .any(|e| e.run.as_ref().is_some_and(|r| r.entity_raycasts))
     }
     /// The panel beside container screens (`browser.set-items`): the first
-    /// running mod with items or recipes, its index, the panel's version and
-    /// the items.
+    /// running mod with items, recipes or `browser-ext.keep-empty`, its index,
+    /// the panel's version and the items.
     pub fn browser_items(&self) -> Option<(usize, u64, &[BrowserStack])> {
         self.entries.iter().enumerate().find_map(|(i, e)| {
-            let b = &e.run.as_ref()?.store.data().browser;
-            (!b.items.is_empty() || b.recipes.is_some()).then_some((
+            let data = e.run.as_ref()?.store.data();
+            let b = &data.browser;
+            (!b.items.is_empty() || b.recipes.is_some() || data.browser_ext.keep_empty).then_some((
                 i,
                 b.version,
                 b.items.as_slice(),
             ))
         })
+    }
+    /// Mod `owner`'s bookmarks and the version to convert once.
+    pub fn browser_bookmarks(&self, owner: usize) -> Option<(u64, &[BrowserStack])> {
+        let b = &self
+            .entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .browser_ext;
+        Some((b.version, &b.bookmarks))
+    }
+    /// The player did `event` on mod `owner`'s bookmark panel.
+    pub fn browser_ext_event(&mut self, owner: usize, event: BrowserExtEvent) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            run.store.data_mut().browser_ext.push(event);
+        }
     }
     /// What mod `owner`'s panel shows instead of its items
     /// (`browser.set-recipes`).
@@ -1997,6 +2039,27 @@ impl browser::Host for State {
     }
     fn poll(&mut self) -> Vec<BrowserEvent> {
         self.browser.events.drain(..).collect()
+    }
+}
+impl browser_ext::Host for State {
+    fn set_bookmarks(&mut self, items: Vec<BrowserStack>) {
+        self.browser_ext.bookmarks = items
+            .into_iter()
+            .take(1024)
+            .map(|s| BrowserStack {
+                item: clip(s.item),
+                components: clip_to(s.components, 4096),
+                ..s
+            })
+            .collect();
+        self.browser_ext.version =
+            BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn keep_empty(&mut self, keep: bool) {
+        self.browser_ext.keep_empty = keep;
+    }
+    fn poll(&mut self) -> Vec<BrowserExtEvent> {
+        self.browser_ext.events.drain(..).collect()
     }
 }
 impl recipes::Host for State {
@@ -3329,6 +3392,7 @@ mod entity_tests {
             far_terrain: None,
             input: InputState::default(),
             browser: BrowserState::default(),
+            browser_ext: BrowserExtState::default(),
             data_dir: PathBuf::new(),
             storage_budget: STORAGE_WRITE_BUDGET,
             item_spawn_budget: (None, 0),
