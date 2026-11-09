@@ -43,10 +43,7 @@ impl FrameGraph {
                 + 6.0,
         );
         #[cfg(target_os = "ios")]
-        let heat = heat_label(
-            horizon_ios::thermal_state(),
-            horizon_ios::battery_temperature_c(),
-        );
+        let heat = heat_label(horizon_ios::thermal_state());
         #[cfg(target_os = "ios")]
         let width = width.max(
             atlas.font.width(&lines[0])
@@ -133,7 +130,7 @@ impl FrameGraph {
 }
 
 #[cfg(target_os = "ios")]
-fn heat_label(state: horizon_ios::ThermalState, temperature: Option<f32>) -> Text {
+fn heat_label(state: horizon_ios::ThermalState) -> Text {
     use crate::text::{GOLD, GREEN, RED, YELLOW};
     use horizon_ios::ThermalState;
     let (key, color) = match state {
@@ -143,12 +140,5 @@ fn heat_label(state: horizon_ios::ThermalState, temperature: Option<f32>) -> Tex
         ThermalState::Critical => ("horizon.perf.heat.critical", RED),
     };
     let state = Text::translate(key, &[]);
-    match temperature {
-        Some(degrees) => Text::translate(
-            "horizon.perf.heat_temperature",
-            &[state, Text::literal(format!("{degrees:.1}"))],
-        ),
-        None => Text::translate("horizon.perf.heat_state", &[state]),
-    }
-    .with_color(color)
+    Text::translate("horizon.perf.heat_state", &[state]).with_color(color)
 }

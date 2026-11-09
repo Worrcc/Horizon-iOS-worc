@@ -285,7 +285,7 @@ mod paintings;
 mod pandas;
 mod particle_culling;
 mod passengers;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", test))]
 mod perf_log;
 mod persist;
 mod perspective;
@@ -19075,7 +19075,11 @@ impl Game<'_> {
                         }
                     }
                     self.extras_frame(elapsed);
+                    #[cfg(target_os = "ios")]
+                    let mods_span = horizon_client::spans::guard("mods_frame");
                     self.mods_frame(elapsed);
+                    #[cfg(target_os = "ios")]
+                    drop(mods_span);
                     self.poll_moved_extras();
                     self.extras_retry()?;
                     self.apply_mouse_look();
@@ -19132,7 +19136,7 @@ impl Game<'_> {
                                 .as_ref()
                                 .map_or(Duration::ZERO, |r| r.last_wait),
                         );
-                        self.log_phone_performance(rendered, elapsed, cpu);
+                        self.log_phone_performance(rendered, cpu, &frame_spans);
                     }
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
@@ -22436,11 +22440,12 @@ pub fn run_with() -> Result<()> {
         options.spikes = Some(dedicated::SLOW_TICK_MS);
     }
     horizon_client::spans::enable(options.spikes.is_some());
-    // A player who allows performance statistics also says what their slow frames spent their
-    // time in: this thread, which draws the frames, times its steps (wall time only).
+    // Always time the phone's render thread; worker threads need no additional recording.
+    // Opt-in desktop statistics keep their existing wall-only spans.
     if options.execution_role.is_client()
-        && horizon_telemetry::Consent::load(&horizon_client::logging::game_home())
-            .allows(horizon_telemetry::Kind::Perf)
+        && (cfg!(target_os = "ios")
+            || horizon_telemetry::Consent::load(&horizon_client::logging::game_home())
+                .allows(horizon_telemetry::Kind::Perf))
     {
         horizon_client::spans::record_here(true);
     }

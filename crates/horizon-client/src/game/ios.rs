@@ -41,6 +41,8 @@ thread_local! {
     /// The game's window, for the geometry logged at each resize.
     static WINDOW: std::cell::RefCell<Option<std::sync::Arc<Window>>> =
         const { std::cell::RefCell::new(None) };
+    static KEYBOARD_FRAMES: std::cell::RefCell<super::perf_log::KeyboardFrames> =
+        std::cell::RefCell::new(super::perf_log::KeyboardFrames::default());
 }
 
 /// The window is up: its sizes go in the log (what a wrong-sized picture comes down to), and
@@ -90,7 +92,22 @@ fn sync_keyboard_layout(window: &Window) {
             batch.scale,
             horizon_ios::describe_window(window)
         );
+        KEYBOARD_FRAMES.with_borrow_mut(|frames| frames.visibility(inset > 0));
     }
+}
+
+fn keyboard_frame(elapsed: Duration) {
+    KEYBOARD_FRAMES.with_borrow_mut(|frames| {
+        frames.frame(elapsed, |shown, ms| {
+            let state = if shown { "shown" } else { "hidden" };
+            log::info!(
+                "Horizon: iOS keyboard {state} next_frames_ms=[{:.1}, {:.1}, {:.1}]",
+                ms[0],
+                ms[1],
+                ms[2]
+            );
+        });
+    });
 }
 
 /// The window's size when the surface (`surface`, in pixels) no longer has it: a `Resized` lost
@@ -115,6 +132,7 @@ pub(super) fn size_change(window: &Window, surface: [u32; 2]) -> Option<Physical
 pub(super) struct Session<A> {
     app: A,
     finish: Option<fn(&mut A) -> Result<()>>,
+    frame_at: Option<Instant>,
 }
 
 impl<A: ApplicationHandler> Session<A> {
@@ -122,6 +140,7 @@ impl<A: ApplicationHandler> Session<A> {
         Self {
             app,
             finish: Some(finish),
+            frame_at: None,
         }
     }
     fn running(&self) -> bool {
@@ -173,17 +192,22 @@ fn wait_for_alert(event_loop: &ActiveEventLoop) {
 impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running() {
+            self.frame_at = None;
             self.app.resumed(event_loop);
             self.check(event_loop);
         }
     }
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         if self.running() {
+            self.frame_at = None;
+            KEYBOARD_FRAMES.with_borrow_mut(|frames| frames.clear());
             self.app.suspended(event_loop);
             self.check(event_loop);
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let redraw = matches!(event, WindowEvent::RedrawRequested);
+        let started = Instant::now();
         WINDOW.with_borrow(|window| {
             if let Some(window) = window.as_ref().filter(|window| window.id() == id) {
                 sync_keyboard_layout(window);
@@ -194,6 +218,10 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
         }
         if self.running() {
             self.app.window_event(event_loop, id, event);
+            if redraw {
+                let now = Instant::now();
+                keyboard_frame(now - self.frame_at.replace(now).unwrap_or(started));
+            }
             self.check(event_loop);
         }
     }
@@ -321,6 +349,8 @@ impl Game<'_> {
 
     /// `applicationDidBecomeActive`.
     pub(super) fn leave_background(&mut self, event_loop: &ActiveEventLoop) {
+        // Background redraws may have restarted the log since suspend.
+        self.phone_perf.suspend();
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {
             self.window_event(event_loop, id, WindowEvent::Focused(true));
         }

@@ -50,6 +50,8 @@ impl Uploads {
         height: u32,
         pixels: &[u8],
     ) {
+        #[cfg(target_os = "ios")]
+        let _span = crate::spans::guard("texture_uploads");
         let row = width as usize * 4;
         debug_assert_eq!(pixels.len(), row * height as usize);
         let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);

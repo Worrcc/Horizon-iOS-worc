@@ -1,6 +1,5 @@
 {
   "horizon.perf.heat_state": "Heat: %s",
-  "horizon.perf.heat_temperature": "Heat: %s (%s °C)",
   "horizon.perf.heat.nominal": "Nominal",
   "horizon.perf.heat.fair": "Fair",
   "horizon.perf.heat.serious": "Serious",
