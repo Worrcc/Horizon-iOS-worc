@@ -102,6 +102,17 @@ The app's first start on the device may need **Settings › General › VPN & De
 to trust your developer certificate. On iOS 16 or later, also turn on
 **Settings › Privacy & Security › Developer Mode**.
 
+### Updating from a source
+
+Every pushed build of this fork is published as a release and listed in a source in AltStore's
+format, which LiveContainer and other sideloading apps can read. Add it once:
+
+    https://raw.githubusercontent.com/Worrcc/Horizon-iOS-worc/ios-source/apps.json
+
+The ten newest builds are listed, newest first, each with the branch and commit it was built from.
+A source build's version is the launcher's version plus the CI run number (`0.1.0.412`), so a
+newer build always has a higher one. Installing one over another keeps the app's data.
+
 ## 4. Copy the game files to the device
 
 Skip this if you built with `--resources`.

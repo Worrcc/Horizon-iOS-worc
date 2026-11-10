@@ -62,6 +62,11 @@ version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/launcher/Cargo.toml" | hea
 # installed build can be told apart before it is launched.
 commit="${GITHUB_SHA:-$(git -C "$root" rev-parse HEAD 2>/dev/null || true)}"
 display_version="$version${commit:+ (${commit:0:9})}"
+# A CI build published to the sideloading source (.github/workflows/ios.yml) takes a plain rising
+# version instead, the one the source lists it under, so an update list can compare them.
+if [ -n "${HORIZON_IOS_SOURCE_VERSION:-}" ]; then
+    display_version="$HORIZON_IOS_SOURCE_VERSION"
+fi
 
 echo "Building horizon-client for $target ($profile_dir)..."
 # `mods`: code mods, on wasmtime's Pulley interpreter (no JIT on iOS; crates/horizon-mods).
