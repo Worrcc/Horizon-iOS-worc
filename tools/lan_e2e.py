@@ -98,6 +98,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
              tree (Tab), and runs what it completed;
 - recipes:   the guest's recipe book lists the planks recipe the logs unlock, and clicking it
               places a log in the inventory's crafting grid (the server places it).
+- recipe-furnace: the guest clicks the raw iron smelting recipe in an open furnace's recipe book and
+              the server places a raw iron in the furnace's input slot (it once ignored every window but
+              the inventory's and a crafting table's, single player included).
 - recipe_removal: the host and guest each forget all and individual recipes while the book
               is open; it stays empty when reopened, and a later grant appears (#1495).
 - recipe-reselect: the host and the guest each craft wool three times from one recipe-book click: Space
@@ -381,7 +384,7 @@ GUEST_NAME = 'Guest'
 CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'placement', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'projectile-vehicles', 'flame-arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'entity-tags', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
-          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
+          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'recipe-furnace', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-entities', 'piston-slime', 'piston-slide', 'eat', 'eat-on-block', 'cauldron', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'blast-projectiles', 'barter', 'piglin_offspring', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_ice_reboard', 'boat_shoved', 'minecarts', 'frames', 'hands',
@@ -2803,6 +2806,40 @@ def check_shift_double_click(host, guest, out):
         guest('command', command=f'setblock {at[0]} {at[1]} {at[2]} minecraft:air')
     host_unaffected(host, "the guest's Shift double click")
     return {**seen, 'click interval ms': timings}
+
+
+def check_recipe_furnace(host, guest, out):
+    # Only the one recipe known, so the book's only recipe button is raw iron's.
+    guest('command', command='clear @s')
+    guest('command', command='recipe take @s *')
+    guest('command', command='recipe give @s minecraft:iron_ingot_from_smelting_raw_iron')
+    guest('command', command='give @s minecraft:raw_iron 3')
+    guest.wait(20)
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    host('command', command=f'setblock {x} {y} {z - 2} minecraft:furnace')
+    guest.wait(10)
+    guest.raw('interact', x, y, z - 2)
+    guest.wait(10)
+    try:
+        book = guest('screen').get('recipe_book')
+        assert book, f'the guest\'s furnace has no recipe book: {guest("screen")}'
+        if len(book['targets']) == 1:
+            guest.raw('click-at', *centre(book['targets'][0]))
+            guest.wait(5)
+            book = guest('screen').get('recipe_book')
+        assert len(book['targets']) > 1, f'no recipe in the furnace book: {book}'
+        guest.raw('click-at', *centre(book['targets'][1]))
+        guest.wait(20)
+        slots = {s['slot']: s['stack'] for s in guest('menu').get('slots', [])}
+        guest.shot(out, 'recipe-furnace')
+    finally:
+        guest.raw('key', 'esc', 'tap')
+        guest.wait(5)
+    placed = slots.get(300)
+    assert placed and placed['item'] == 'minecraft:raw_iron' and placed['count'] == 1, \
+        f'the furnace input is {placed!r}, wanted one raw iron: {slots}'
+    left = sum(s['count'] for k, s in slots.items() if k < 36 and s['item'] == 'minecraft:raw_iron')
+    assert left == 2, f'the guest should keep 2 raw iron, has {left}: {slots}'
 
 
 def check_recipe_shift(host, guest, out):
@@ -7053,7 +7090,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'recipes': check_recipes, 'trials': check_trials, 'walls': check_walls,
              'placement': check_placement,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance,
-             'clicks': check_clicks, 'shift-double-click': check_shift_double_click, 'recipe-shift': check_recipe_shift,
+             'clicks': check_clicks, 'shift-double-click': check_shift_double_click, 'recipe-shift': check_recipe_shift, 'recipe-furnace': check_recipe_furnace,
              'shift-drag': check_shift_drag, 'wheel': check_wheel, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,
              'modifier-release': check_modifier_release,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,

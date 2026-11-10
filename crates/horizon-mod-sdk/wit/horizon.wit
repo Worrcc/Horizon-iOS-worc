@@ -773,8 +773,7 @@ interface recipes {
     /// many as the items allow, as with Shift. Refused while no such screen
     /// is open, for spectators, for a recipe the player's book doesn't hold
     /// and for one that can't be placed; one missing items shows as a ghost
-    /// in the grid, as in the book. Horizon's own server (single player
-    /// included) does not fill furnaces yet; vanilla servers do.
+    /// in the grid, as in the book.
     place: func(book-id: s32, all: bool) -> result<_, string>;
     /// Creative mode only: gives the player the stack, as taking it from
     /// the creative inventory does (`ServerboundSetCreativeModeSlot`): the

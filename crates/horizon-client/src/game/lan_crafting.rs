@@ -492,6 +492,10 @@ impl Game<'_> {
             host.play.entry(conn).or_default().crafting.inventory = Some(menu);
             host.hub.send_inventory(gi);
             placed
+        } else if let Some(placed) =
+            self.lan_place_furnace_recipe(host, conn, gi, p.container, &id, p.use_max, creative)
+        {
+            placed
         } else {
             let Some((window, state, mut menu, pos)) = host
                 .play
@@ -510,6 +514,73 @@ impl Game<'_> {
         if placed == PostPlace::Ghost {
             host.hub.send_ghost_recipe(conn, p.container, &id);
         }
+    }
+
+    /// `AbstractFurnaceMenu.handlePlacement` for the guest's open furnace, blast
+    /// furnace or smoker `window` (`ServerPlaceRecipe` over its ingredient slot,
+    /// the fuel left alone): the block entity's slots and the guest's inventory
+    /// run through the host's menu engine, then go back, as a click on it does
+    /// (`lan_machine_click`). None when `window` is not such a furnace. As in
+    /// vanilla, the recipe's type is not checked against the furnace's: the
+    /// client's book only offers its own.
+    #[allow(clippy::too_many_arguments)]
+    fn lan_place_furnace_recipe(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        gi: usize,
+        window: i32,
+        id: &str,
+        use_max: bool,
+        creative: bool,
+    ) -> Option<horizon_client::menu::place::PostPlace> {
+        let pos = host.hub.guests[gi]
+            .menu
+            .as_ref()
+            .filter(|m| window != 0 && m.window == window && m.mod_type.is_none())
+            .and_then(|m| match m.slots {
+                Slots::Block(pos) => Some(pos),
+                _ => None,
+            })?;
+        let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get(&pos) else {
+            return None;
+        };
+        let recipe = match f.kind.recipe_type() {
+            "minecraft:blasting" => "blasting",
+            "minecraft:smoking" => "smoking",
+            _ => "smelting",
+        };
+        let (kind, items) = (Kind::Furnace(recipe), f.items.to_vec());
+        let mut menu = host
+            .play
+            .entry(conn)
+            .or_default()
+            .crafting
+            .machine
+            .take()
+            .filter(|(w, m)| *w == window && m.kind() == kind)
+            .map_or_else(|| Box::new(Menu::new(kind)), |(_, m)| m);
+        let placed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
+            for (k, s) in items.iter().enumerate() {
+                menu.set_slot(env, k, s.clone());
+            }
+            menu.place_recipe(env, id, use_max, creative, None)
+        });
+        let changed = (0..items.len()).any(|k| menu.slot(k) != items[k].as_ref());
+        if let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) {
+            for k in 0..3 {
+                f.items[k] = menu.slot(k).cloned();
+            }
+            // AbstractFurnaceBlockEntity.setItem: only a new input restarts cooking.
+            f.input_clicked(world_recipes!(self), items[0].clone());
+        }
+        if changed {
+            self.container_changed(pos);
+        }
+        host.play.entry(conn).or_default().crafting.machine = Some((window, menu));
+        // The furnace's slots and the guest's inventory as they are now.
+        host.hub.resend_menu(conn, window, &self.world);
+        Some(placed)
     }
 
     /// The guest opened a crafting table (`CraftingTableBlock.getMenuProvider`).
