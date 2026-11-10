@@ -13,7 +13,9 @@ pub const LEVEL: u32 = 19;
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 110] = [
+pub const FUNCTIONS: [(&str, u32); 112] = [
+    ("browser-ext.item-facts", 19),
+    ("browser-ext.other-recipes", 19),
     ("browser-ext.set-recipes", 19),
     ("browser-ext.set-item-lines", 19),
     ("browser-ext.set-bookmarks", 19),

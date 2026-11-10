@@ -36,6 +36,8 @@ pub(super) struct RecipeTables {
     synced: Option<horizon_client::crafting::Recipes>,
     /// The recipe content's parts so far, until its last.
     incoming: Vec<(String, serde_json::Value)>,
+    #[cfg(feature = "mods")]
+    other_recipes: Vec<horizon_mods::OtherRecipe>,
     /// The types that came before the player did: the mods hear of them
     /// once the helpers can answer (`recipes_received_now`).
     received: Option<Vec<String>>,
@@ -359,6 +361,8 @@ impl Game<'_> {
     pub(super) fn forget_synced_recipes(&mut self) {
         self.recipe_tables.synced = None;
         self.recipe_tables.incoming.clear();
+        #[cfg(feature = "mods")]
+        self.recipe_tables.other_recipes.clear();
         self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
         self.forget_book();
@@ -381,17 +385,22 @@ impl Game<'_> {
         use horizon_client::lan::recipes;
         let mut types = Vec::new();
         self.native_datapack_sync(&mut types);
-        types.sort();
-        types.dedup();
-        let sources = if types.is_empty() {
-            Vec::new()
-        } else {
+        let sources =
             horizon_client::crafting::Recipes::sources(&self.options.resources, &self.pack_files())
                 .unwrap_or_else(|e| {
                     log::warn!("Horizon: the recipes for the clients were not read: {e}");
                     Vec::new()
-                })
-        };
+                });
+        // Browser data needs custom recipe files even without a native mod requesting their type.
+        types.extend(
+            sources
+                .iter()
+                .filter_map(|(_, v)| v["type"].as_str())
+                .filter(|kind| horizon_client::recipe_book::browser_data::other_recipe_type(kind))
+                .map(str::to_owned),
+        );
+        types.sort();
+        types.dedup();
         recipes::set_content(recipes::encode_content(
             &types,
             &sources,
@@ -423,6 +432,8 @@ impl Game<'_> {
         let received = std::mem::take(&mut self.recipe_tables.incoming);
         // No type any more: back on the window's own recipes.
         if types.is_empty() {
+            #[cfg(feature = "mods")]
+            self.recipe_tables.other_recipes.clear();
             if self.recipe_tables.synced.take().is_some() {
                 self.recipe_tables.tables = None;
                 self.forget_book();
@@ -431,6 +442,10 @@ impl Game<'_> {
             }
             return;
         }
+        #[cfg(feature = "mods")]
+        let others = wasm::others(horizon_client::recipe_book::browser_data::other_recipes(
+            received.clone(),
+        ));
         let root = &self.options.resources;
         let overlay = horizon_world::loot::PackOverlay::NONE;
         let built = horizon_client::crafting::Recipes::sources(root, &overlay).and_then(|own| {
@@ -441,6 +456,10 @@ impl Game<'_> {
         });
         match built {
             Ok(recipes) => {
+                #[cfg(feature = "mods")]
+                {
+                    self.recipe_tables.other_recipes = others;
+                }
                 self.recipe_tables.synced = Some(recipes);
                 // What was made of the window's own recipes is made again.
                 self.recipe_tables.tables = None;
@@ -463,8 +482,40 @@ impl Game<'_> {
         if !self.mods.mods.wants_recipes() || self.res.rest.get().is_none() {
             return (None, Arc::from([]));
         }
-        if self.mods.recipes.is_none() {
-            self.mods.recipes = self.made_recipes().map(|t| Arc::new(wasm::recipes(&t)));
+        if self.mods.recipes.is_none()
+            && let Some(tables) = self.made_recipes()
+        {
+            let mut snapshot = wasm::recipes(&tables);
+            snapshot.facts = horizon_client::recipe_book::browser_data::item_facts(
+                self.items(),
+                &self.stations().enchantments,
+                self.res.providers(),
+            )
+            .into_iter()
+            .map(|f| horizon_mods::ItemFacts {
+                item: f.item,
+                burn_ticks: f.burn_ticks,
+                compost_chance: f.compost_chance,
+                repaired_by: f.repaired_by,
+            })
+            .collect();
+            snapshot.others = if self.remote.is_some() {
+                self.recipe_tables.other_recipes.clone()
+            } else {
+                match horizon_client::crafting::Recipes::source_files(
+                    &self.options.resources,
+                    &self.pack_files(),
+                ) {
+                    Ok(sources) => wasm::others(
+                        horizon_client::recipe_book::browser_data::other_recipe_files(sources),
+                    ),
+                    Err(e) => {
+                        log::warn!("Horizon: browser recipe files not read: {e}");
+                        Vec::new()
+                    }
+                }
+            };
+            self.mods.recipes = Some(Arc::new(snapshot));
         }
         (self.mods.recipes.clone(), self.known_displays())
     }
@@ -520,10 +571,23 @@ mod wasm {
             tags: i.tags.clone(),
         }
     }
+    pub(super) fn others(
+        recipes: Vec<horizon_client::recipe_book::browser_data::OtherRecipe>,
+    ) -> Vec<m::OtherRecipe> {
+        recipes
+            .into_iter()
+            .map(|r| m::OtherRecipe {
+                id: r.id,
+                kind: r.kind,
+                json: r.json,
+            })
+            .collect()
+    }
     pub(super) fn recipes(t: &Recipes) -> m::Recipes {
         m::Recipes {
             items: t.items.iter().map(item).collect(),
             recipes: t.recipes.iter().map(recipe).collect(),
+            ..m::Recipes::default()
         }
     }
 }

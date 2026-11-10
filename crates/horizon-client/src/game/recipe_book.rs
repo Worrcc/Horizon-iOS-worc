@@ -396,6 +396,10 @@ impl Game<'_> {
     pub(super) fn forget_book(&mut self) {
         self.recipe_ui.book = None;
         self.recipe_tables.categories = None;
+        #[cfg(feature = "mods")]
+        {
+            self.mods.recipes = None;
+        }
     }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {

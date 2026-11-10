@@ -180,9 +180,10 @@ fn trial_run(path: &Path, report: &mut Report) -> Result<(), String> {
     };
     report.code = true;
     report.imports = component_imports(wasm)?;
-    package
-        .manifest
-        .check_imports(report.imports.iter().map(String::as_str))?;
+    package.manifest.check_code_imports(
+        report.imports.iter().map(String::as_str),
+        &horizon_mods::api_level::imports(wasm)?,
+    )?;
     let dir = std::env::temp_dir().join(format!("horizon-mod-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

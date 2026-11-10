@@ -875,8 +875,29 @@ interface browser {
     poll: func() -> list<event>;
 }
 
-/// Capability `ui` (experimental), API level 19: bookmarks beside the browser.
+/// API level 19: browser extensions. Data queries need capability `recipes`; all other
+/// functions need capability `ui` (experimental).
 interface browser-ext {
+    /// What the game knows of an item beyond `recipes.items`: from its components, the same for
+    /// vanilla and content-mod items.
+    record item-fact {
+        /// The item's index in `recipes.items`.
+        item: u32,
+        /// `minecraft:cooking_fuel`: ticks it burns in a furnace, 0 when it is no fuel.
+        burn-ticks: u32,
+        /// `minecraft:compostable`: the chance one raises a composter's level (0 to 1), 0 when not.
+        compost-chance: f32,
+        /// `minecraft:repairable`: the items (indexes in `recipes.items`) that repair it in an anvil.
+        repaired-by: list<u32>,
+    }
+    /// Capability `recipes`. One entry per item with any fact; others are left out.
+    item-facts: func() -> list<item-fact>;
+    /// A recipe whose type the game doesn't know (a mod's own, `iceandfire:dragonforge`), as its file.
+    record other-recipe { id: string, kind: string, json: string }
+    /// Capability `recipes`. The world's recipes of types `recipes.all` can't express, from its data
+    /// and content mods. Empty on servers that are not Horizon (a client is sent no recipe files).
+    /// At most 4096, each file at most 16 KiB.
+    other-recipes: func() -> list<other-recipe>;
     use browser.{stack, click, recipe-view};
     /// A slot placed in a custom recipe's box, in GUI px from the box's top left; it cycles through
     /// its stacks like the standard layouts' slots.

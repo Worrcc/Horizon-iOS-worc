@@ -1450,6 +1450,16 @@ impl Recipes {
     /// over them (`overlay`), parsed, and only those whose load conditions
     /// hold. A server sends some of them to its clients (`recipe_content`).
     pub fn sources(root: &Path, overlay: &PackOverlay) -> Result<Vec<(String, Value)>> {
+        Ok(Self::source_files(root, overlay)?
+            .into_iter()
+            .map(|(id, v, _)| (id, v))
+            .collect())
+    }
+    /// Effective recipe files with their JSON text, retaining formatting unless a filter edits it.
+    pub fn source_files(
+        root: &Path,
+        overlay: &PackOverlay,
+    ) -> Result<Vec<(String, Value, String)>> {
         // Vanilla's recipes by bare name, then content mods' as `<ns>:<name>`.
         let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
         // NeoForge's load conditions: `mod_loaded` asks which mods' data is
@@ -1513,10 +1523,16 @@ impl Recipes {
                 continue;
             }
             // The data's recipe filters, over the final set.
+            let before = v.clone();
             if !filters.apply(&recipe_id(&name), &mut v) {
                 continue;
             }
-            parsed.push((name, v));
+            let text = if v == before {
+                String::from_utf8(bytes)?
+            } else {
+                v.to_string()
+            };
+            parsed.push((name, v, text));
         }
         Ok(parsed)
     }

@@ -849,9 +849,9 @@ A recipe to show. Each slot, and the result, cycles through its stacks, one a se
 
 ## `browser-ext`
 
-Access: capability `ui`.
+Access: capability `recipes` for data queries, `ui` for panel functions.
 
-Capability `ui` (experimental), API level 19: bookmarks beside the browser.
+API level 19: browser extensions. Data queries need capability `recipes`; all other functions need capability `ui` (experimental).
 
 ### type `stack`
 
@@ -864,6 +864,27 @@ Capability `ui` (experimental), API level 19: bookmarks beside the browser.
 ### type `recipe-view`
 
 `type recipe-view = recipe-view`
+
+### record `item-fact`
+
+What the game knows of an item beyond `recipes.items`: from its components, the same for vanilla and content-mod items.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `u32` | The item's index in `recipes.items`. |
+| `burn-ticks` | `u32` | `minecraft:cooking_fuel`: ticks it burns in a furnace, 0 when it is no fuel. |
+| `compost-chance` | `f32` | `minecraft:compostable`: the chance one raises a composter's level (0 to 1), 0 when not. |
+| `repaired-by` | `list<u32>` | `minecraft:repairable`: the items (indexes in `recipes.items`) that repair it in an anvil. |
+
+### record `other-recipe`
+
+A recipe whose type the game doesn't know (a mod's own, `iceandfire:dragonforge`), as its file.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` |  |
+| `kind` | `string` |  |
+| `json` | `string` |  |
 
 ### record `placed-slot`
 
@@ -934,6 +955,8 @@ Extra tooltip lines for some of a panel's items.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `item-facts` | `func() -> list<item-fact>` | Capability `recipes`. One entry per item with any fact; others are left out. |
+| `other-recipes` | `func() -> list<other-recipe>` | Capability `recipes`. The world's recipes of types `recipes.all` can't express, from its data and content mods. Empty on servers that are not Horizon (a client is sent no recipe files). At most 4096, each file at most 16 KiB. |
 | `set-recipes` | `func(title: string, tabs: list<stack>, tab: u32, recipes: list<recipe-entry>)` | `browser.set-recipes` with custom layouts mixed in. Same limits, same events (`browser.event.slot-clicked` counts a custom recipe's slots in order, then its result). |
 | `set-bookmarks` | `func(items: list<stack>)` | A second panel left of the screen's window, as JEI's bookmarks (an empty list hides it). At most 1024. Hidden while the screen's recipe book is open. |
 | `set-item-lines` | `func(bookmarks: bool, lines: list<item-lines>)` | Extra tooltip lines under these items' names, for the main panel (`bookmarks` false) or the bookmark panel. Replaces earlier ones for that panel. At most 8 lines of 128 characters per item, 8192 items. Dropped when that panel's items change (`set-items` / `set-bookmarks`). |

@@ -96,6 +96,9 @@ fn access(interface: &str, exported: bool) -> String {
     if exported {
         return "exported by the mod: the game calls it".into();
     }
+    if interface == "browser-ext" {
+        return "capability `recipes` for data queries, `ui` for panel functions".into();
+    }
     if interface == "log" {
         return "always granted".into();
     }

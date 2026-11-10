@@ -326,6 +326,33 @@ impl Manifest {
     pub fn owned_namespaces(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.id.as_str()).chain(self.namespaces.iter().map(String::as_str))
     }
+    /// Check interface imports and the functions of mixed-capability interfaces.
+    /// `browser-ext` data queries belong to `recipes`, its panel functions to `ui`.
+    pub fn check_code_imports<'a>(
+        &self,
+        imports: impl IntoIterator<Item = &'a str>,
+        functions: &[String],
+    ) -> Result<(), String> {
+        self.check_imports(
+            imports
+                .into_iter()
+                .filter(|name| !name.starts_with("horizon:mods/browser-ext@0.1.")),
+        )?;
+        for function in functions {
+            if let Some(name) = function.strip_prefix("browser-ext.") {
+                let capability = match name {
+                    "item-facts" | "other-recipes" => Capability::Recipes,
+                    _ => Capability::Ui,
+                };
+                if !self.capabilities.contains(&capability) {
+                    return Err(format!(
+                        "uses capability {capability}, missing from {MANIFEST}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
     /// Checks that the component's imports need only declared capabilities.
     pub fn check_imports<'a>(
         &self,
@@ -489,6 +516,50 @@ version = "0.1.0"
 api = "0.1"
 capabilities = ["game-read", "hud"]
 "#;
+
+    #[test]
+    fn browser_data_requires_recipes_and_panel_functions_require_ui() {
+        let manifest = |caps: &str| {
+            Manifest::parse(&format!(
+                r#"
+id = "viewer"
+name = "Viewer"
+version = "0.1.0"
+api = "0.1"
+capabilities = [{caps}]
+experimental = ["ui", "recipes"]
+"#
+            ))
+            .unwrap()
+        };
+        let imports = ["horizon:mods/browser-ext@0.1.0"];
+        let data = [
+            "browser-ext.item-facts".into(),
+            "browser-ext.other-recipes".into(),
+        ];
+        assert!(
+            manifest("\"recipes\"")
+                .check_code_imports(imports, &data)
+                .is_ok()
+        );
+        assert!(
+            manifest("\"ui\"")
+                .check_code_imports(imports, &data)
+                .unwrap_err()
+                .contains("capability recipes")
+        );
+        assert!(
+            manifest("\"recipes\"")
+                .check_code_imports(imports, &["browser-ext.poll".into()])
+                .unwrap_err()
+                .contains("capability ui")
+        );
+        assert!(
+            manifest("\"ui\"")
+                .check_code_imports(imports, &["browser-ext.poll".into()])
+                .is_ok()
+        );
+    }
 
     #[test]
     fn parses_and_checks_imports() {

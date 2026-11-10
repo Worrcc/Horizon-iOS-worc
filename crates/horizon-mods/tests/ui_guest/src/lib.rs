@@ -117,6 +117,7 @@ impl Mod for Guest {
             "quiet",
             "quiet_many",
             "recipes",
+            "recipe_facts",
             "browser",
             "browser_poll",
             "bookmarks",
@@ -275,6 +276,24 @@ impl Mod for Guest {
                     ),
                     None => "no hit".into(),
                 });
+            }
+            "recipe_facts" => {
+                let facts = browser_ext::item_facts();
+                let others = browser_ext::other_recipes();
+                chat::show(&format!(
+                    "{} facts, {} other recipes",
+                    facts.len(),
+                    others.len()
+                ));
+                for f in facts {
+                    chat::show(&format!(
+                        "{}: burn {}, compost {}, repaired by {:?}",
+                        f.item, f.burn_ticks, f.compost_chance, f.repaired_by
+                    ));
+                }
+                for r in others {
+                    chat::show(&format!("{}: {} {}", r.id, r.kind, r.json));
+                }
             }
             "recipes" => {
                 let items = recipes::items();

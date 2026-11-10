@@ -1121,6 +1121,52 @@ fn a_server_mod_runs_only_where_the_world_does() {
     );
 }
 
+#[test]
+fn browser_reads_component_facts_and_other_recipe_files() {
+    fn said(mods: &mut Mods, command: &str) -> Vec<String> {
+        assert!(mods.command(command));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
+    use horizon_mods::{ItemFacts, OtherRecipe, Recipes};
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert_eq!(
+        said(&mut mods, "recipe_facts"),
+        ["0 facts, 0 other recipes"]
+    );
+    mods.set_snapshot(Snapshot {
+        recipes: Some(std::sync::Arc::new(Recipes {
+            facts: vec![ItemFacts {
+                item: 3,
+                burn_ticks: 1600,
+                compost_chance: 0.3,
+                repaired_by: vec![1, 4],
+            }],
+            others: vec![OtherRecipe {
+                id: "iceandfire:silver".into(),
+                kind: "iceandfire:dragonforge".into(),
+                json: "{\"type\":\"iceandfire:dragonforge\"}".into(),
+            }],
+            ..Recipes::default()
+        })),
+        ..Snapshot::default()
+    });
+    assert_eq!(
+        said(&mut mods, "recipe_facts"),
+        [
+            "1 facts, 1 other recipes",
+            "3: burn 1600, compost 0.3, repaired by [1, 4]",
+            "iceandfire:silver: iceandfire:dragonforge {\"type\":\"iceandfire:dragonforge\"}",
+        ]
+    );
+}
+
 /// Capability `recipes`: the guest reads tables as big as vanilla's (1,500
 /// items, 1,600 recipes of nine five-item slots) within one command's fuel.
 #[test]
@@ -1163,7 +1209,11 @@ fn recipes_reads_the_tables() {
     recipes[1].kind = RecipeKind::Brewing;
     recipes[1].results[0].components =
         "[minecraft:potion_contents={potion:\"minecraft:swiftness\"}]".into();
-    let mods_recipes = Some(std::sync::Arc::new(Recipes { items, recipes }));
+    let mods_recipes = Some(std::sync::Arc::new(Recipes {
+        items,
+        recipes,
+        ..Recipes::default()
+    }));
     mods.set_snapshot(Snapshot {
         recipes: mods_recipes.clone(),
         known_recipes: vec![1, 5, 9].into(),
@@ -1537,6 +1587,7 @@ fn browser_lists_items_and_hears_the_player() {
                 experience: 0.0,
                 book_id: 1,
             }],
+            ..Recipes::default()
         })),
         ..Snapshot::default()
     });

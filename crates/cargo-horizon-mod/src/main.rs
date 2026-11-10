@@ -249,7 +249,10 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
     let (wasm, target_dir) = if root.join("Cargo.toml").exists() {
         let (wasm, target) = compile(root, release)?;
         // The game refuses a component importing capabilities the manifest lacks.
-        manifest.check_imports(component_imports(&wasm)?.iter().map(String::as_str))?;
+        manifest.check_code_imports(
+            component_imports(&wasm)?.iter().map(String::as_str),
+            &horizon_mods::api_level::imports(&wasm)?,
+        )?;
         (Some(wasm), target)
     } else if manifest.capabilities.contains(&Capability::Registries) {
         (None, root.join("target"))

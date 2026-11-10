@@ -148,7 +148,9 @@ pub use recipes_bindings::horizon::mods::browser::{
     Layout as BrowserLayout, RecipeView as BrowserRecipe, SlotClick as BrowserSlotClick,
     Stack as BrowserStack,
 };
-pub use recipes_bindings::horizon::mods::browser_ext::Event as BrowserExtEvent;
+pub use recipes_bindings::horizon::mods::browser_ext::{
+    Event as BrowserExtEvent, ItemFact as ItemFacts, OtherRecipe,
+};
 /// What capability `recipes` reads (WIT `interface recipes`).
 pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
@@ -320,6 +322,8 @@ pub struct Snapshot {
 pub struct Recipes {
     pub items: Vec<RecipeItem>,
     pub recipes: Vec<Recipe>,
+    pub facts: Vec<ItemFacts>,
+    pub others: Vec<OtherRecipe>,
 }
 
 /// Which mods a game starts: the window's game the client mods, the game
@@ -1113,9 +1117,9 @@ impl Mods {
             .imports(engine)
             .map(|(name, _)| name.to_string())
             .collect();
-        m.check_imports(imports.iter().map(String::as_str))?;
-        // A function this Horizon doesn't have: say so, not wasmtime's linking error.
         let functions = crate::api_level::imports(wasm)?;
+        m.check_code_imports(imports.iter().map(String::as_str), &functions)?;
+        // A function this Horizon doesn't have: say so, not wasmtime's linking error.
         if functions.iter().any(|f| {
             matches!(
                 f.as_str(),
@@ -1225,7 +1229,13 @@ impl Mods {
                 .iter()
                 .any(|f| f == "game.raycast" || f == "game.raycast-entity"),
             entity_raycasts: functions.iter().any(|f| f == "game.raycast-entity"),
-            reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            reads_recipes: functions.iter().any(|f| {
+                f.starts_with("recipes.")
+                    || matches!(
+                        f.as_str(),
+                        "browser-ext.item-facts" | "browser-ext.other-recipes"
+                    )
+            }),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
         }))
@@ -2094,6 +2104,23 @@ impl browser::Host for State {
     }
 }
 impl browser_ext::Host for State {
+    fn item_facts(&mut self) -> Vec<ItemFacts> {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.facts.clone())
+    }
+    fn other_recipes(&mut self) -> Vec<OtherRecipe> {
+        self.snapshot.recipes.as_ref().map_or_else(Vec::new, |r| {
+            r.others
+                .iter()
+                .filter(|r| r.json.len() <= 16 * 1024)
+                .take(4096)
+                .cloned()
+                .collect()
+        })
+    }
+
     fn set_recipes(
         &mut self,
         title: String,

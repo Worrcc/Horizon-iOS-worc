@@ -3,6 +3,8 @@
 //! with the items at hand (`StackedItemContents.canCraft` and the biggest
 //! craftable stack), where a recipe goes in a grid (`PlaceRecipeHelper`) and
 //! the book's saved settings.
+pub mod browser_data;
+
 use crate::{
     crafting::{Ingredient, Placement, Recipe, Recipes},
     items::{ItemStack, Items},
