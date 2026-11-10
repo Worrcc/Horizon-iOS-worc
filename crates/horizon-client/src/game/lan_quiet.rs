@@ -18,6 +18,7 @@ pub(super) const PER_TICK: usize = 64;
 /// A batch waiting to run.
 pub(super) struct QuietBatch {
     conn: u32,
+    mod_commands: bool,
     mod_id: String,
     lines: VecDeque<String>,
     ran: usize,
@@ -30,6 +31,18 @@ impl Game<'_> {
     /// A `horizon:quiet_commands` payload from `conn`: queued (or logged as
     /// refused when it breaks the payload's caps).
     pub(super) fn guest_quiet_commands(&mut self, host: &mut LanHost, conn: u32, data: &[u8]) {
+        self.queue_quiet_commands(host, conn, data, false);
+    }
+    pub(super) fn guest_mod_quiet_commands(&mut self, host: &mut LanHost, conn: u32, data: &[u8]) {
+        self.queue_quiet_commands(host, conn, data, true);
+    }
+    fn queue_quiet_commands(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        data: &[u8],
+        mod_commands: bool,
+    ) {
         let Some(name) = host.hub.guest(conn).map(|g| g.name.clone()) else {
             return;
         };
@@ -43,6 +56,9 @@ impl Game<'_> {
                 return;
             }
         };
+        if mod_commands && batch.lines.len() > quiet::MOD_MAX_LINES {
+            return;
+        }
         let waiting: usize = host
             .quiet
             .iter()
@@ -53,6 +69,7 @@ impl Game<'_> {
         let dropped = batch.lines.len().saturating_sub(room);
         host.quiet.push_back(QuietBatch {
             conn,
+            mod_commands,
             mod_id: batch.mod_id,
             lines: batch.lines.into_iter().take(room).collect(),
             ran: 0,
@@ -63,7 +80,7 @@ impl Game<'_> {
 
     /// The waiting batches, [`PER_TICK`] lines a player this tick, in order.
     pub(super) fn run_quiet_commands(&mut self) {
-        let mut left: HashMap<u32, usize> = HashMap::new();
+        let mut left: HashMap<(u32, Option<String>), usize> = HashMap::new();
         let mut i = 0;
         loop {
             let Some(host) = self.lan.as_mut() else {
@@ -73,7 +90,13 @@ impl Game<'_> {
                 return;
             };
             let conn = batch.conn;
-            let budget = left.entry(conn).or_insert(PER_TICK);
+            let mod_commands = batch.mod_commands;
+            let key = (conn, mod_commands.then(|| batch.mod_id.clone()));
+            let budget = left.entry(key).or_insert(if mod_commands {
+                quiet::MOD_PER_TICK
+            } else {
+                PER_TICK
+            });
             let gone = host.hub.guest(conn).is_none();
             if gone || batch.lines.is_empty() {
                 let batch = host.quiet.remove(i).expect("got it above");
@@ -92,7 +115,11 @@ impl Game<'_> {
             }
             *budget -= 1;
             let line = batch.lines.pop_front().expect("not empty");
-            let ok = self.run_quiet_line(conn, &line);
+            let ok = if mod_commands {
+                self.run_mod_quiet_line(conn, &line)
+            } else {
+                self.run_quiet_line(conn, &line)
+            };
             if let Some(batch) = self.lan.as_mut().and_then(|h| h.quiet.get_mut(i)) {
                 batch.ran += 1;
                 batch.failed += usize::from(!ok);
@@ -100,6 +127,14 @@ impl Game<'_> {
         }
     }
 
+    fn run_mod_quiet_line(&mut self, conn: u32, line: &str) -> bool {
+        let Some(mut host) = self.lan.take() else {
+            return false;
+        };
+        let ok = self.guest_server_mod_command_quiet(&mut host, conn, line);
+        self.lan = Some(host);
+        ok
+    }
     /// One line as `guest_command` would run it for `conn`, quietly. False
     /// when it is refused or fails. A command that carries a chat message
     /// (`say`, `msg`...) is refused: it would need the player's signature.
@@ -160,6 +195,7 @@ mod tests {
     fn the_log_line_counts_the_batch() {
         let b = QuietBatch {
             conn: 1,
+            mod_commands: false,
             mod_id: "orbital".into(),
             lines: VecDeque::new(),
             ran: 12,

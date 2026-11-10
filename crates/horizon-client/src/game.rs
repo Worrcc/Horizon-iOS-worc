@@ -294,6 +294,7 @@ mod pick_entity;
 mod pickups;
 mod piglins;
 mod piston_push;
+mod player_break;
 mod player_equip;
 mod postprocess;
 mod potent_sulfur;
@@ -2992,6 +2993,8 @@ struct Game<'a> {
     ender_open: Option<(i32, i32, i32)>,
     /// Block entity data of broken blocks waiting for their dropped item.
     pending: spill::Pending,
+    /// Scoped to a queued mod break; ordinary mining uses vanilla defaults.
+    player_break_options: Option<player_break::PlayerBreakOptions>,
     /// Item entities spawned and block entities removed while the block
     /// behaviour ran (spilled contents, popped resources).
     spill: spill::Spill,
@@ -4124,6 +4127,13 @@ impl Game<'_> {
         velocity: [f64; 3],
         pickup_delay: u32,
     ) {
+        if self.player_break_options.is_some() && self.creative {
+            return;
+        }
+        let position = self
+            .player_break_options
+            .and_then(|o| o.drops_at)
+            .unwrap_or(position);
         let item = stack.item.clone();
         let count = stack.count as i32;
         self.next_entity += 1;
@@ -6405,6 +6415,11 @@ impl Game<'_> {
             self.mod_block_event(pos, broken, false);
         }
         if removed && !creative {
+            if let Some(options) = self.player_break_options
+                && let Some(p) = self.player.as_mut()
+            {
+                p.cause_food_exhaustion(options.exhaustion);
+            }
             let held = self.held().cloned();
             self.mine_block_with_held(&facts.name, facts.hardness);
             let harvest = !facts.requires_tool
@@ -8511,7 +8526,7 @@ impl Game<'_> {
                 None
             };
             // No pointer to grab on a touchscreen: the touch controls look instead.
-            self.captured = self.capture_mode.is_some() || touch::ENABLED;
+            self.captured = self.capture_mode.is_some() || touch::enabled();
             // Windows already warped above, inside the clip's own position.
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             if self.captured && self.focused {
@@ -13050,6 +13065,8 @@ impl Game<'_> {
         Ok(())
     }
     fn close_world(&mut self) -> Result<()> {
+        #[cfg(feature = "mods")]
+        self.mods.mods.clear_world_lines();
         // A recording cannot cross into another world, and a replay feeding the
         // title screen is nonsense.
         self.repro_world_closed();
@@ -14021,6 +14038,13 @@ impl Game<'_> {
     /// `tryMergeToExisting` compares from the level random, then moves with
     /// its own random.
     fn spawn_orbs(&mut self, at: [f64; 3], mut value: u32) {
+        if self.player_break_options.is_some() && self.creative {
+            return;
+        }
+        let at = self
+            .player_break_options
+            .and_then(|o| o.drops_at)
+            .unwrap_or(at);
         while value > 0 {
             let v = ExperienceOrb::split(value);
             value -= v;
@@ -17748,11 +17772,16 @@ impl Game<'_> {
         if !ours {
             return;
         }
-        if touch::ENABLED
+        if touch::enabled()
             && let WindowEvent::Touch(t) = event
         {
             self.touch_event(event_loop, t);
             return;
+        }
+        if touch::enabled()
+            && matches!(&event, WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed)
+        {
+            self.touch_hide(event_loop);
         }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
@@ -19811,6 +19840,7 @@ impl<'a> Game<'a> {
             ender_items: vec![None; 27],
             ender_open: None,
             pending: Default::default(),
+            player_break_options: None,
             spill: Default::default(),
             recipe_ui: Default::default(),
             mount_menu: Default::default(),
@@ -21943,7 +21973,7 @@ impl Loading {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
-        if touch::ENABLED
+        if touch::enabled()
             && let WindowEvent::Touch(t) = event
         {
             let Some(size) = self

@@ -43,10 +43,19 @@ fn mods_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let target = root.join("target/mods-test");
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("target"))
+            .join("mods-test");
         let status = Command::new(env!("CARGO"))
             .current_dir(&root)
-            .args(["build", "--release", "--target", "wasm32-unknown-unknown"])
+            .args([
+                "build",
+                "--offline",
+                "--release",
+                "--target",
+                "wasm32-unknown-unknown",
+            ])
             .args([
                 "-p",
                 "coords-hud",
@@ -64,6 +73,8 @@ fn mods_dir() -> &'static Path {
                 "horizon-mods-test-ui-guest",
                 "-p",
                 "horizon-mods-test-canvas-guest",
+                "-p",
+                "horizon-mods-test-api20-server-guest",
                 "-p",
                 "canvas-test",
                 "--target-dir",
@@ -95,11 +106,31 @@ fn mods_dir() -> &'static Path {
                 CANVAS_MANIFEST.to_string(),
             ),
             ("canvas_test", example("canvas-test")),
+            (
+                "horizon_mods_test_api20_server_guest",
+                r#"
+id = "test_api20_server"
+name = "API20 Server"
+version = "0.1.0"
+api = "0.3"
+side = "server"
+capabilities = ["players", "world"]
+experimental = ["players", "world"]
+"#
+                .into(),
+            ),
         ];
         for (name, manifest) in mods {
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
             let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
+            if name == "horizon_mods_test_api20_server_guest" {
+                let other = manifest
+                    .replace("test_api20_server", "test_api20_other")
+                    .replace("API20 Server", "API20 Other");
+                let package = Package::write(&other, &componentize(&core).unwrap()).unwrap();
+                std::fs::write(dir.join("api20_other.hmod"), package).unwrap();
+            }
             if name == "horizon_mods_test_ui_guest" {
                 let (stripped, mut metadata) = wit_component::metadata::decode(&core).unwrap();
                 for (_, interface) in metadata.resolve.interfaces.iter_mut() {
@@ -313,8 +344,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest also uses the additive browser extension (level 19).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 19);
+    // The UI guest uses API 20 world lines and touch buttons.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 20);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -2190,4 +2221,226 @@ fn canvas_example_opens_on_its_key() {
     assert_eq!(screen.title, "Canvas test");
     assert_eq!(screen.shapes.len(), 1);
     assert!(mods.drain().contains(&Output::OpenScreen { owner: 0 }));
+}
+
+#[test]
+fn api20_client_block_at_reads_loaded_states_and_none_off_world() {
+    let mut game = canvas_guest();
+    game.set_block(1, 64, 0, "minecraft:oak_log[axis=y]");
+    for (query, want) in [
+        ("block_at 1 64 0", "Some(\"minecraft:oak_log[axis=y]\")"),
+        ("block_at 2 64 0", "Some(\"minecraft:air\")"),
+        ("block_at 32 64 0", "None"),
+    ] {
+        assert!(game.command(query));
+        assert!(
+            game.drain()
+                .iter()
+                .any(|o| matches!(o,Output::Feedback {text,..} if text==want))
+        );
+    }
+    game.player = None;
+    assert!(game.command("block_at 1 64 0"));
+    assert!(
+        game.drain()
+            .iter()
+            .any(|o| matches!(o,Output::Feedback {text,..} if text=="None"))
+    );
+}
+
+#[test]
+fn api20_lines_touch_keys_and_stop_cleanup_cross_the_sandbox() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    mods.set_snapshot(Snapshot {
+        touch_active: true,
+        ..player()
+    });
+    assert!(mods.command("world_lines 4097"));
+    assert_eq!(mods.world_lines().next().unwrap().lines.len(), 4096);
+    assert!(mods.command("world_lines 0"));
+    assert!(mods.world_lines().next().unwrap().lines.is_empty());
+    assert!(mods.command("touch_button on"));
+    let (owner, name, b, _) = mods.touch_buttons().next().unwrap();
+    assert_eq!((&*b.label, b.size, b.lit), ("Mine", 24.0, true));
+    assert_eq!(b.icon.as_deref(), Some("minecraft:diamond_pickaxe"));
+    let (owner, name) = (owner, name.to_owned());
+    mods.touch_key(owner, &name, true);
+    mods.touch_key(owner, &name, false);
+    assert!(mods.command("input_poll"));
+    let text = mods
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Chat { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.contains("touch true"), "{text}");
+    assert!(text.contains("key-down mine"), "{text}");
+    assert!(text.contains("key-up mine"), "{text}");
+    // Either input source keeps the key held until both have released it.
+    mods.key("key.keyboard.r", true);
+    mods.touch_key(owner, &name, true);
+    mods.key("key.keyboard.r", false);
+    assert!(mods.command("input_poll"));
+    let events = mods.drain();
+    assert!(
+        events
+            .iter()
+            .any(|o| matches!(o,Output::Chat {text,..} if text=="key-down mine"))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|o| matches!(o,Output::Chat {text,..} if text=="key-up mine"))
+    );
+    mods.touch_key(owner, &name, false);
+    assert!(mods.command("input_poll"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o,Output::Chat {text,..} if text=="key-up mine"))
+    );
+    assert!(mods.command("touch_button off"));
+    assert_eq!(mods.touch_buttons().count(), 0);
+    assert!(mods.command("world_lines 1"));
+    mods.clear_world_lines();
+    assert!(mods.world_lines().next().unwrap().lines.is_empty());
+    // Replacing runtimes on reload drops all persistent API 20 state.
+    mods = Mods::default();
+    assert_eq!(mods.world_lines().count(), 0);
+    assert_eq!(mods.touch_buttons().count(), 0);
+}
+
+#[test]
+fn api20_queued_breaks_exclude_the_caller_but_notify_other_mods() {
+    let mut mods = Mods::load(
+        &[
+            mods_dir().join("horizon_mods_test_api20_server_guest.hmod"),
+            mods_dir().join("api20_other.hmod"),
+        ],
+        |_| true,
+        |_| false,
+    );
+    assert!(mods.entries().iter().all(|e| e.status == Status::Running));
+    let p = ServerPlayer {
+        id: "alice".into(),
+        name: "Alex".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    mods.set_snapshot(Snapshot {
+        players: vec![p.clone()],
+        ..player()
+    });
+    mods.server_tick(1);
+    let out = mods.drain();
+    assert!(out.iter().any(|o| matches!(o,Output::BreakBlocksAs {mod_id,player,..} if mod_id == "test_api20_server" && player == "alice")));
+    let pos = BlockPos { x: 1, y: 64, z: 0 };
+    mods.block_broken_except(&p, pos, "minecraft:stone", Some("test_api20_server"));
+    let delivered = mods.drain();
+    assert_eq!(delivered.len(), 1);
+    assert!(
+        matches!(&delivered[0],Output::Tell { name,text,.. } if name=="API20 Other" && text=="heard break")
+    );
+    mods.block_broken_except(&p, pos, "minecraft:stone", Some("test_api20_other"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o,Output::Tell {text,..} if text == "heard break"))
+    );
+}
+
+#[test]
+fn mod_quiet_commands_cross_the_sandbox_and_reset_each_tick() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let mut snapshot = player();
+    mods.set_snapshot(snapshot.clone());
+    assert!(mods.command("quiet_mod beacon 2;missing;setblock 0 0 0 stone"));
+    let out = mods.drain();
+    assert!(
+        matches!(&out[..],[Output::ModQuietCommands {mod_id,lines}] if mod_id=="test_ui_guest" && lines==&["beacon 2","missing","setblock 0 0 0 stone"])
+    );
+    let mut queued = 3;
+    for _ in 0..5 {
+        assert!(mods.command("quiet_mod_many 30"));
+        for out in mods.drain() {
+            if let Output::ModQuietCommands { lines, .. } = out {
+                assert!(lines.len() <= 16);
+                queued += lines.len();
+            }
+        }
+    }
+    assert_eq!(queued, 64);
+    snapshot.tick += 1;
+    mods.set_snapshot(snapshot);
+    assert!(mods.command("quiet_mod beacon 3"));
+    assert!(
+        matches!(&mods.drain()[..],[Output::ModQuietCommands {lines,..}] if lines==&["beacon 3"])
+    );
+}
+
+#[test]
+fn quiet_server_mod_hooks_keep_operations_but_drop_success_and_failure_feedback() {
+    let mut mods = load("beacons.hmod");
+    let p = ServerPlayer {
+        id: "alice".into(),
+        name: "Alex".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    mods.set_snapshot(Snapshot {
+        players: vec![p.clone()],
+        ..player()
+    });
+    assert!(mods.server_command_quiet(&p, "beacon 2"));
+    let out = mods.drain();
+    assert!(
+        out.iter()
+            .any(|o| matches!(o,Output::SetBlocks {blocks,..} if blocks.len()==2))
+    );
+    assert!(
+        !out.iter()
+            .any(|o| matches!(o, Output::Reply { .. } | Output::Feedback { .. }))
+    );
+    assert!(mods.server_command_quiet(&p, "beacon invalid"));
+    assert!(mods.drain().is_empty());
+    assert!(!mods.server_command_quiet(&p, "not_registered"));
+    assert!(mods.drain().is_empty());
+    struct Ground;
+    impl horizon_mods::WorldView for Ground {
+        fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            Some("minecraft:stone".into())
+        }
+        fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            Some("minecraft:plains".into())
+        }
+        fn has_dimension(&self, _: &str) -> bool {
+            true
+        }
+        fn check_state(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    mods.lend_world(Box::new(Ground));
+    assert!(mods.server_command_quiet(&p, "ground"));
+    assert!(mods.drain().is_empty());
+    // The original typed-command API still gives its normal success/error feedback.
+    assert!(mods.server_command(&p, "ground"));
+    assert!(mods.drain().iter().any(|o| matches!(o,Output::Reply {text,error:false,..} if text == "You are standing on minecraft:stone in minecraft:plains")));
+    assert!(mods.server_command(&p, "beacon invalid"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { error: true, .. }))
+    );
 }

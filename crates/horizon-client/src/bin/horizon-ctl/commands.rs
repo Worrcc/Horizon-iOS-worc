@@ -501,6 +501,10 @@ pub const COMMANDS: &[Cmd] = &[
         "Case-insensitive; a unique part of the label is enough. screen lists the buttons.",
         ["horizon-ctl click-button Singleplayer", "horizon-ctl click-button \"Create New World\"", "horizon-ctl click-button respawn"],
         &[p("label", Ty::Rest, "button label")], mcp: true, local: false),
+    cmd!("touch", Screens, "touch down|move|up|tap X Y [--id N]", "send a touchscreen event at GUI pixel X Y (requires touch controls)",
+        "Enabled on iOS or with HORIZON_TOUCH=1. Finger id defaults to 0; different ids let multiple fingers stay down. tap sends down and releases after three rendered frames.",
+        ["horizon-ctl touch down 200 120 --id 1", "horizon-ctl touch move 210 125 --id 1", "horizon-ctl touch up 210 125 --id 1", "horizon-ctl touch tap 200 120"],
+        &[p("action", Ty::Enum(&["down", "move", "up", "tap"]), "touch phase"), p("x", Ty::Num, "GUI x"), p("y", Ty::Num, "GUI y"), flag("id", Ty::Int, "nonnegative finger id (default 0)")], mcp: true, local: false),
     cmd!("click-at", Screens, "click-at X Y [right]", "click at GUI pixel X Y of the window (screen gives button rectangles)", "",
         ["horizon-ctl click-at 200 120"], &[p("x", Ty::Num, "GUI x"), p("y", Ty::Num, "GUI y"), opt("right", Ty::Bool, "right-click")], mcp: true, local: false),
     cmd!("drag-at", Screens, "drag-at [right] X Y X Y...", "press at the first GUI point, move through the others, release at the last", "",
@@ -924,6 +928,20 @@ fn ty_name(ty: Ty) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touch_mcp_arguments_keep_finger_ids_as_flags() {
+        let cmd = find("touch").unwrap();
+        assert_eq!(
+            line_for(cmd, &json!({"action":"move", "x":12.5, "y":20, "id":7})).unwrap(),
+            ["touch", "move", "12.5", "20", "--id", "7"]
+        );
+        assert_eq!(
+            line_for(cmd, &json!({"action":"tap", "x":12, "y":20})).unwrap(),
+            ["touch", "tap", "12", "20"]
+        );
+        assert!(line_for(cmd, &json!({"action":"cancel", "x":12, "y":20})).is_err());
+    }
 
     #[test]
     fn names_are_unique_and_documented() {

@@ -483,6 +483,7 @@ pub(super) struct Remote {
     pub(super) features: Vec<String>,
     /// The server announced it runs mods' quiet commands.
     pub quiet_commands: bool,
+    pub mod_quiet_commands: bool,
     /// The server announced it carries mod messages.
     pub mod_net: bool,
     /// The synced attachments the server sent, by holder.
@@ -1060,6 +1061,7 @@ impl Game<'_> {
             brand: "unknown".into(),
             features: vec!["minecraft:vanilla".into()],
             quiet_commands: false,
+            mod_quiet_commands: false,
             mod_net: false,
             attachments: HashMap::new(),
             far_terrain: None,
@@ -1963,6 +1965,11 @@ impl Game<'_> {
                 Event::QuietCommands => {
                     if let Some(remote) = &mut self.remote {
                         remote.quiet_commands = true;
+                    }
+                }
+                Event::ModQuietCommands => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.mod_quiet_commands = true;
                     }
                 }
                 Event::ModNet => {

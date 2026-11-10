@@ -1,10 +1,12 @@
 //! Touch controls in the game (`touch_controls.rs` turns fingers into [`Output`]s): applying
 //! them as the keys, clicks and look movement a keyboard and mouse would give, and drawing
-//! the buttons over the HUD. On iOS only: desktop touchscreens keep winit's own behaviour.
+//! the buttons over the HUD. Enabled on iOS, or with HORIZON_TOUCH=1 for desktop testing.
 use super::{Game, Screen, event_loop::EventLoopCtl};
 use horizon_client::{
-    hud::{HudAtlas, HudBatch, rgba},
+    hud::{HudAtlas, HudBatch},
+    lang,
     touch_controls::{Button, Layout, Output, TouchControls},
+    ui,
 };
 use std::time::Instant;
 use winit::{
@@ -18,7 +20,13 @@ use winit::{
 const LOOK_SCALE: f64 = 0.6;
 
 /// Whether this system's touches drive the touch controls.
-pub(super) const ENABLED: bool = cfg!(target_os = "ios");
+pub(super) fn enabled() -> bool {
+    cfg!(target_os = "ios") || forced()
+}
+fn forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var("HORIZON_TOUCH").is_ok_and(|v| v == "1"))
+}
 
 /// The menus' own two buttons, top left and top right: the on-screen keyboard and Back (Esc).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,6 +53,7 @@ fn layout_of(size: [u32; 2]) -> (Layout, f32) {
         Layout {
             width: batch.width,
             height: batch.height,
+            main_hand_left: false,
         },
         batch.scale,
     )
@@ -90,7 +99,105 @@ fn pointer_event(device: DeviceId, output: Output, scale: f32) -> Vec<WindowEven
     }]
 }
 
-/// A touch button: a dark box (light while pressed) with a thin edge and its label.
+/// Shared artwork for built-in, menu and mod touch buttons.
+#[derive(Clone, Copy)]
+enum TouchFrame {
+    Slot(u32),
+    #[cfg(feature = "mods")]
+    SmallPlate,
+    Offhand(bool),
+}
+const SLOT_FRAME: TouchFrame = TouchFrame::Slot(0xB3FFFFFF);
+
+fn small_plate(frame: TouchFrame) -> bool {
+    match frame {
+        TouchFrame::Slot(_) | TouchFrame::Offhand(_) => false,
+        #[cfg(feature = "mods")]
+        TouchFrame::SmallPlate => true,
+    }
+}
+
+fn draw_button_frame(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    frame: TouchFrame,
+    down: bool,
+) {
+    let [x, y, w, h] = rect;
+    match frame {
+        TouchFrame::Slot(tint) => ui::nine_slice(
+            batch,
+            atlas,
+            "gui/sprites/gamemode_switcher/slot",
+            x,
+            y,
+            w,
+            h,
+            tint,
+        ),
+        #[cfg(feature = "mods")]
+        TouchFrame::SmallPlate => batch.fill(atlas, x, y, w, h, 0x90000000),
+        TouchFrame::Offhand(left) => batch.sprite(
+            atlas,
+            if left {
+                "gui/sprites/hud/hotbar_offhand_left"
+            } else {
+                "gui/sprites/hud/hotbar_offhand_right"
+            },
+            x,
+            y,
+        ),
+    }
+    if down {
+        let inset = if small_plate(frame) { 0.0 } else { 3.0 };
+        batch.fill(
+            atlas,
+            x + inset,
+            y + inset,
+            w - 2.0 * inset,
+            h - 2.0 * inset,
+            0x60FFFFFF,
+        );
+    }
+}
+
+fn draw_button_selection(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    frame: TouchFrame,
+    lit: bool,
+) {
+    if lit {
+        let [x, y, w, h] = rect;
+        let outset = if small_plate(frame) { 3.0 } else { 0.0 };
+        ui::nine_slice(
+            batch,
+            atlas,
+            "gui/sprites/gamemode_switcher/selection",
+            x - outset,
+            y - outset,
+            w + 2.0 * outset,
+            h + 2.0 * outset,
+            0xFFFFFFFF,
+        );
+    }
+}
+
+fn draw_button_label(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], label: &str) {
+    let tw = HudBatch::text_width(atlas, label);
+    batch.text(
+        atlas,
+        label,
+        (x + (w - tw) / 2.0).round(),
+        (y + (h - 8.0) / 2.0).round(),
+        0xFFFFFFFF,
+        true,
+    );
+}
+
+/// A slot-style menu button, retaining its existing active/pressed state.
 pub(super) fn draw_button(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -98,27 +205,18 @@ pub(super) fn draw_button(
     label: &str,
     down: bool,
 ) {
-    let [x, y, w, h] = rect;
-    let fill = if down {
-        rgba(255, 255, 255, 0x70)
-    } else {
-        rgba(0, 0, 0, 0x60)
-    };
-    batch.fill(atlas, x, y, w, h, fill);
-    let edge = rgba(255, 255, 255, 0x50);
-    batch.fill(atlas, x, y, w, 1.0, edge);
-    batch.fill(atlas, x, y + h - 1.0, w, 1.0, edge);
-    batch.fill(atlas, x, y, 1.0, h, edge);
-    batch.fill(atlas, x + w - 1.0, y, 1.0, h, edge);
-    let tw = HudBatch::text_width(atlas, label);
-    batch.text(
-        atlas,
-        label,
-        (x + (w - tw) / 2.0).round(),
-        (y + (h - 8.0) / 2.0).round(),
-        u32::MAX,
-        true,
-    );
+    draw_button_frame(batch, atlas, rect, SLOT_FRAME, down);
+    draw_button_label(batch, atlas, rect, label);
+}
+
+fn draw_pause(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
+    let (x, y) = (x + (w - 6.0) / 2.0, y + (h - 8.0) / 2.0);
+    for dx in [0.0, 4.0] {
+        batch.fill(atlas, x + dx + 1.0, y + 1.0, 2.0, 8.0, 0xFF3F3F3F);
+    }
+    for dx in [0.0, 4.0] {
+        batch.fill(atlas, x + dx, y, 2.0, 8.0, 0xFFFFFFFF);
+    }
 }
 
 /// Touch on the startup menu (the title screen shown while the world's resources load, before
@@ -192,12 +290,13 @@ impl MenuTouch {
 
     /// The account button, and the keyboard button once a finger has touched the screen.
     pub(super) fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
-        if !ENABLED {
+        if !enabled() {
             return;
         }
         let layout = Layout {
             width: batch.width,
             height: batch.height,
+            main_hand_left: false,
         };
         super::account::draw(batch, atlas, &layout);
         if !self.controls.used {
@@ -207,7 +306,7 @@ impl MenuTouch {
             batch,
             atlas,
             menu_button(&layout, MenuButton::Keyboard),
-            "Aa",
+            &lang::get_or("horizon.touch.keyboard", "Aa"),
             self.keyboard,
         );
     }
@@ -220,6 +319,8 @@ pub(super) struct TouchInput {
     device: Option<DeviceId>,
     /// The on-screen keyboard is up (`Window::set_ime_allowed`).
     keyboard: bool,
+    #[cfg(feature = "mods")]
+    mod_fingers: std::collections::HashMap<u64, (usize, String)>,
 }
 
 const HOTBAR_KEYS: [KeyCode; 9] = [
@@ -236,6 +337,10 @@ const HOTBAR_KEYS: [KeyCode; 9] = [
 
 impl Game<'_> {
     /// The world is on screen with nothing over it: the controls act on it.
+    #[cfg(feature = "mods")]
+    pub(super) fn mod_touch_active(&self) -> bool {
+        enabled() && (self.touch.controls.used || forced()) && self.touch_playing()
+    }
     fn touch_playing(&self) -> bool {
         self.title.is_none()
             && self.screen == Screen::Playing
@@ -257,7 +362,9 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| [r.config.width, r.config.height])?;
-        Some(layout_of(size))
+        let (mut layout, scale) = layout_of(size);
+        layout.main_hand_left = self.settings.main_hand_left;
+        Some((layout, scale))
     }
 
     /// `WindowEvent::Touch`.
@@ -275,6 +382,10 @@ impl Game<'_> {
             touch.location.y as f32 / scale,
         );
         let playing = self.touch_playing();
+        #[cfg(feature = "mods")]
+        if self.mod_touch_event(&touch, at, &layout, playing) {
+            return;
+        }
         if !playing && touch.phase == TouchPhase::Started {
             if self.title.is_some() && super::account::hit(&layout, &self.gui.atlas, at) {
                 super::account::tapped();
@@ -306,7 +417,11 @@ impl Game<'_> {
 
     /// Once a frame: held fingers start breaking or right click.
     pub(super) fn touch_update(&mut self, event_loop: &dyn EventLoopCtl) {
-        if !ENABLED || !self.touch.controls.used {
+        #[cfg(feature = "mods")]
+        if !self.mod_touch_active() {
+            self.release_mod_touches();
+        }
+        if !enabled() || !self.touch.controls.used {
             return;
         }
         let Some((_, scale)) = self.touch_layout() else {
@@ -325,8 +440,9 @@ impl Game<'_> {
     }
 
     /// Lets go of every finger: the app went to the background.
-    #[cfg(target_os = "ios")]
     pub(super) fn touch_release_all(&mut self, event_loop: &dyn EventLoopCtl) {
+        #[cfg(feature = "mods")]
+        self.release_mod_touches();
         let Some((_, scale)) = self.touch_layout() else {
             return;
         };
@@ -337,7 +453,6 @@ impl Game<'_> {
 
     /// A controller is being used: the on-screen controls go away (letting go of every finger)
     /// until the next touch brings them back.
-    #[cfg(target_os = "ios")]
     pub(super) fn touch_hide(&mut self, event_loop: &dyn EventLoopCtl) {
         if !self.touch.controls.used {
             return;
@@ -422,18 +537,19 @@ impl Game<'_> {
 
     /// The buttons over the HUD, once a finger has touched the screen.
     pub(super) fn draw_touch_controls(&self, batch: &mut HudBatch) {
-        if !ENABLED {
+        if !enabled() {
             return;
         }
         let layout = Layout {
             width: batch.width,
             height: batch.height,
+            main_hand_left: self.settings.main_hand_left,
         };
         let atlas = &self.gui.atlas;
         if self.title.is_some() {
             super::account::draw(batch, atlas, &layout);
         }
-        if !self.touch.controls.used {
+        if !self.touch.controls.used && !forced() {
             return;
         }
         let button = |batch: &mut HudBatch, rect: [f32; 4], label: &str, down: bool| {
@@ -443,21 +559,41 @@ impl Game<'_> {
             button(
                 batch,
                 menu_button(&layout, MenuButton::Keyboard),
-                "Aa",
+                &lang::get_or("horizon.touch.keyboard", "Aa"),
                 self.touch.keyboard,
             );
             if self.touch_back_shown() {
-                button(batch, menu_button(&layout, MenuButton::Back), "Back", false);
+                button(
+                    batch,
+                    menu_button(&layout, MenuButton::Back),
+                    &lang::get_or("horizon.touch.back", "Back"),
+                    false,
+                );
             }
             return;
         }
         for b in Button::ALL {
-            button(
-                batch,
-                layout.button(b),
-                b.label(),
-                self.touch.controls.pressed(b),
-            );
+            let rect = layout.button(b);
+            let frame = if b == Button::Inventory {
+                TouchFrame::Offhand(layout.main_hand_left)
+            } else {
+                SLOT_FRAME
+            };
+            draw_button_frame(batch, atlas, rect, frame, self.touch.controls.touching(b));
+            match b {
+                Button::Pause => draw_pause(batch, atlas, rect),
+                Button::Inventory => {
+                    let (cx, cy) = layout.inventory_label_center();
+                    draw_button_label(
+                        batch,
+                        atlas,
+                        [cx - 12.0, cy - 12.0, 24.0, 24.0],
+                        &lang::get_or(b.label_key(), b.label()),
+                    );
+                }
+                _ => draw_button_label(batch, atlas, rect, &lang::get_or(b.label_key(), b.label())),
+            }
+            draw_button_selection(batch, atlas, rect, frame, self.touch.controls.latched(b));
         }
         // The joystick: its ring where the finger landed, or at rest.
         let (origin, at) = self
@@ -466,25 +602,225 @@ impl Game<'_> {
             .stick()
             .unwrap_or_else(|| (layout.stick_rest(), layout.stick_rest()));
         let r = horizon_client::touch_controls::STICK_RADIUS;
-        batch.fill(
+        draw_button_frame(
+            batch,
             atlas,
-            origin.0 - r,
-            origin.1 - r,
-            r * 2.0,
-            r * 2.0,
-            rgba(0, 0, 0, 0x40),
+            [origin.0 - r, origin.1 - r, r * 2.0, r * 2.0],
+            TouchFrame::Slot(0x80FFFFFF),
+            false,
         );
         let (dx, dy) = (at.0 - origin.0, at.1 - origin.1);
         let length = dx.hypot(dy).max(1.0);
         let k = length.min(r) / length;
         let knob = (origin.0 + dx * k, origin.1 + dy * k);
-        batch.fill(
+        draw_button_frame(
+            batch,
             atlas,
-            knob.0 - 7.0,
-            knob.1 - 7.0,
-            14.0,
-            14.0,
-            rgba(255, 255, 255, 0x80),
+            [knob.0 - 7.0, knob.1 - 7.0, 14.0, 14.0],
+            TouchFrame::Slot(0xCCFFFFFF),
+            false,
         );
+        #[cfg(feature = "mods")]
+        for (_, _, b, down) in self.mods.mods.touch_buttons() {
+            self.draw_mod_touch_button(batch, b, down, &layout);
+        }
+    }
+    #[cfg(feature = "mods")]
+    fn draw_mod_touch_button(
+        &self,
+        batch: &mut HudBatch,
+        b: &horizon_mods::TouchButton,
+        down: bool,
+        layout: &Layout,
+    ) {
+        use horizon_client::items::ItemStack;
+        let atlas = &self.gui.atlas;
+        let [x, y, w, h] = touch_rect(b, layout);
+        let small = w < 20.0;
+        let frame = if small {
+            TouchFrame::SmallPlate
+        } else {
+            SLOT_FRAME
+        };
+        draw_button_frame(batch, atlas, [x, y, w, h], frame, down);
+        if let Some(id) = b
+            .icon
+            .as_deref()
+            .filter(|id| self.res.items().get(id).is_some())
+        {
+            let (ix, iy) = (x + (w - 16.0) / 2.0, y + (h - 16.0) / 2.0);
+            self.draw_item_model(batch, &ItemStack::new(id, 1), ix, iy);
+            if !small && !b.lit {
+                batch.fill(atlas, ix, iy, 16.0, 16.0, 0x60000000);
+            }
+        } else {
+            draw_button_label(batch, atlas, [x, y, w, h], &b.label);
+        }
+        draw_button_selection(batch, atlas, [x, y, w, h], frame, b.lit);
+    }
+    #[cfg(feature = "mods")]
+    fn mod_touch_event(
+        &mut self,
+        touch: &Touch,
+        at: (f32, f32),
+        layout: &Layout,
+        playing: bool,
+    ) -> bool {
+        if self.touch.mod_fingers.contains_key(&touch.id) {
+            if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                let (owner, name) = self.touch.mod_fingers.remove(&touch.id).unwrap();
+                if !self
+                    .touch
+                    .mod_fingers
+                    .values()
+                    .any(|f| f == &(owner, name.clone()))
+                {
+                    self.mods.mods.touch_key(owner, &name, false);
+                }
+            }
+            return true;
+        }
+        if playing && touch.phase == TouchPhase::Started {
+            let hit = self
+                .mods
+                .mods
+                .touch_buttons()
+                .rev()
+                .find(|(_, _, b, _)| {
+                    let [x, y, w, h] = touch_hit_rect(b, layout);
+                    at.0 >= x && at.0 < x + w && at.1 >= y && at.1 < y + h
+                })
+                .map(|(owner, name, _, _)| (owner, name.to_owned()));
+            if let Some((owner, name)) = hit {
+                self.touch.controls.used = true;
+                self.mods.mods.touch_key(owner, &name, true);
+                self.touch.mod_fingers.insert(touch.id, (owner, name));
+                return true;
+            }
+        }
+        false
+    }
+    #[cfg(feature = "mods")]
+    fn release_mod_touches(&mut self) {
+        for (_, (owner, name)) in self.touch.mod_fingers.drain() {
+            self.mods.mods.touch_key(owner, &name, false);
+        }
+    }
+}
+
+#[cfg(feature = "mods")]
+fn touch_rect(b: &horizon_mods::TouchButton, layout: &Layout) -> [f32; 4] {
+    use horizon_mods::RenderCorner as C;
+    let size = b.size.min(layout.width).min(layout.height).max(0.0);
+    // Reserve the small variant's outer ring even while off, so toggling never moves it.
+    let inset = if size < 20.0 {
+        3.0_f32.min(layout.width / 2.0).min(layout.height / 2.0)
+    } else {
+        0.0
+    };
+    let size = size
+        .min((layout.width - 2.0 * inset).max(0.0))
+        .min((layout.height - 2.0 * inset).max(0.0));
+    let x = match b.anchor {
+        C::TopRight | C::BottomRight => layout.width - b.dx - size,
+        _ => b.dx,
+    };
+    let y = match b.anchor {
+        C::BottomLeft | C::BottomRight => layout.height - b.dy - size,
+        _ => b.dy,
+    };
+    [
+        x.clamp(inset, (layout.width - size - inset).max(inset)),
+        y.clamp(inset, (layout.height - size - inset).max(inset)),
+        size,
+        size,
+    ]
+}
+
+#[cfg(feature = "mods")]
+fn touch_hit_rect(b: &horizon_mods::TouchButton, layout: &Layout) -> [f32; 4] {
+    let [x, y, w, h] = touch_rect(b, layout);
+    let (hw, hh) = (w.max(24.0), h.max(24.0));
+    [x - (hw - w) / 2.0, y - (hh - h) / 2.0, hw, hh]
+}
+
+#[cfg(all(test, feature = "mods"))]
+mod mod_button_tests {
+    use super::*;
+    use horizon_mods::{RenderCorner, TouchButton};
+    #[test]
+    fn mod_touch_buttons_anchor_inward_and_stay_fully_on_screen() {
+        let layout = Layout {
+            width: 320.0,
+            height: 180.0,
+            main_hand_left: false,
+        };
+        for (anchor, expected) in [
+            (RenderCorner::TopLeft, [10.0, 20.0, 24.0, 24.0]),
+            (RenderCorner::TopRight, [286.0, 20.0, 24.0, 24.0]),
+            (RenderCorner::BottomLeft, [10.0, 136.0, 24.0, 24.0]),
+            (RenderCorner::BottomRight, [286.0, 136.0, 24.0, 24.0]),
+        ] {
+            let mut b = TouchButton {
+                label: "Mine".into(),
+                icon: None,
+                anchor,
+                dx: 10.0,
+                dy: 20.0,
+                size: 24.0,
+                lit: false,
+            };
+            assert_eq!(touch_rect(&b, &layout), expected);
+            b.dx = 1000.0;
+            b.dy = -1000.0;
+            let [x, y, w, h] = touch_rect(&b, &layout);
+            assert!(x >= 0.0 && y >= 0.0 && x + w <= layout.width && y + h <= layout.height);
+        }
+    }
+    #[test]
+    fn mod_touch_small_ring_stays_on_screen_and_hit_boxes_stay_centered() {
+        let layout = Layout {
+            width: 320.0,
+            height: 180.0,
+            main_hand_left: false,
+        };
+        let mut b = TouchButton {
+            label: "VM".into(),
+            icon: Some("minecraft:diamond_pickaxe".into()),
+            anchor: RenderCorner::TopLeft,
+            dx: 0.0,
+            dy: 0.0,
+            size: 16.0,
+            lit: true,
+        };
+        assert_eq!(touch_rect(&b, &layout), [3.0, 3.0, 16.0, 16.0]);
+        assert_eq!(touch_hit_rect(&b, &layout), [-1.0, -1.0, 24.0, 24.0]);
+        b.anchor = RenderCorner::BottomRight;
+        for (size, visual, hit) in [
+            (16.0, [301.0, 161.0, 16.0, 16.0], [297.0, 157.0, 24.0, 24.0]),
+            (20.0, [300.0, 160.0, 20.0, 20.0], [298.0, 158.0, 24.0, 24.0]),
+            (28.0, [292.0, 152.0, 28.0, 28.0], [292.0, 152.0, 28.0, 28.0]),
+        ] {
+            b.size = size;
+            assert_eq!(touch_rect(&b, &layout), visual);
+            assert_eq!(touch_hit_rect(&b, &layout), hit);
+            b.lit = false;
+            assert_eq!(touch_rect(&b, &layout), visual);
+            b.lit = true;
+        }
+        b.size = 16.0;
+        b.dx = 1000.0;
+        b.dy = -1000.0;
+        for anchor in [
+            RenderCorner::TopLeft,
+            RenderCorner::TopRight,
+            RenderCorner::BottomLeft,
+            RenderCorner::BottomRight,
+        ] {
+            b.anchor = anchor;
+            let [x, y, w, h] = touch_rect(&b, &layout);
+            assert!(x >= 3.0 && y >= 3.0);
+            assert!(x + w + 3.0 <= layout.width && y + h + 3.0 <= layout.height);
+        }
     }
 }

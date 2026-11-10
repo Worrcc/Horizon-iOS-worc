@@ -46,6 +46,8 @@ pub enum Event {
     Brand(String),
     /// The server runs mods' quiet commands (`horizon_protocol::quiet`).
     QuietCommands,
+    /// API 20: the server accepts quiet server-mod commands on the new channel.
+    ModQuietCommands,
     /// The server carries mod messages (`horizon_protocol::mod_net`).
     ModNet,
     /// The server samples far terrain for this client (`lod_net`).
@@ -1177,6 +1179,8 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
         let _ = send.send(Event::Brand(brand));
     } else if payload.channel == horizon_protocol::quiet::CHANNEL {
         let _ = send.send(Event::QuietCommands);
+    } else if payload.channel == horizon_protocol::quiet::MOD_CHANNEL {
+        let _ = send.send(Event::ModQuietCommands);
     } else if payload.channel == horizon_protocol::mod_net::CHANNEL {
         let _ = send.send(Event::ModNet);
     } else if payload.channel == crate::lod_net::CHANNEL
@@ -2159,6 +2163,29 @@ mod tests {
         receive_brand(&payload, &send);
         assert!(events.try_recv().is_err());
     }
+    #[test]
+    fn vanilla_and_server_mod_quiet_capabilities_are_negotiated_separately() {
+        let (send, events) = channel();
+        receive_brand(
+            &cfg::CustomPayload {
+                channel: horizon_protocol::quiet::CHANNEL.into(),
+                data: Vec::new(),
+            },
+            &send,
+        );
+        assert!(matches!(events.try_recv(), Ok(Event::QuietCommands)));
+        assert!(events.try_recv().is_err());
+        receive_brand(
+            &cfg::CustomPayload {
+                channel: horizon_protocol::quiet::MOD_CHANNEL.into(),
+                data: Vec::new(),
+            },
+            &send,
+        );
+        assert!(matches!(events.try_recv(), Ok(Event::ModQuietCommands)));
+        assert!(events.try_recv().is_err());
+    }
+
     /// No account never joins; the signed-in rule is compared with the real
     /// client login listener by test_lan_auth_parity.py.
     #[test]

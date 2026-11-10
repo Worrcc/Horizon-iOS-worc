@@ -133,6 +133,18 @@ impl ScriptClientWorld {
     }
 }
 impl crate::ClientWorldView for ScriptClientWorld {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<String> {
+        if self.dimension.as_deref()? != "minecraft:overworld" {
+            return None;
+        }
+        self.revisions.get(&(x >> 4, z >> 4))?;
+        Some(
+            self.blocks
+                .get(&(x, y, z))
+                .cloned()
+                .unwrap_or_else(|| "minecraft:air".into()),
+        )
+    }
     fn dimension(&self) -> Option<ClientDimension> {
         let id = self.dimension.clone()?;
         let (min_y, height, ceiling) = match id.as_str() {
@@ -394,6 +406,7 @@ impl TestGame {
         self.mods
             .lend_inventories(Box::new(self.inventories.clone()));
         self.mods.set_snapshot(Snapshot {
+            tick: self.tick,
             player: self.player.clone(),
             clock: self.clock,
             players: self.players.clone(),

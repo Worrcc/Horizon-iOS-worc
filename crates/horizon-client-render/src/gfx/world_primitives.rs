@@ -17,6 +17,8 @@ pub struct Batch<'a> {
     pub quads_through: &'a [Vertex],
     pub lines: &'a [[f32; 8]],
     pub lines_through: &'a [[f32; 8]],
+    /// Only the fragments hidden by the world (reversed depth: less).
+    pub lines_hidden: &'a [[f32; 8]],
 }
 
 impl Batch<'_> {
@@ -25,6 +27,7 @@ impl Batch<'_> {
             && self.quads_through.is_empty()
             && self.lines.is_empty()
             && self.lines_through.is_empty()
+            && self.lines_hidden.is_empty()
     }
 }
 
@@ -37,9 +40,9 @@ struct Globals {
 
 /// The pipelines and buffers that draw a [`Batch`].
 pub struct WorldPrimitives {
-    /// Depth tested, then seen through walls.
+    /// Depth tested, seen through walls, then (lines only) hidden fragments.
     quad_pipelines: [wgpu::RenderPipeline; 2],
-    line_pipelines: [wgpu::RenderPipeline; 2],
+    line_pipelines: [wgpu::RenderPipeline; 3],
     layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -48,8 +51,8 @@ pub struct WorldPrimitives {
     indices: wgpu::Buffer,
     index_quads: u32,
     group: Option<wgpu::BindGroup>,
-    /// Quads depth tested, quads through walls, lines depth tested, lines through walls.
-    counts: [u32; 4],
+    /// Quads depth tested/through walls; lines depth tested/through walls/hidden.
+    counts: [u32; 5],
 }
 
 /// Writes bytes into a buffer as part of the frame (the renderer's staging uploads, or the
@@ -117,7 +120,7 @@ impl WorldPrimitives {
                         entry: [&str; 2],
                         buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
                         topology,
-                        through: bool| {
+                        compare: wgpu::CompareFunction| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -138,11 +141,7 @@ impl WorldPrimitives {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: Some(false),
-                    depth_compare: Some(if through {
-                        wgpu::CompareFunction::Always
-                    } else {
-                        wgpu::CompareFunction::GreaterEqual
-                    }),
+                    depth_compare: Some(compare),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -166,23 +165,42 @@ impl WorldPrimitives {
         let list = wgpu::PrimitiveTopology::TriangleList;
         let strip = wgpu::PrimitiveTopology::TriangleStrip;
         let quad_pipelines = [
-            pipeline("World primitives", quads, &quad_buffers, list, false),
+            pipeline(
+                "World primitives",
+                quads,
+                &quad_buffers,
+                list,
+                wgpu::CompareFunction::GreaterEqual,
+            ),
             pipeline(
                 "World primitives through walls",
                 quads,
                 &quad_buffers,
                 list,
-                true,
+                wgpu::CompareFunction::Always,
             ),
         ];
         let line_pipelines = [
-            pipeline("World primitive lines", lines, &line_buffers, strip, false),
+            pipeline(
+                "World primitive lines",
+                lines,
+                &line_buffers,
+                strip,
+                wgpu::CompareFunction::GreaterEqual,
+            ),
             pipeline(
                 "World primitive lines through walls",
                 lines,
                 &line_buffers,
                 strip,
-                true,
+                wgpu::CompareFunction::Always,
+            ),
+            pipeline(
+                "World primitive hidden lines",
+                lines,
+                &line_buffers,
+                strip,
+                wgpu::CompareFunction::Less,
             ),
         ];
         let buffer = |label, size, usage| {
@@ -211,7 +229,7 @@ impl WorldPrimitives {
             indices: buffer("World primitive indices", 0, wgpu::BufferUsages::INDEX),
             index_quads: 0,
             group: None,
-            counts: [0; 4],
+            counts: [0; 5],
         }
     }
 
@@ -228,8 +246,8 @@ impl WorldPrimitives {
         atlas: &wgpu::TextureView,
     ) -> bool {
         let quads = [batch.quads, batch.quads_through].map(|q| (q.len() / 4) as u32);
-        let lines = [batch.lines, batch.lines_through].map(|l| l.len() as u32);
-        self.counts = [quads[0], quads[1], lines[0], lines[1]];
+        let lines = [batch.lines, batch.lines_through, batch.lines_hidden].map(|l| l.len() as u32);
+        self.counts = [quads[0], quads[1], lines[0], lines[1], lines[2]];
         if batch.is_empty() {
             return false;
         }
@@ -263,11 +281,12 @@ impl WorldPrimitives {
                 upload(&self.indices, bytes);
             }
         }
-        if lines[0] + lines[1] > 0 {
+        if lines.iter().sum::<u32>() > 0 {
             let all: Vec<[f32; 8]> = batch
                 .lines
                 .iter()
                 .chain(batch.lines_through)
+                .chain(batch.lines_hidden)
                 .copied()
                 .collect();
             let bytes: &[u8] = bytemuck::cast_slice(&all);
@@ -306,11 +325,15 @@ impl WorldPrimitives {
         let Some(group) = &self.group else {
             return;
         };
-        let [quads, quads_through, lines, lines_through] = self.counts;
+        let [quads, quads_through, lines, lines_through, lines_hidden] = self.counts;
         pass.set_bind_group(0, group, &[]);
         for (through, (quad_range, line_range)) in [
             (0..quads, 0..lines),
             (quads..quads + quads_through, lines..lines + lines_through),
+            (
+                0..0,
+                lines + lines_through..lines + lines_through + lines_hidden,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -466,6 +489,10 @@ mod tests {
             quads_through: &quads_through,
             lines: &lines,
             lines_through: &lines_through,
+            lines_hidden: &[
+                line(view_proj, [half, full], 24.0, 10.0, MAGENTA_ARGB),
+                line(view_proj, [half, full], 28.0, 2.0, MAGENTA_ARGB),
+            ],
         };
 
         let mut primitives = WorldPrimitives::new(&device, format);
@@ -556,6 +583,16 @@ mod tests {
             at(48, 56),
             [255, 0, 255, 255],
             "a line through walls shows behind it"
+        );
+        assert_eq!(
+            at(48, 24),
+            [255, 0, 255, 255],
+            "hidden-only line appears behind the wall"
+        );
+        assert_eq!(
+            at(48, 28),
+            [0, 255, 0, 255],
+            "hidden-only line is absent in front of the wall"
         );
         // The line is its width (4 pixels) thick, not more.
         assert_eq!(at(48, 52), black);

@@ -28,6 +28,7 @@ pub(super) enum ModEvent {
         pos: [i32; 3],
         state: String,
         placed: bool,
+        exclude: Option<String>,
     },
 }
 
@@ -37,6 +38,14 @@ impl Game<'_> {
     pub(super) fn mod_block_event(&mut self, _pos: [i32; 3], _state: BlockStateId, _placed: bool) {}
     pub(super) fn mod_player_chat(&mut self, _who: Who, _text: &str) {}
     pub(super) fn local_server_mod_command(&mut self, _line: &str) -> bool {
+        false
+    }
+    pub(super) fn guest_server_mod_command_quiet(
+        &mut self,
+        _host: &mut LanHost,
+        _conn: u32,
+        _line: &str,
+    ) -> bool {
         false
     }
     pub(super) fn guest_server_mod_command(
@@ -280,7 +289,7 @@ pub(super) mod run {
     }
 
     /// `minecraft:oak_log[axis=y]`.
-    fn state_string(registry: &BlockRegistry, state: BlockStateId) -> String {
+    pub(in crate::game) fn state_string(registry: &BlockRegistry, state: BlockStateId) -> String {
         let Some(s) = registry.state(state) else {
             return "minecraft:air".into();
         };
@@ -466,6 +475,7 @@ pub(super) mod run {
                         pos,
                         state,
                         placed,
+                        exclude,
                     } => {
                         let Some(p) = who(&w) else { continue };
                         let pos = BlockPos {
@@ -476,7 +486,9 @@ pub(super) mod run {
                         if placed {
                             self.mods.mods.block_placed(&p, pos, &state);
                         } else {
-                            self.mods.mods.block_broken(&p, pos, &state);
+                            self.mods
+                                .mods
+                                .block_broken_except(&p, pos, &state, exclude.as_deref());
                         }
                     }
                 }
@@ -1216,11 +1228,11 @@ pub(super) mod run {
         pub(in crate::game) fn apply_mod_block_writes(&mut self) {
             self.apply_mod_block_changes();
             self.apply_mod_loot_tables();
-            self.apply_mod_world_operations();
+            self.apply_mod_world_operations(None);
         }
 
         /// Apply containers and templates only once their dimension is in place.
-        fn apply_mod_world_operations(&mut self) {
+        fn apply_mod_world_operations(&mut self, mut host: Option<&mut LanHost>) {
             if self.mods.world_operations.is_empty() {
                 return;
             }
@@ -1232,12 +1244,29 @@ pub(super) mod run {
                     | Output::PlaceStructure { dimension, .. }
                     | Output::SetSpawner { dimension, .. }
                     | Output::PlaySound { dimension, .. }
-                    | Output::SpawnItem { dimension, .. } => dimension == dim,
+                    | Output::SpawnItem { dimension, .. }
+                    | Output::BreakBlocksAs { dimension, .. } => dimension == dim,
                     _ => false,
                 });
             self.mods.world_operations = later;
             for op in now {
                 let result = match op {
+                    Output::BreakBlocksAs {
+                        mod_id,
+                        player,
+                        blocks,
+                        options,
+                        ..
+                    } => {
+                        self.apply_mod_breaks(
+                            host.as_deref_mut(),
+                            &mod_id,
+                            &player,
+                            blocks,
+                            options,
+                        );
+                        Ok(())
+                    }
                     Output::SpawnItem {
                         at, item, count, ..
                     } => {
@@ -1270,7 +1299,7 @@ pub(super) mod run {
                     log::warn!("Horizon: server mod world operation: {error}");
                 }
             }
-            if let Some(host) = self.lan.as_mut() {
+            if let Some(host) = host.or(self.lan.as_mut()) {
                 host.hub.sync_containers(&self.world);
             }
         }
@@ -1382,6 +1411,7 @@ pub(super) mod run {
                 pos,
                 state,
                 placed,
+                exclude: self.mods.break_caller.clone(),
             });
         }
 
@@ -1395,6 +1425,15 @@ pub(super) mod run {
         /// `/line` typed by the window's own player in-frame: true when a
         /// server mod owns it.
         pub(in crate::game) fn local_server_mod_command(&mut self, line: &str) -> bool {
+            self.local_server_mod_command_mode(line, false)
+        }
+        pub(in crate::game) fn local_server_mod_command_quiet(&mut self, line: &str) -> bool {
+            self.local_server_mod_command_mode(line, true)
+        }
+        fn local_server_mod_command_mode(&mut self, line: &str, quiet: bool) -> bool {
+            if quiet && !self.mod_quiet_registered(line) {
+                return false;
+            }
             if !self.hears_players() {
                 return false;
             }
@@ -1406,7 +1445,11 @@ pub(super) mod run {
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             self.lend_mod_inventories(None);
-            let owned = self.mods.mods.server_command(&me, line);
+            let owned = if quiet {
+                self.mods.mods.server_command_quiet(&me, line)
+            } else {
+                self.mods.mods.server_command(&me, line)
+            };
             self.return_world();
             self.return_mod_inventories(None);
             self.show_mod_output();
@@ -1423,6 +1466,31 @@ pub(super) mod run {
             conn: u32,
             line: &str,
         ) -> bool {
+            self.guest_server_mod_command_mode(host, conn, line, false)
+        }
+        pub(in crate::game) fn guest_server_mod_command_quiet(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            line: &str,
+        ) -> bool {
+            self.guest_server_mod_command_mode(host, conn, line, true)
+        }
+        fn mod_quiet_registered(&self, line: &str) -> bool {
+            let name = line.split(' ').next().unwrap_or_default();
+            !super::super::mods::vanilla_command(name)
+                && self.mods.mods.server_commands().any(|c| c.name == name)
+        }
+        fn guest_server_mod_command_mode(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            line: &str,
+            quiet: bool,
+        ) -> bool {
+            if quiet && !self.mod_quiet_registered(line) {
+                return false;
+            }
             if !self.hears_players() {
                 return false;
             }
@@ -1430,6 +1498,13 @@ pub(super) mod run {
                 return false;
             };
             let id = uuid_string(g.uuid);
+            if quiet {
+                let mut canceled = false;
+                self.native_player_command(g.uuid, &g.name, line, &mut canceled, &mut Vec::new());
+                if canceled {
+                    return false;
+                }
+            }
             let players = self.server_players(Some(host));
             let Some(me) = players.iter().find(|p| p.id == id).cloned() else {
                 return false;
@@ -1438,14 +1513,20 @@ pub(super) mod run {
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world();
             self.lend_mod_inventories(Some(host));
-            let owned = self.mods.mods.server_command(&me, line);
+            let owned = if quiet {
+                self.mods.mods.server_command_quiet(&me, line)
+            } else {
+                self.mods.mods.server_command(&me, line)
+            };
             self.return_world();
             self.return_mod_inventories(Some(host));
             if !owned {
                 return false;
             }
             self.route_mod_output(Some(host));
-            self.apply_mod_block_writes();
+            self.apply_mod_block_changes();
+            self.apply_mod_loot_tables();
+            self.apply_mod_world_operations(Some(host));
             host.hub.sync_containers(&self.world);
             // Orders wait for the level's next tick: an area's hurt reaches the players through
             // the hub, which is out of `self.lan` until this returns.
@@ -1587,7 +1668,8 @@ pub(super) mod run {
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
-                operation @ (Output::SetContainer { .. }
+                operation @ (Output::BreakBlocksAs { .. }
+                | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
                 | Output::SetSpawner { .. }
                 | Output::PlaySound { .. }

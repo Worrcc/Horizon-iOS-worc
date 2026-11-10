@@ -104,6 +104,8 @@ impl Mod for Guest {
             "ui_settings",
             "ui_close",
             "render_hud",
+            "world_lines",
+            "touch_button",
             "render_clear",
             "render_shake",
             "input_claim",
@@ -116,6 +118,8 @@ impl Mod for Guest {
             "raycast",
             "quiet",
             "quiet_many",
+            "quiet_mod",
+            "quiet_mod_many",
             "recipes",
             "recipe_facts",
             "browser",
@@ -138,6 +142,42 @@ impl Mod for Guest {
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {
+            "world_lines" => {
+                let count = args.parse::<usize>().unwrap_or(0);
+                render::set_world_lines(
+                    &vec![
+                        render::WorldLine {
+                            x1: 1.0,
+                            y1: 2.0,
+                            z1: 3.0,
+                            x2: 4.0,
+                            y2: 5.0,
+                            z2: 6.0
+                        };
+                        count
+                    ],
+                    0xFF112233,
+                    0x80112233,
+                );
+            }
+            "touch_button" => {
+                input::register_key("mine", "Mine", "key.keyboard.r")?;
+                input::set_touch_button(
+                    "mine",
+                    (args != "off")
+                        .then(|| input::TouchButton {
+                            label: "Mine!".into(),
+                            icon: Some("minecraft:diamond_pickaxe".into()),
+                            anchor: render::Corner::TopLeft,
+                            dx: 4.0,
+                            dy: 5.0,
+                            size: 24.0,
+                            lit: true,
+                        })
+                        .as_ref(),
+                )?;
+                chat::show(&format!("touch {}", input::touch_active()));
+            }
             "ui_screen" => ui::open_screen(&Screen {
                 title: "Guest's screen".into(),
                 widgets: widgets(),
@@ -257,6 +297,13 @@ impl Mod for Guest {
                     reduced: words.get(1) == Some(&"1"),
                 });
                 render::set_far_terrain(far);
+            }
+            "quiet_mod" => {
+                command::run_mod_quiet(&args.split(';').map(str::to_owned).collect::<Vec<_>>())
+            }
+            "quiet_mod_many" => {
+                let n: usize = args.parse().unwrap_or(0);
+                command::run_mod_quiet(&(0..n).map(|i| format!("beacon {i}")).collect::<Vec<_>>());
             }
             "quiet" => command::run_quiet(&args.split(';').map(str::to_owned).collect::<Vec<_>>()),
             "quiet_many" => {

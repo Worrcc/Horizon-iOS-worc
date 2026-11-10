@@ -69,7 +69,8 @@ pub use server_bindings::{
         Point as PlayerPoint,
     },
     horizon::mods::world::{
-        BlockChange, ChunkPos, ItemStack as ContainerItemStack, Point as WorldPoint, WorldTime,
+        BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
+        Point as WorldPoint, WorldTime,
     },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
@@ -127,12 +128,14 @@ mod render_bindings {
 }
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
-pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+pub use render_bindings::horizon::mods::input::{
+    Event as InputEvent, HeldItem, ItemUse, TouchButton,
+};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
     Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    TextShape, WorldLine, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -245,6 +248,10 @@ pub struct EntityResources {
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
+    /// Simulation tick, including on servers without a window player.
+    pub tick: u64,
+    /// Whether the game is showing its touch controls.
+    pub touch_active: bool,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -347,6 +354,14 @@ impl Runs {
 /// What mods asked the game to show since the last [`Mods::drain`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
+    /// API 20: checked now, applied on the live game after the hooks.
+    BreakBlocksAs {
+        mod_id: String,
+        player: String,
+        dimension: String,
+        blocks: Vec<BlockChangePos>,
+        options: BreakOptions,
+    },
     /// `chat.show`: a line after the mod's name.
     Chat {
         name: String,
@@ -365,6 +380,11 @@ pub enum Output {
     /// `command.run-quiet`: vanilla command lines to run as the player with
     /// nothing in the chat (`horizon_protocol::quiet` on a server).
     QuietCommands {
+        mod_id: String,
+        lines: Vec<String>,
+    },
+    /// API 20: server-mod command lines, with no command feedback or vanilla fallback.
+    ModQuietCommands {
         mod_id: String,
         lines: Vec<String>,
     },
@@ -813,6 +833,7 @@ struct State {
     ui: UiState,
     /// Capability `render`'s HUD shapes, drawn until replaced.
     shapes: Vec<Shape>,
+    world_lines: ModWorldLines,
     /// Capability `render`'s corner panel.
     corner: Option<CornerPanel>,
     /// Capability `render`'s zoom, when the mod zooms.
@@ -833,6 +854,8 @@ struct State {
     storage_budget: u64,
     /// Tick of the last item spawn, and successful requests in that tick.
     item_spawn_budget: (Option<u64>, u32),
+    break_budget: (Option<u64>, usize),
+    mod_command_budget: (Option<u64>, usize),
     limits: StoreLimits,
     world: WorldSlot,
     inventories: InventoriesSlot,
@@ -863,6 +886,40 @@ pub struct Mods {
 }
 
 impl Mods {
+    /// Lines disappear with their owning runtime, or when the player leaves.
+    pub fn world_lines(&self) -> impl Iterator<Item = &ModWorldLines> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref().map(|r| &r.store.data().world_lines))
+    }
+    pub fn clear_world_lines(&mut self) {
+        for r in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            r.store.data_mut().world_lines = ModWorldLines::default();
+        }
+    }
+    /// Buttons in draw order; the last one wins an overlap.
+    pub fn touch_buttons(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (usize, &str, &TouchButton, bool)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.run.as_ref().map(|r| (i, &r.store.data().input)))
+            .flat_map(|(i, input)| {
+                input
+                    .touch_buttons
+                    .iter()
+                    .map(move |(name, b)| (i, name.as_str(), b, input.touch_down.contains(name)))
+            })
+    }
+    pub fn touch_key(&mut self, owner: usize, name: &str, pressed: bool) {
+        if let Some(r) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            let input = &mut r.store.data_mut().input;
+            if !pressed || input.touch_buttons.iter().any(|(n, _)| n == name) {
+                input.touch_key(name, pressed);
+            }
+        }
+    }
     /// Changes whenever the running mods (so their commands) change.
     pub fn generation(&self) -> u64 {
         self.generation
@@ -1152,6 +1209,7 @@ impl Mods {
             panel: None,
             ui: UiState::default(),
             shapes: Vec::new(),
+            world_lines: ModWorldLines::default(),
             corner: None,
             zoom: None,
             minimap: None,
@@ -1162,6 +1220,8 @@ impl Mods {
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
             item_spawn_budget: (None, 0),
+            break_budget: (None, 0),
+            mod_command_budget: (None, 0),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -1472,11 +1532,32 @@ impl Mods {
     }
     /// `player` broke `state` at `pos`.
     pub fn block_broken(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
-        self.each_server(
-            FUEL_EVENT,
-            |h| h.blocks,
-            |m, s| m.call_block_broken(s, player, pos, state),
-        );
+        self.block_broken_except(player, pos, state, None);
+    }
+    /// A queued break reaches everyone except its originating mod.
+    pub fn block_broken_except(
+        &mut self,
+        player: &ServerPlayer,
+        pos: BlockPos,
+        state: &str,
+        exclude: Option<&str>,
+    ) {
+        for i in 0..self.entries.len() {
+            if self.entries[i].run.as_ref().is_some_and(|r| {
+                r.hooks.server().is_some_and(|h| h.blocks)
+                    && exclude != Some(r.store.data().id.as_str())
+            }) {
+                self.call(i, FUEL_EVENT, |run| match &run.hooks {
+                    Hooks::Server(m, _) => m.horizon_mods_server_events().call_block_broken(
+                        &mut run.store,
+                        player,
+                        pos,
+                        state,
+                    ),
+                    _ => Ok(()),
+                });
+            }
+        }
     }
     /// `player` placed `state` at `pos`.
     pub fn block_placed(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
@@ -1537,6 +1618,19 @@ impl Mods {
             Some(Ok(None)) | None => {}
         }
         true
+    }
+    /// A typed server-mod command, discarding only its feedback/errors, including parse errors.
+    /// Explicit world/player operations from the hook still run; earlier outputs are retained.
+    pub fn server_command_quiet(&mut self, player: &ServerPlayer, line: &str) -> bool {
+        let before = self.out.len();
+        let owned = self.server_command(player, line);
+        let added = self.out.split_off(before);
+        self.out.extend(
+            added
+                .into_iter()
+                .filter(|o| !matches!(o, Output::Reply { .. } | Output::Feedback { .. })),
+        );
+        owned
     }
     /// The running mods' HUD panels.
     pub fn panels(&self) -> impl Iterator<Item = &Panel> {
@@ -1760,6 +1854,16 @@ impl Mods {
                 .map(|k| k.name.clone())
                 .collect();
             for name in names {
+                if down {
+                    if !input.physical_down.contains(&name) {
+                        input.physical_down.push(name.clone());
+                    }
+                } else {
+                    input.physical_down.retain(|n| n != &name);
+                    if input.touch_down.contains(&name) {
+                        continue;
+                    }
+                }
                 let held = input.down.iter().position(|n| *n == name);
                 match (down, held) {
                     (true, None) => input.down.push(name.clone()),
@@ -1783,6 +1887,8 @@ impl Mods {
     pub fn release_keys(&mut self) {
         for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
             let input = &mut run.store.data_mut().input;
+            input.touch_down.clear();
+            input.physical_down.clear();
             for name in std::mem::take(&mut input.down) {
                 input.push(InputEvent::KeyUp(name));
             }
@@ -2347,6 +2453,51 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn break_blocks_as(
+        &mut self,
+        player: String,
+        blocks: Vec<BlockChangePos>,
+        options: BreakOptions,
+    ) -> Result<(), String> {
+        let p = self
+            .snapshot
+            .players
+            .iter()
+            .find(|p| p.id == player)
+            .ok_or_else(|| format!("no online player {player}"))?;
+        if blocks.len() > 2048 {
+            return Err("at most 2048 blocks per call".into());
+        }
+        if !options.exhaustion.is_finite()
+            || !(0.0..=1.0).contains(&options.exhaustion)
+            || options
+                .drops_at
+                .as_ref()
+                .is_some_and(|p| ![p.x, p.y, p.z].iter().all(|v| v.is_finite()))
+        {
+            return Err("invalid break options".into());
+        }
+        let tick = Some(self.snapshot.tick);
+        let used = if self.break_budget.0 == tick {
+            self.break_budget.1
+        } else {
+            0
+        };
+        if used + blocks.len() > 4096 {
+            return Err("at most 4096 blocks per mod per tick".into());
+        }
+        self.break_budget = (tick, used + blocks.len());
+        if !blocks.is_empty() {
+            self.out.push(Output::BreakBlocksAs {
+                mod_id: self.id.clone(),
+                player,
+                dimension: p.dimension.clone(),
+                blocks,
+                options,
+            });
+        }
+        Ok(())
+    }
     fn spawn_item(
         &mut self,
         dimension: String,
@@ -3226,6 +3377,9 @@ struct InputState {
     /// The keys the player chose, `name → key`: they win over
     /// `register-key`'s.
     bindings: Vec<(String, String)>,
+    touch_buttons: Vec<(String, TouchButton)>,
+    touch_down: Vec<String>,
+    physical_down: Vec<String>,
 }
 /// Events kept for `poll`, items claimed and keys, per mod.
 const INPUT_EVENTS: usize = 256;
@@ -3246,12 +3400,36 @@ fn key_ok(key: &str) -> bool {
 }
 
 impl InputState {
+    fn touch_key(&mut self, name: &str, pressed: bool) {
+        let was = self.touch_down.iter().any(|n| n == name);
+        if was == pressed {
+            return;
+        }
+        if pressed {
+            self.touch_down.push(name.to_owned());
+            if !self.down.iter().any(|n| n == name) {
+                self.down.push(name.to_owned());
+                self.push(InputEvent::KeyDown(name.to_owned()));
+            }
+        } else {
+            self.touch_down.retain(|n| n != name);
+            if self.physical_down.iter().any(|n| n == name) {
+                return;
+            }
+            if let Some(i) = self.down.iter().position(|n| n == name) {
+                let name = self.down.remove(i);
+                self.push(InputEvent::KeyUp(name));
+            }
+        }
+    }
     /// Key `name` is `key` now; held, it lets go first.
     fn rebind(&mut self, name: &str, key: String) {
         let Some(k) = self.keys.iter_mut().find(|k| k.name == name) else {
             return;
         };
         k.key = key;
+        self.touch_down.retain(|n| n != name);
+        self.physical_down.retain(|n| n != name);
         if let Some(i) = self.down.iter().position(|n| n == name) {
             let name = self.down.swap_remove(i);
             self.push(InputEvent::KeyUp(name));
@@ -3266,6 +3444,48 @@ impl InputState {
 }
 
 impl input::Host for State {
+    fn touch_active(&mut self) -> bool {
+        self.snapshot.touch_active
+    }
+    fn set_touch_button(
+        &mut self,
+        name: String,
+        button: Option<TouchButton>,
+    ) -> Result<(), String> {
+        if !self.input.keys.iter().any(|k| k.name == name) {
+            return Err(format!("no registered key {name}"));
+        }
+        if let Some(mut button) = button {
+            if ![button.dx, button.dy, button.size]
+                .iter()
+                .all(|v| v.is_finite())
+            {
+                return Err("non-finite touch button".into());
+            }
+            if button.icon.as_deref().is_some_and(|id| !resource_id(id)) {
+                return Err("touch button icon must be a namespaced item id".into());
+            }
+            button.label = button.label.chars().take(4).collect();
+            button.size = button.size.clamp(16.0, 64.0);
+            if let Some((_, old)) = self
+                .input
+                .touch_buttons
+                .iter_mut()
+                .find(|(n, _)| *n == name)
+            {
+                *old = button;
+            } else {
+                if self.input.touch_buttons.len() == 4 {
+                    return Err("at most four touch buttons per mod".into());
+                }
+                self.input.touch_buttons.push((name, button));
+            }
+        } else {
+            self.input.touch_buttons.retain(|(n, _)| *n != name);
+            self.input.touch_key(&name, false);
+        }
+        Ok(())
+    }
     fn claim_items(&mut self, ids: Vec<String>) {
         self.input.claimed = ids.into_iter().take(CLAIMS).map(clip).collect();
     }
@@ -3363,7 +3583,29 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+/// Persistent API 20 lines owned by one running mod.
+#[derive(Default)]
+pub struct ModWorldLines {
+    pub lines: Vec<WorldLine>,
+    pub color: u32,
+    pub hidden_color: u32,
+}
 impl render::Host for State {
+    fn set_world_lines(&mut self, lines: Vec<WorldLine>, color: u32, hidden_color: u32) {
+        self.world_lines = ModWorldLines {
+            lines: lines
+                .into_iter()
+                .take(4096)
+                .filter(|l| {
+                    [l.x1, l.y1, l.z1, l.x2, l.y2, l.z2]
+                        .iter()
+                        .all(|v| v.is_finite())
+                })
+                .collect(),
+            color,
+            hidden_color,
+        };
+    }
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
     }
@@ -3444,6 +3686,26 @@ impl render::Host for State {
 }
 
 impl command::Host for State {
+    fn run_mod_quiet(&mut self, lines: Vec<String>) {
+        let tick = Some(self.snapshot.tick);
+        let used = if self.mod_command_budget.0 == tick {
+            self.mod_command_budget.1
+        } else {
+            0
+        };
+        let lines: Vec<_> = lines
+            .into_iter()
+            .take(16.min(64usize.saturating_sub(used)))
+            .map(clip)
+            .collect();
+        self.mod_command_budget = (tick, used + lines.len());
+        if !lines.is_empty() {
+            self.out.push(Output::ModQuietCommands {
+                mod_id: self.id.clone(),
+                lines,
+            });
+        }
+    }
     fn run(&mut self, line: String) {
         let queued = self
             .out
@@ -3577,6 +3839,7 @@ mod entity_tests {
             panel: None,
             ui: UiState::default(),
             shapes: Vec::new(),
+            world_lines: ModWorldLines::default(),
             corner: None,
             zoom: None,
             minimap: None,
@@ -3587,6 +3850,8 @@ mod entity_tests {
             data_dir: PathBuf::new(),
             storage_budget: STORAGE_WRITE_BUDGET,
             item_spawn_budget: (None, 0),
+            break_budget: (None, 0),
+            mod_command_budget: (None, 0),
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
             inventories: InventoriesSlot::default(),
@@ -3647,6 +3912,296 @@ mod entity_tests {
     }
 
     #[test]
+    fn mod_quiet_commands_limit_each_call_and_share_a_tick_budget_across_hooks() {
+        let mut s = state();
+        let lines = vec!["beacon 4".to_owned(); 100];
+        for _ in 0..4 {
+            command::Host::run_mod_quiet(&mut s, lines.clone());
+            let out = std::mem::take(&mut s.out); // the host drains between hooks
+            assert!(
+                matches!(&out[..],[Output::ModQuietCommands {mod_id,lines}] if mod_id == "mob_orders" && lines.len()==16)
+            );
+        }
+        command::Host::run_mod_quiet(&mut s, lines.clone());
+        assert!(s.out.is_empty());
+        command::Host::run_quiet(&mut s, lines.clone());
+        assert!(matches!(&s.out[..],[Output::QuietCommands {lines,..}] if lines.len()==100));
+        s.out.clear();
+        Arc::make_mut(&mut s.snapshot).tick += 1;
+        command::Host::run_mod_quiet(&mut s, vec!["🌲".repeat(300)]);
+        assert!(
+            matches!(&s.out[..],[Output::ModQuietCommands {lines,..}] if lines[0].chars().count()==256)
+        );
+        let mut other = state();
+        command::Host::run_mod_quiet(&mut other, lines);
+        assert!(!other.out.is_empty());
+    }
+
+    #[test]
+    fn pre_level_20_components_still_link() {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        for (world_name, wanted) in [
+            ("render-host", &["input", "render"][..]),
+            ("world-read-host", &["client-world"][..]),
+            ("horizon-mod", &["command"][..]),
+            ("horizon-server-mod", &["world"][..]),
+        ] {
+            let mut resolve = Resolve::default();
+            let package = resolve
+                .push_str(
+                    "horizon.wit",
+                    include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+                )
+                .unwrap();
+            for (_, interface) in resolve.interfaces.iter_mut() {
+                let prefix = interface.name.clone().unwrap_or_default();
+                interface.functions.retain(|name, _| {
+                    crate::api_level::level_of(&format!("{prefix}.{name}")).is_none_or(|l| l < 20)
+                });
+            }
+            let world = resolve.select_world(&[package], Some(world_name)).unwrap();
+            resolve.worlds[world].exports.clear();
+            let interfaces = &resolve.interfaces;
+            resolve.worlds[world].imports.retain(|_,item| matches!(item,wit_parser::WorldItem::Interface { id,.. } if interfaces[*id].name.as_deref().is_some_and(|n| wanted.contains(&n))));
+            let mut module =
+                wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+            wit_component::embed_component_metadata(
+                &mut module,
+                &resolve,
+                world,
+                wit_component::StringEncoding::UTF8,
+            )
+            .unwrap();
+            let wasm = wit_component::ComponentEncoder::default()
+                .module(&module)
+                .unwrap()
+                .encode()
+                .unwrap();
+            assert!(
+                crate::api_level::needed(
+                    crate::api_level::imports(&wasm)
+                        .unwrap()
+                        .iter()
+                        .map(String::as_str)
+                )
+                .0 <= 19
+            );
+            let mut mods = Mods::default();
+            let (engine, linker) = mods.engine().unwrap();
+            let component = Component::new(engine, wasm).unwrap();
+            let mut store = Store::new(engine, state());
+            store.set_fuel(FUEL_INIT).unwrap();
+            linker.instantiate(&mut store, &component).unwrap();
+        }
+    }
+
+    #[test]
+    fn api20_lines_bound_replace_filter_and_clear() {
+        let mut s = state();
+        let line = WorldLine {
+            x1: 1.0,
+            y1: 2.0,
+            z1: 3.0,
+            x2: 4.0,
+            y2: 5.0,
+            z2: 6.0,
+        };
+        render::Host::set_world_lines(&mut s, vec![line; 4097], 0xFF112233, 0x80112233);
+        assert_eq!(s.world_lines.lines.len(), 4096);
+        assert_eq!(
+            (s.world_lines.color, s.world_lines.hidden_color),
+            (0xFF112233, 0x80112233)
+        );
+        render::Host::set_world_lines(
+            &mut s,
+            vec![WorldLine {
+                x1: f64::NAN,
+                ..line
+            }],
+            0,
+            0,
+        );
+        assert!(s.world_lines.lines.is_empty());
+        render::Host::set_world_lines(&mut s, vec![line], 1, 2);
+        render::Host::set_world_lines(&mut s, vec![], 3, 4);
+        assert!(s.world_lines.lines.is_empty());
+    }
+
+    #[test]
+    fn api20_touch_buttons_validate_replace_remove_and_deliver_keys() {
+        let mut s = state();
+        let button = TouchButton {
+            label: "🌲éabc".into(),
+            icon: Some("minecraft:diamond_pickaxe".into()),
+            anchor: RenderCorner::BottomRight,
+            dx: 1.0,
+            dy: 2.0,
+            size: 100.0,
+            lit: true,
+        };
+        assert!(
+            input::Host::set_touch_button(&mut s, "mine".into(), Some(button.clone())).is_err()
+        );
+        for n in 0..5 {
+            let name = format!("key{n}");
+            input::Host::register_key(&mut s, name.clone(), name.clone(), "key.keyboard.r".into())
+                .unwrap();
+            assert_eq!(
+                input::Host::set_touch_button(&mut s, name, Some(button.clone())).is_ok(),
+                n < 4
+            );
+        }
+        assert_eq!(s.input.touch_buttons[0].1.label, "🌲éab");
+        assert_eq!(s.input.touch_buttons[0].1.size, 64.0);
+        assert_eq!(
+            s.input.touch_buttons[0].1.icon.as_deref(),
+            Some("minecraft:diamond_pickaxe")
+        );
+        for id in [
+            "diamond_pickaxe",
+            "Minecraft:stone",
+            "minecraft:../stone",
+            "minecraft:",
+            "",
+        ] {
+            assert!(
+                input::Host::set_touch_button(
+                    &mut s,
+                    "key0".into(),
+                    Some(TouchButton {
+                        icon: Some(id.into()),
+                        ..button.clone()
+                    })
+                )
+                .is_err()
+            );
+            assert_eq!(
+                s.input.touch_buttons[0].1.icon.as_deref(),
+                Some("minecraft:diamond_pickaxe")
+            );
+        }
+        // Unknown but well-formed ids reach the client, which falls back to the label.
+        input::Host::set_touch_button(
+            &mut s,
+            "key0".into(),
+            Some(TouchButton {
+                icon: Some("unknown:item".into()),
+                ..button.clone()
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            s.input.touch_buttons[0].1.icon.as_deref(),
+            Some("unknown:item")
+        );
+        input::Host::set_touch_button(
+            &mut s,
+            "key0".into(),
+            Some(TouchButton {
+                size: 1.0,
+                icon: None,
+                ..button.clone()
+            }),
+        )
+        .unwrap();
+        assert_eq!(s.input.touch_buttons[0].1.size, 16.0);
+        assert!(s.input.touch_buttons[0].1.icon.is_none());
+        assert!(
+            input::Host::set_touch_button(
+                &mut s,
+                "key0".into(),
+                Some(TouchButton {
+                    dx: f32::NAN,
+                    ..button
+                })
+            )
+            .is_err()
+        );
+        s.input.touch_key("key0", true);
+        s.input.touch_key("key0", true);
+        input::Host::set_touch_button(&mut s, "key0".into(), None).unwrap();
+        assert!(
+            matches!(input::Host::poll(&mut s).as_slice(),[InputEvent::KeyDown(n),InputEvent::KeyUp(up)] if n == "key0" && up == n)
+        );
+        assert!(!input::Host::touch_active(&mut s));
+        s.snapshot = Arc::new(Snapshot {
+            touch_active: true,
+            ..Default::default()
+        });
+        assert!(input::Host::touch_active(&mut s));
+    }
+
+    #[test]
+    fn api20_break_requests_validate_atomically_and_budget_spans_hooks() {
+        let mut s = state();
+        s.snapshot = Arc::new(Snapshot {
+            players: vec![ServerPlayer {
+                id: "alice".into(),
+                name: "Alex".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            tick: 7,
+            ..Default::default()
+        });
+        let options = BreakOptions {
+            keep_tool: true,
+            drops_at: Some(WorldPoint {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }),
+            exhaustion: 0.25,
+        };
+        let positions = vec![BlockChangePos { x: 1, y: 64, z: 0 }; 2048];
+        assert!(
+            mod_world::Host::break_blocks_as(&mut s, "offline".into(), positions.clone(), options)
+                .is_err()
+        );
+        assert!(
+            mod_world::Host::break_blocks_as(
+                &mut s,
+                "alice".into(),
+                vec![positions[0]; 2049],
+                options
+            )
+            .is_err()
+        );
+        assert!(
+            mod_world::Host::break_blocks_as(
+                &mut s,
+                "alice".into(),
+                positions.clone(),
+                BreakOptions {
+                    exhaustion: f32::NAN,
+                    ..options
+                }
+            )
+            .is_err()
+        );
+        assert!(s.out.is_empty());
+        for _ in 0..2 {
+            mod_world::Host::break_blocks_as(&mut s, "alice".into(), positions.clone(), options)
+                .unwrap();
+        }
+        assert!(
+            mod_world::Host::break_blocks_as(&mut s, "alice".into(), vec![positions[0]], options)
+                .is_err()
+        );
+        assert_eq!(s.out.len(), 2);
+        assert!(
+            matches!(&s.out[0],Output::BreakBlocksAs {mod_id,player,dimension,blocks,options:o} if mod_id == &s.id && player == "alice" && dimension == "minecraft:overworld" && blocks.len()==2048 && o == &options)
+        );
+        Arc::make_mut(&mut s.snapshot).tick += 1;
+        mod_world::Host::break_blocks_as(&mut s, "alice".into(), positions, options).unwrap();
+        assert_eq!(s.out.len(), 3);
+    }
+
+    #[test]
     fn level_17_canvas_components_still_link() {
         use wit_parser::{ManglingAndAbi, Resolve};
         let mut resolve = Resolve::default();
@@ -3657,6 +4212,11 @@ mod entity_tests {
             )
             .unwrap();
         for (_, interface) in resolve.interfaces.iter_mut() {
+            if interface.name.as_deref() == Some("render") {
+                interface
+                    .functions
+                    .retain(|name, _| name != "set-world-lines");
+            }
             if interface.name.as_deref() == Some("canvas") {
                 interface.functions.retain(|name, _| {
                     !matches!(

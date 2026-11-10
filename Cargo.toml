@@ -35,6 +35,7 @@ members = [
     "crates/horizon-mods/tests/guest",
     "crates/horizon-mods/tests/ui_guest",
     "crates/horizon-mods/tests/canvas_guest",
+    "crates/horizon-mods/tests/api20_server_guest",
     "mods/official/recipes",
     "crates/horizon-mods",
     "crates/horizon-mod-api-gen",

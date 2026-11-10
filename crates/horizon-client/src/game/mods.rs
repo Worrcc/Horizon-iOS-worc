@@ -137,6 +137,8 @@ pub(super) struct ModsState {
     /// World operations run after the tick's block writes, in request order.
     #[cfg(feature = "mods")]
     pub(super) world_operations: Vec<horizon_mods::Output>,
+    #[cfg(feature = "mods")]
+    pub(super) break_caller: Option<String>,
     /// Valid item ids and stack sizes for player inventory calls.
     #[cfg(feature = "mods")]
     pub(super) item_limits: Option<std::sync::Arc<std::collections::HashMap<String, u32>>>,
@@ -152,6 +154,8 @@ pub(super) struct ModsState {
     /// run on the next tick as `commands` are.
     #[cfg(feature = "mods")]
     quiet: Vec<(String, Vec<String>)>,
+    #[cfg(feature = "mods")]
+    mod_quiet: Vec<(String, Vec<String>)>,
     /// The server's command tree with the running mods' commands added.
     #[cfg(feature = "mods")]
     remote_tree: Option<Dispatcher>,
@@ -273,7 +277,7 @@ const RELOAD_CHECK: Duration = Duration::from_secs(1);
 
 /// A vanilla command name: mods may not take it.
 #[cfg(feature = "mods")]
-fn vanilla_command(name: &str) -> bool {
+pub(super) fn vanilla_command(name: &str) -> bool {
     let d = vanilla::game_dispatcher();
     d.nodes[0]
         .children
@@ -935,6 +939,8 @@ impl Game<'_> {
         }
         let (recipes, known_recipes) = self.mod_recipes();
         Snapshot {
+            tick: self.ticks,
+            touch_active: self.mod_touch_active(),
             player,
             clock,
             gui_size: self.gui_size(),
@@ -1089,9 +1095,28 @@ impl Game<'_> {
             None => self.mods.quiet.push((mod_id, lines)),
         }
     }
-    /// A quiet batch in this window's own world, as a server runs one
-    /// (game/lan_quiet.rs): each line as the player typing it, no chat, a
-    /// chat message refused; one line in the log.
+    /// Server-mod commands use their own negotiated channel, with no chat fallback.
+    fn mod_server_commands_quiet(&mut self, mod_id: String, lines: Vec<String>) {
+        let lines: Vec<_> = lines
+            .into_iter()
+            .filter(|l| !vanilla_command(l.split(' ').next().unwrap_or_default()))
+            .collect();
+        match self.remote.as_ref().map(|r| r.mod_quiet_commands) {
+            Some(true) => {
+                for data in horizon_protocol::quiet::encode(&mod_id, &lines) {
+                    self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                        horizon_protocol::packets::configuration::CustomPayload {
+                            channel: horizon_protocol::quiet::MOD_CHANNEL.into(),
+                            data,
+                        },
+                    ));
+                }
+            }
+            Some(false) => {} // No chat fallback: older/non-Horizon servers ignore this API.
+            None => self.mods.mod_quiet.push((mod_id, lines)),
+        }
+    }
+    /// A quiet vanilla batch in this window's own world, as a server runs one.
     fn run_quiet_batch(&mut self, mod_id: &str, lines: &[String]) {
         let permission = self.ui.registries.permission;
         let mut failed = 0;
@@ -1114,6 +1139,11 @@ impl Game<'_> {
         }
         for (mod_id, lines) in std::mem::take(&mut self.mods.quiet) {
             self.run_quiet_batch(&mod_id, &lines);
+        }
+        for (_, lines) in std::mem::take(&mut self.mods.mod_quiet) {
+            for line in lines {
+                self.local_server_mod_command_quiet(&line);
+            }
         }
         if !self.mods.mods.is_running() {
             return;
@@ -1223,6 +1253,10 @@ impl Game<'_> {
                     }
                     continue;
                 }
+                Output::ModQuietCommands { mod_id, lines } => {
+                    self.mod_server_commands_quiet(mod_id, lines);
+                    continue;
+                }
                 Output::QuietCommands { mod_id, lines } => {
                     self.mod_quiet_commands(mod_id, lines);
                     continue;
@@ -1242,6 +1276,7 @@ impl Game<'_> {
                 | Output::Broadcast { .. }
                 | Output::Reply { .. }
                 | Output::SetBlocks { .. }
+                | Output::BreakBlocksAs { .. }
                 | Output::SetLootTable { .. }
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }

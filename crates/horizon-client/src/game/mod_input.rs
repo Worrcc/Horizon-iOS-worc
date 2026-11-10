@@ -164,6 +164,9 @@ impl Game<'_> {
     /// Once a frame, before the mods run: a screen that opened lets their
     /// held keys up.
     pub(super) fn mod_input_frame(&mut self) {
+        if self.player.is_none() || self.title.is_some() {
+            self.mods.mods.clear_world_lines();
+        }
         let playing = self.mod_playing();
         if self.mods.playing && !playing {
             self.mods.mods.release_keys();

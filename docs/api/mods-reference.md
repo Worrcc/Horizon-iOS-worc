@@ -211,6 +211,7 @@ Capability `command`: vanilla commands run as the player, with the player's perm
 | --- | --- | --- |
 | `run` | `func(line: string)` | `line` without its slash; its feedback goes to the chat as if typed. |
 | `run-quiet` | `func(lines: list<string>)` | `lines` (each without its slash, at most 256 a call) as `run` does, but with nothing in the chat: no feedback and no failure. In single player and on Horizon's servers, each runs exactly as the player typing it would (the same rights), in order, 64 a tick, and the server logs one line a batch; one that carries a chat message (`say`, `msg`) is refused. On any other server they go as chat commands, and there their feedback shows: a mod running many should say so. |
+| `run-mod-quiet` | `func(lines: list<string>)` | API level 20: server mods' commands as the player typing them, with replies and failures discarded. At most 16 lines a call and 64 a tick per mod, without slashes. Vanilla names and unregistered commands are dropped. Works in single player and on supporting Horizon servers; other servers (including older Horizon) drop them silently. |
 
 ## `ui`
 
@@ -307,63 +308,24 @@ API level 18: pointer action on the mod's canvas screen.
 | `scroll` | `func(x: f32, y: f32, steps: f32)` | Wheel at GUI coordinates; positive steps away from the player. |
 | `screen-key` | `func(key: string, down: bool)` | A key.keyboard.* key pressed or released on the canvas screen. Escape closes the screen instead. Missing exports are ignored. |
 
-## `input`
-
-Access: capability `input`.
-
-Capability `input` (experimental: the manifest needs `experimental = ["input"]`): the use button on items the mod claims, and the mod's own keys. Events wait for `poll`, at most 256.
-
-### record `held-item`
-
-The main hand's stack.
-
-| Field | Type | |
-| --- | --- | --- |
-| `id` | `string` | `minecraft:spyglass`, `<mod>:<path>`. |
-| `count` | `u32` |  |
-| `slot` | `u32` | The hotbar slot, 0 to 8. |
-
-### record `item-use`
-
-| Field | Type | |
-| --- | --- | --- |
-| `item` | `held-item` |  |
-| `ticks` | `u32` | Game ticks the button was held (0 on `use-start`). |
-
-### variant `event`
-
-| Case | Payload | |
-| --- | --- | --- |
-| `use-start` | `item-use` | The use button went down with a claimed item in the main hand. The game does nothing else with the click: no placing, no eating, no swing. |
-| `use-stop` | `item-use` | It came up again, or the item left the hand, or a screen opened. |
-| `key-down` | `string` | A key `register-key` named went down or up while playing (no screen open). The game's own mapping on that key still runs. A screen opening lets every held key up. |
-| `key-up` | `string` |  |
-| `wheel` | `f32` | Mouse wheel steps while the mod holds the wheel (`claim-wheel`): positive away from the player, as the hotbar reads them. |
-
-### record `mapping-state`
-
-A mapping as the player has bound it.
-
-| Field | Type | |
-| --- | --- | --- |
-| `label` | `string` | The bound key's name as Controls shows it: `W`, `Space`, `LMB`. |
-| `down` | `bool` | Held down now (as of this frame for a mod with a `frame` hook, else this tick). |
-
-| Function | Signature | What it does |
-| --- | --- | --- |
-| `claim-items` | `func(ids: list<string>)` | The items whose use the mod handles instead of the game, by id (at most 64). Replaces the previous list. |
-| `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. |
-| `held` | `func() -> option<held-item>` | The main hand's stack, as of this tick; none when it is empty. |
-| `poll` | `func() -> list<event>` | The events since the last call, oldest first. |
-| `claim-wheel` | `func(on: bool)` | Takes the mouse wheel while playing (true) or gives it back: while taken, its steps are the mod's `wheel` events and the hotbar doesn't move. The game gives it back when the mod stops. |
-| `mapping` | `func(name: string) -> option<mapping-state>` | A movement or click mapping as the player has bound it: `key.forward`, `key.left`, `key.back`, `key.right`, `key.jump`, `key.sneak`, `key.sprint`, `key.attack` or `key.use`. None for another name. |
-| `clicks-per-second` | `func() -> tuple<u32, u32>` | Clicks of the attack and use buttons in the last second. |
-
 ## `render`
 
 Access: capability `render`.
 
 Capability `render` (experimental: the manifest needs `experimental = ["render"]`): shapes the game draws for the mod with its own renderer, kept until the mod replaces them (no call per frame). A mod never supplies shader code.
+
+### record `world-line`
+
+A world-space segment, in blocks; whole numbers are block corners.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x1` | `f64` |  |
+| `y1` | `f64` |  |
+| `z1` | `f64` |  |
+| `x2` | `f64` |  |
+| `y2` | `f64` |  |
+| `z2` | `f64` |  |
 
 ### enum `corner`
 
@@ -483,6 +445,7 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `set-world-lines` | `func(lines: list<world-line>, color: u32, hidden-color: u32)` | API level 20: replace up to 4096 segments, at the block outline's width. ARGB color is depth tested; hidden-color draws only occluded parts (alpha zero hides). Hidden with F1; cleared on stop and leaving the world. Empty removes them. |
 | `set-hud` | `func(shapes: list<shape>)` | Replaces the mod's HUD shapes: up to 1024, drawn every frame in order over the HUD (after the hotbar, under chat and screens), hidden with the HUD (F1). An empty list removes them. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
 | `shake` | `func(strength: f32, seconds: f32)` | Shakes the camera: a jolt of `strength` (0 to 1, 1 the hardest) that fades out over `seconds` (at most 10). Jolts add up to 1. The view turns, the player doesn't, and the player's Distortion Effects option scales it (0 turns it off). |
@@ -493,6 +456,78 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 | `set-zoom` | `func(zoom: zoom)` | Zooms the camera until the next call (`factor` 1 ends it), only while playing: a screen opening or the spyglass's own view (which wins) leave the camera vanilla's. With several mods, the strongest zoom counts. |
 | `set-minimap` | `func(minimap: option<minimap>)` | Shows a map of the world around the player in `corner`, stacked with the game's overlays and the mods' panels, until the next call (none hides it). It looks like a map item: vanilla's map colours with their height shading and water depth, and the player's arrow. Underground, under a roof and in the Nether it maps the floor around the player's height. The game keeps the map's tiles and refreshes them within its own frame budget; hidden, they are dropped. One map shows at a time: the first loaded mod's. |
 | `set-far-terrain` | `func(far-terrain: option<far-terrain>)` | Draws the world beyond the render distance as distant terrain, out to `distance` chunks, until the next call (none ends it). The game builds it on its own workers, from the chunks already loaded or saved and, where nobody has been, from the world's generator; the simulation distance doesn't change. Only worlds whose generator the game has (single player and a LAN world you host) show it. The player's own LOD Distance setting, when on, wins. One far terrain shows at a time: the first loaded mod's. |
+
+## `input`
+
+Access: capability `input`.
+
+Capability `input` (experimental: the manifest needs `experimental = ["input"]`): the use button on items the mod claims, and the mod's own keys. Events wait for `poll`, at most 256.
+
+### type `corner`
+
+`type corner = corner`
+
+### record `touch-button`
+
+API level 20: a square button above the game's touch controls.
+
+| Field | Type | |
+| --- | --- | --- |
+| `label` | `string` | Up to four characters; also the fallback for an unknown icon item. |
+| `icon` | `option<string>` | A namespaced item id, drawn at 1x (16x16) instead of the label. Malformed ids are errors; an unknown item falls back to the label. |
+| `anchor` | `corner` |  |
+| `dx` | `f32` | Offset inward from the corner, in GUI pixels. |
+| `dy` | `f32` |  |
+| `size` | `f32` | Side in GUI pixels, clamped to 16..64. |
+| `lit` | `bool` |  |
+
+### record `held-item`
+
+The main hand's stack.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | `minecraft:spyglass`, `<mod>:<path>`. |
+| `count` | `u32` |  |
+| `slot` | `u32` | The hotbar slot, 0 to 8. |
+
+### record `item-use`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `held-item` |  |
+| `ticks` | `u32` | Game ticks the button was held (0 on `use-start`). |
+
+### variant `event`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `use-start` | `item-use` | The use button went down with a claimed item in the main hand. The game does nothing else with the click: no placing, no eating, no swing. |
+| `use-stop` | `item-use` | It came up again, or the item left the hand, or a screen opened. |
+| `key-down` | `string` | A key `register-key` named went down or up while playing (no screen open). The game's own mapping on that key still runs. A screen opening lets every held key up. |
+| `key-up` | `string` |  |
+| `wheel` | `f32` | Mouse wheel steps while the mod holds the wheel (`claim-wheel`): positive away from the player, as the hotbar reads them. |
+
+### record `mapping-state`
+
+A mapping as the player has bound it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `label` | `string` | The bound key's name as Controls shows it: `W`, `Space`, `LMB`. |
+| `down` | `bool` | Held down now (as of this frame for a mod with a `frame` hook, else this tick). |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. |
+| `touch-active` | `func() -> bool` | API level 20: whether the game's touch controls are shown now. |
+| `claim-items` | `func(ids: list<string>)` | The items whose use the mod handles instead of the game, by id (at most 64). Replaces the previous list. |
+| `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. |
+| `held` | `func() -> option<held-item>` | The main hand's stack, as of this tick; none when it is empty. |
+| `poll` | `func() -> list<event>` | The events since the last call, oldest first. |
+| `claim-wheel` | `func(on: bool)` | Takes the mouse wheel while playing (true) or gives it back: while taken, its steps are the mod's `wheel` events and the hotbar doesn't move. The game gives it back when the mod stops. |
+| `mapping` | `func(name: string) -> option<mapping-state>` | A movement or click mapping as the player has bound it: `key.forward`, `key.left`, `key.back`, `key.right`, `key.jump`, `key.sneak`, `key.sprint`, `key.attack` or `key.use`. None for another name. |
+| `clicks-per-second` | `func() -> tuple<u32, u32>` | Clicks of the attack and use buttons in the last second. |
 
 ## `canvas`
 
@@ -661,6 +696,7 @@ A chunk's 256 columns, x fastest: column `z * 16 + x`.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `block-at` | `func(x: s32, y: s32, z: s32) -> option<string>` | API level 20: the client-loaded block state, e.g. minecraft:oak_log[axis=y]. None for unloaded chunks and on the title screen. |
 | `dimension` | `func() -> option<dimension-info>` | The player's dimension; none on the title screen. |
 | `block-table` | `func() -> block-states` | The block table (about 30000 states: read it in `init` or when its version changes, not every frame). Empty lists on a game without block models (a dedicated server). |
 | `table-version` | `func() -> u64` | The block table's `version` now, without reading the table: cheap enough to ask every tick, to know when the packs reloaded. |
@@ -1094,6 +1130,14 @@ Access: capability `world`.
 
 Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the blocks of the server's loaded chunks, and changes to them through the server's own block updates.
 
+### record `block-change-pos`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+
 ### record `point`
 
 A vector or position in blocks, with finite components.
@@ -1103,6 +1147,14 @@ A vector or position in blocks, with finite components.
 | `x` | `f64` |  |
 | `y` | `f64` |  |
 | `z` | `f64` |  |
+
+### record `break-options`
+
+| Field | Type | |
+| --- | --- | --- |
+| `keep-tool` | `bool` | Stop before a break that could use the tool's last durability point. |
+| `drops-at` | `option<point>` | Landing position for all drops and experience; none means each block. |
+| `exhaustion` | `f32` | Food exhaustion per block, 0..1. |
 
 ### record `block-change`
 
@@ -1144,6 +1196,7 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `break-blocks-as` | `func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>` | API level 20: queue real player breaks, applied after hooks with the live game. Unknown/offline players or over 2048 positions/call or 4096/mod/tick error atomically. At apply time skip air, liquids, unloaded blocks, positions beyond 80 blocks, and unbreakable blocks in survival. Stop if the player leaves or keep-tool triggers. Uses the normal player path (protection, border, loot, XP, wear, stats and updates). Creative gives no drops/wear; the caller's block-broken hook is excluded. |
 | `spawn-item` | `func(dimension: string, at: point, item: string, count: u32) -> result<_, string>` | Drop a plain stack in this dimension, count 1..max stack size. At most 16 successful requests per tick per mod, across all hook calls. |
 | `block-has-tag` | `func(block: string, tag: string) -> bool` | Whether a block id or state belongs to a loaded block tag (without #). Unknown blocks and tags return false. |
 | `play-sound` | `func(dimension: string, at: point, name: string, volume: f32, pitch: f32) -> result<_, string>` | A registered vanilla or loaded content sound in this dimension. |

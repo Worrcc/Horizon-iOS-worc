@@ -294,6 +294,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("{}: {text}", if error { "error" } else { "feedback" })
             }
             Output::Command { line } => format!("command: /{line}"),
+            Output::ModQuietCommands { lines, .. } => {
+                format!("{} quiet server-mod command(s)", lines.len())
+            }
             Output::QuietCommands { lines, .. } => {
                 format!("{} quiet command(s)", lines.len())
             }
@@ -302,6 +305,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 dimension, blocks, ..
             } => {
                 format!("set {} block(s) in {dimension}", blocks.len())
+            }
+            Output::BreakBlocksAs { player, blocks, .. } => {
+                format!("broke {} block(s) as {player}", blocks.len())
             }
             Output::SetLootTable { table, pos, .. } => {
                 format!(

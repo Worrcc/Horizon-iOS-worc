@@ -304,6 +304,14 @@ impl LentClientWorld {
 
 #[cfg(feature = "mods")]
 impl ClientWorldView for LentClientWorld {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<String> {
+        self.dimension.as_ref()?;
+        let chunk = self.chunks.get(&(x >> 4, z >> 4))?;
+        Some(super::server_mods::run::state_string(
+            self.context.assets.registry,
+            chunk.block(x & 15, y, z & 15),
+        ))
+    }
     fn dimension(&self) -> Option<ClientDimension> {
         self.dimension.clone()
     }

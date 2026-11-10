@@ -136,7 +136,9 @@ fn scaling(sprite: &str, r: &Rect) -> NineSlice {
         border: match sprite {
             "gui/sprites/widget/button"
             | "gui/sprites/widget/button_highlighted"
-            | "gui/sprites/widget/button_disabled" => [3; 4],
+            | "gui/sprites/widget/button_disabled"
+            | "gui/sprites/gamemode_switcher/slot"
+            | "gui/sprites/gamemode_switcher/selection" => [3; 4],
             "gui/sprites/widget/slider_handle" | "gui/sprites/widget/slider_handle_highlighted" => {
                 [2, 2, 2, 3]
             }
@@ -2041,6 +2043,36 @@ mod tests {
         assert_quad(q[2], ([140.0, 5.0, 160.0, 25.0], [0.9, 0.0, 1.0, 1.0]));
         assert_eq!(q.len(), 3);
     }
+    #[test]
+    fn gamemode_slot_frames_keep_three_pixel_bevels_when_resized() {
+        for name in [
+            "gui/sprites/gamemode_switcher/slot",
+            "gui/sprites/gamemode_switcher/selection",
+        ] {
+            let r = sprite(26, 26);
+            let mut batch = HudBatch::new([640, 480]);
+            draw_nine_slice(
+                &mut batch,
+                r,
+                scaling(name, &r),
+                [4.0, 5.0, 20.0, 20.0],
+                u32::MAX,
+            );
+            let q = quads(&batch);
+            assert_quad(
+                q[0],
+                ([4.0, 5.0, 7.0, 8.0], [0.0, 0.0, 3.0 / 26.0, 3.0 / 26.0]),
+            );
+            assert_quad(
+                q[5],
+                (
+                    [21.0, 22.0, 24.0, 25.0],
+                    [23.0 / 26.0, 23.0 / 26.0, 1.0, 1.0],
+                ),
+            );
+        }
+    }
+
     #[test]
     fn nine_slice_corners_and_a_stretched_centre() {
         // Faithful 32x's tooltip/frame: 200x200 texels, 100x100, border 12, stretched.

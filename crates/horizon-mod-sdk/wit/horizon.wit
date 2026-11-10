@@ -142,6 +142,11 @@ interface command {
     /// `msg`) is refused. On any other server they go as chat commands, and
     /// there their feedback shows: a mod running many should say so.
     run-quiet: func(lines: list<string>);
+    /// API level 20: server mods' commands as the player typing them, with replies and
+    /// failures discarded. At most 16 lines a call and 64 a tick per mod, without slashes.
+    /// Vanilla names and unregistered commands are dropped. Works in single player and on
+    /// supporting Horizon servers; other servers (including older Horizon) drop them silently.
+    run-mod-quiet: func(lines: list<string>);
 }
 
 /// Capability `ui`: widgets the game draws with its own menus' widgets, for
@@ -246,6 +251,29 @@ interface ui-events {
 /// `experimental = ["input"]`): the use button on items the mod claims, and
 /// the mod's own keys. Events wait for `poll`, at most 256.
 interface input {
+    use render.{corner};
+    /// API level 20: a square button above the game's touch controls.
+    record touch-button {
+        /// Up to four characters; also the fallback for an unknown icon item.
+        label: string,
+        /// A namespaced item id, drawn at 1x (16x16) instead of the label.
+        /// Malformed ids are errors; an unknown item falls back to the label.
+        icon: option<string>,
+        anchor: corner,
+        /// Offset inward from the corner, in GUI pixels.
+        dx: f32,
+        dy: f32,
+        /// Side in GUI pixels, clamped to 16..64.
+        size: f32,
+        lit: bool,
+    }
+    /// API level 20: set/remove a button for a registered key (at most four per mod).
+    /// A finger sends key-down/key-up and consumes the touch. Clamped fully on screen,
+    /// including the small button's outer selection ring. Hit area at least 24x24, centred.
+    /// Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame.
+    set-touch-button: func(name: string, button: option<touch-button>) -> result<_, string>;
+    /// API level 20: whether the game's touch controls are shown now.
+    touch-active: func() -> bool;
     /// The main hand's stack.
     record held-item {
         /// `minecraft:spyglass`, `<mod>:<path>`.
@@ -313,6 +341,12 @@ interface input {
 /// own renderer, kept until the mod replaces them (no call per frame). A mod
 /// never supplies shader code.
 interface render {
+    /// A world-space segment, in blocks; whole numbers are block corners.
+    record world-line { x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64 }
+    /// API level 20: replace up to 4096 segments, at the block outline's width.
+    /// ARGB color is depth tested; hidden-color draws only occluded parts (alpha zero hides).
+    /// Hidden with F1; cleared on stop and leaving the world. Empty removes them.
+    set-world-lines: func(lines: list<world-line>, color: u32, hidden-color: u32);
     /// A corner of the screen, as `hud`'s panels use them.
     enum corner {
         top-left,
@@ -551,6 +585,9 @@ interface canvas {
 /// read in whole chunks for minimaps; and the block table and textures of
 /// the loaded resource packs.
 interface client-world {
+    /// API level 20: the client-loaded block state, e.g. minecraft:oak_log[axis=y].
+    /// None for unloaded chunks and on the title screen.
+    block-at: func(x: s32, y: s32, z: s32) -> option<string>;
     /// The player's dimension.
     record dimension-info {
         /// `minecraft:overworld`, ...
@@ -1074,6 +1111,22 @@ interface players {
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    record block-change-pos { x: s32, y: s32, z: s32 }
+    record break-options {
+        /// Stop before a break that could use the tool's last durability point.
+        keep-tool: bool,
+        /// Landing position for all drops and experience; none means each block.
+        drops-at: option<point>,
+        /// Food exhaustion per block, 0..1.
+        exhaustion: f32,
+    }
+    /// API level 20: queue real player breaks, applied after hooks with the live game.
+    /// Unknown/offline players or over 2048 positions/call or 4096/mod/tick error atomically.
+    /// At apply time skip air, liquids, unloaded blocks, positions beyond 80 blocks,
+    /// and unbreakable blocks in survival. Stop if the player leaves or keep-tool triggers.
+    /// Uses the normal player path (protection, border, loot, XP, wear, stats and updates).
+    /// Creative gives no drops/wear; the caller's block-broken hook is excluded.
+    break-blocks-as: func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>;
     /// A vector or position in blocks, with finite components.
     record point { x: f64, y: f64, z: f64 }
     /// Drop a plain stack in this dimension, count 1..max stack size.

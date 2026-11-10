@@ -192,7 +192,7 @@ impl Game<'_> {
         horizon_client::widgets::end_frame(self.frames);
         self.narrate_screen();
         self.poll_repro(event_loop);
-        self.advance_agent();
+        self.advance_agent(event_loop);
         for request in self.ui_wait.ready() {
             self.answer(request, event_loop);
         }
@@ -1596,6 +1596,7 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "f6" => KeyCode::F6,
         "f11" => KeyCode::F11,
         "slash" | "/" => KeyCode::Slash,
+        "grave" | "`" => KeyCode::Backquote,
         "backspace" => KeyCode::Backspace,
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,

@@ -1961,6 +1961,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-mods-test-api20-server-guest"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "horizon-mods-test-canvas-guest"
 version = "0.1.0"
 dependencies = [

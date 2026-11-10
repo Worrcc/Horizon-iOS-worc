@@ -106,7 +106,7 @@ fn keep(stored: &Stored) {
 fn label() -> String {
     STATE.with_borrow(|s| match &s.name {
         Some(name) => name.clone(),
-        None => "Sign in".into(),
+        None => horizon_client::lang::get_or("horizon.touch.sign_in", "Sign in"),
     })
 }
 

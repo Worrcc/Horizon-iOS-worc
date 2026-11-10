@@ -14,6 +14,11 @@ use crate::{
 
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "horizon:quiet_commands";
+/// API 20: separately negotiated server-mod commands. Uses the same batch codec;
+/// older clients/servers ignore the unknown channel and the existing channel stays unchanged.
+pub const MOD_CHANNEL: &str = "horizon:mod_quiet_commands";
+pub const MOD_MAX_LINES: usize = 16;
+pub const MOD_PER_TICK: usize = 64;
 /// Lines in one payload at most; a payload with more is refused whole.
 pub const MAX_LINES: usize = 256;
 /// Characters in a line at most (a chat command's limit).

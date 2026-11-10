@@ -16,7 +16,7 @@ use horizon_client::world_primitives::{
 #[derive(Default)]
 pub(super) struct PrimitiveGeometry {
     quads: [Vec<Vertex>; 2],
-    lines: [Vec<[f32; 8]>; 2],
+    lines: [Vec<[f32; 8]>; 3],
 }
 
 impl PrimitiveGeometry {
@@ -26,6 +26,7 @@ impl PrimitiveGeometry {
             quads_through: &self.quads[1],
             lines: &self.lines[0],
             lines_through: &self.lines[1],
+            lines_hidden: &self.lines[2],
         }
     }
 }
@@ -42,17 +43,32 @@ impl Game<'_> {
         let mut primitives = WorldPrimitives::default();
         self.native_world_primitives(alpha as f32, camera.to_array(), &mut primitives);
         let mut out = PrimitiveGeometry::default();
-        if primitives.is_empty() {
-            return out;
-        }
+
         let atlas = &self.gui.atlas;
         let white = horizon_client::gfx::lightning::white_uv(&atlas.font.white());
         let beam_sprite = atlas.sprites.get("entity/beacon/beacon_beam").copied();
         // BeaconRenderer's animation time: game time mod 40 plus the partial tick.
         let time = self.world.game_time.rem_euclid(40) as f32 + alpha as f32;
         let relative = |p: [f64; 3]| (glam::DVec3::from_array(p) - camera).as_vec3();
-        let mut lines: [Vec<Line>; 2] = Default::default();
+        let mut lines: [Vec<Line>; 3] = Default::default();
         let mut texts = Vec::new();
+        #[cfg(feature = "mods")]
+        if !self.ui.hide_gui {
+            for batch in self.mods.mods.world_lines() {
+                for segment in &batch.lines {
+                    for (pass, color) in [(0, batch.color), (2, batch.hidden_color)] {
+                        if color >> 24 != 0 {
+                            lines[pass].push(Line {
+                                start: [segment.x1, segment.y1, segment.z1],
+                                end: [segment.x2, segment.y2, segment.z2],
+                                color,
+                                width: 2.0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         for primitive in primitives.iter() {
             let through = usize::from(primitive.through_walls);
             let quads = &mut out.quads[through];

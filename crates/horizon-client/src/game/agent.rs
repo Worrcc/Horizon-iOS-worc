@@ -29,7 +29,9 @@ use std::{
 };
 use winit::{
     dpi::PhysicalPosition,
-    event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
+    event::{
+        DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
+    },
     keyboard::KeyCode,
 };
 
@@ -60,6 +62,7 @@ pub(super) const HELP: &[&str] = &[
     "open-inventory                 open the inventory screen",
     "click-button LABEL             click a button of the open screen or menu by its label",
     "click-at X Y [right]           click at GUI pixel X Y of the window",
+    "touch down|move|up|tap X Y [--id N]  touchscreen input at GUI pixel X Y (default finger 0)",
     "drag-at [right] X Y X Y...     press at the first GUI point, move through the others, release",
     "scroll-at X Y STEPS            turn the wheel at GUI pixel X Y (positive scrolls up)",
     "command TEXT                   run a /command",
@@ -86,7 +89,9 @@ pub(super) struct Args<'a> {
     pub flags: HashMap<&'a str, Option<&'a str>>,
 }
 /// Options that take a value (`--timeout 10` or `--timeout=10`).
-const VALUE_FLAGS: &[&str] = &["timeout", "near", "item", "radius", "hold", "face", "over"];
+const VALUE_FLAGS: &[&str] = &[
+    "timeout", "near", "item", "radius", "hold", "face", "over", "id",
+];
 
 pub(super) fn parse_args<'a>(words: &[&'a str]) -> Args<'a> {
     let mut args = Args::default();
@@ -210,6 +215,39 @@ fn delta(before: &BTreeMap<String, i64>, after: &BTreeMap<String, i64>) -> BTree
     out
 }
 
+/// A real window touch from control coordinates, in the same GUI pixels as `click-at`.
+fn control_touch(a: &Args<'_>, scale: f32) -> Result<(Touch, bool)> {
+    if a.pos.len() != 3 || a.flags.keys().any(|flag| *flag != "id") {
+        return Err("touch down|move|up|tap X Y [--id N]".into());
+    }
+    let (phase, tap) = match a.get(0, "action")? {
+        "down" => (TouchPhase::Started, false),
+        "move" => (TouchPhase::Moved, false),
+        "up" => (TouchPhase::Ended, false),
+        "tap" => (TouchPhase::Started, true),
+        _ => return Err("touch action must be down, move, up or tap".into()),
+    };
+    let (x, y) = (a.f64(1, "X")? as f32, a.f64(2, "Y")? as f32);
+    if !x.is_finite() || !y.is_finite() {
+        return Err("touch coordinates must be finite".into());
+    }
+    let id = match a.flags.get("id") {
+        Some(Some(id)) => id.parse::<u64>()?,
+        Some(None) => return Err("--id needs a nonnegative integer".into()),
+        None => 0,
+    };
+    Ok((
+        Touch {
+            device_id: DeviceId::dummy(),
+            phase,
+            location: PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale)),
+            force: None,
+            id,
+        },
+        tap,
+    ))
+}
+
 enum TaskKind {
     /// Hold keys until a deadline.
     Move {
@@ -219,6 +257,10 @@ enum TaskKind {
     },
     Wait {
         until_tick: u64,
+    },
+    TouchTap {
+        end: Touch,
+        release_frame: u64,
     },
     Jump {
         release_tick: u64,
@@ -245,7 +287,7 @@ impl TaskKind {
     /// Whether the keys and buttons are released when the task ends. A wait
     /// holds nothing, so what `key w down` pressed stays down through it.
     fn releases_input(&self) -> bool {
-        !matches!(self, TaskKind::Wait { .. })
+        !matches!(self, TaskKind::Wait { .. } | TaskKind::TouchTap { .. })
     }
 }
 struct Goto {
@@ -1023,7 +1065,9 @@ impl Game<'_> {
                 | "attack"
                 | "wait"
         );
-        if blocking && let Some(task) = &self.agent.task {
+        if (blocking || (name == "touch" && a.pos.first() == Some(&"tap")))
+            && let Some(task) = &self.agent.task
+        {
             return Err(format!("busy with {}; wait for it or send stop", task.name).into());
         }
         match name {
@@ -1563,6 +1607,39 @@ impl Game<'_> {
                 }
                 ok(json!({ "ok": true, "screen": self.screen_label() }))
             }
+            "touch" => {
+                if !super::touch::enabled() {
+                    return Err(
+                        "touch controls are disabled (set HORIZON_TOUCH=1 for desktop testing)"
+                            .into(),
+                    );
+                }
+                let scale = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| {
+                        horizon_client::hud::HudBatch::new([r.config.width, r.config.height]).scale
+                    })
+                    .ok_or("no renderer yet")?;
+                let (touch, tap) = control_touch(&a, scale)?;
+                self.touch_event(event_loop, touch);
+                if tap {
+                    self.start_task(
+                        "touch",
+                        TaskKind::TouchTap {
+                            end: Touch {
+                                phase: TouchPhase::Ended,
+                                ..touch
+                            },
+                            release_frame: self.frames.saturating_add(3),
+                        },
+                        reply,
+                        5.0,
+                    )
+                } else {
+                    ok(json!({ "ok": true, "id": touch.id, "screen": self.screen_label() }))
+                }
+            }
             "click-at" => {
                 let (x, y) = (a.f64(0, "X")? as f32, a.f64(1, "Y")? as f32);
                 let button = if a.pos.get(2) == Some(&"right") {
@@ -1727,6 +1804,15 @@ impl Game<'_> {
             }
             "stop" => {
                 let cancelled = self.agent.task.take().map(|t| {
+                    if let TaskKind::TouchTap { end, .. } = t.kind {
+                        self.touch_event(
+                            event_loop,
+                            Touch {
+                                phase: TouchPhase::Cancelled,
+                                ..end
+                            },
+                        );
+                    }
                     let _ = t.reply.send(
                         json!({ "error": "cancelled by stop", "cancelled": true }).to_string(),
                     );
@@ -1861,13 +1947,13 @@ impl Game<'_> {
     }
 
     /// Advance the running agent task; reply when it ends.
-    pub(super) fn advance_agent(&mut self) {
+    pub(super) fn advance_agent(&mut self, event_loop: &dyn EventLoopCtl) {
         self.advance_glide();
         let Some(mut task) = self.agent.task.take() else {
             return;
         };
         let timed_out = Instant::now() >= task.deadline;
-        let result = self.step_task(&mut task.kind, timed_out);
+        let result = self.step_task(&mut task.kind, timed_out, event_loop);
         match result {
             Some(value) => {
                 if task.kind.releases_input() {
@@ -1886,7 +1972,12 @@ impl Game<'_> {
     }
 
     /// One frame of a task: Some(reply) when it is over.
-    fn step_task(&mut self, kind: &mut TaskKind, timed_out: bool) -> Option<Value> {
+    fn step_task(
+        &mut self,
+        kind: &mut TaskKind,
+        timed_out: bool,
+        event_loop: &dyn EventLoopCtl,
+    ) -> Option<Value> {
         // Leaving the world (death, a screen, the title) ends movement tasks.
         let interrupted = if self.title.is_some() || self.player.is_none() {
             Some("the world closed")
@@ -1911,6 +2002,13 @@ impl Game<'_> {
                     json!({ "ok": true, "from": [from.x, from.y, from.z], "position": to,
                              "moved": dist([from.x, from.y, from.z], to) }),
                 )
+            }
+            TaskKind::TouchTap { end, release_frame } => {
+                if self.frames < *release_frame && !timed_out {
+                    return None;
+                }
+                self.touch_event(event_loop, *end);
+                Some(json!({ "ok": true, "id": end.id, "screen": self.screen_label() }))
             }
             TaskKind::Wait { until_tick } => {
                 if self.ticks >= *until_tick {
@@ -2200,13 +2298,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_wait_keeps_held_input() {
+    fn passive_tasks_keep_other_held_input() {
         assert!(!TaskKind::Wait { until_tick: 40 }.releases_input());
         let jump = TaskKind::Jump {
             release_tick: 4,
             from_y: 64.0,
         };
         assert!(jump.releases_input());
+        let (end, _) = control_touch(&parse_args(&["up", "20", "30"]), 1.0).unwrap();
+        assert!(
+            !TaskKind::TouchTap {
+                end,
+                release_frame: 3
+            }
+            .releases_input()
+        );
+    }
+
+    #[test]
+    fn control_touches_preserve_phase_finger_and_gui_coordinates() {
+        for (action, phase, tap) in [
+            ("down", TouchPhase::Started, false),
+            ("move", TouchPhase::Moved, false),
+            ("up", TouchPhase::Ended, false),
+            ("tap", TouchPhase::Started, true),
+        ] {
+            let (touch, is_tap) =
+                control_touch(&parse_args(&[action, "12.5", "-4", "--id", "7"]), 2.0).unwrap();
+            assert_eq!((touch.id, touch.phase, is_tap), (7, phase, tap));
+            assert_eq!((touch.location.x, touch.location.y), (25.0, -8.0));
+        }
+        assert_eq!(
+            control_touch(&parse_args(&["down", "1", "2"]), 1.0)
+                .unwrap()
+                .0
+                .id,
+            0
+        );
+        assert_eq!(
+            control_touch(
+                &parse_args(&["up", "1", "2", "--id=18446744073709551615"]),
+                1.0
+            )
+            .unwrap()
+            .0
+            .id,
+            u64::MAX
+        );
+        for words in [
+            vec!["cancel", "1", "2"],
+            vec!["down", "NaN", "2"],
+            vec!["down", "1", "inf"],
+            vec!["down", "1"],
+            vec!["down", "1", "2", "--id"],
+            vec!["down", "1", "2", "--id", "-1"],
+            vec!["down", "1", "2", "--id", "1.5"],
+            vec!["down", "1", "2", "--other"],
+        ] {
+            assert!(
+                control_touch(&parse_args(&words), 1.0).is_err(),
+                "{words:?}"
+            );
+        }
     }
 
     #[test]

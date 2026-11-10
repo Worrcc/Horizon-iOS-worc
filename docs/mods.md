@@ -75,7 +75,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call) |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
-| `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
+| `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows). API level 20: `run-mod-quiet(lines)` runs registered server-mod commands quietly (16 a call, 64 a tick per mod); vanilla and unknown names are dropped |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box (Ctrl+F, or Cmd+F on macOS, focuses it while the panel is shown), and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. `browser-ext` (level 19) adds a paged bookmark panel left of the window, hidden while the recipe book is open, and `keep-empty` to keep the browser and search box visible with no results; `set-item-lines` adds grey tooltip lines to items in either panel; `browser-ext.set-recipes` mixes standard recipes with custom boxes of placed slots, text and GUI sprites. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
 | `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 1024, 1024 × 1024 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 1 MiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default); `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. The game measures how fast the mod burns fuel on this device (Pulley on iOS is slower) and sets each call's budget from it. **Experimental:** `experimental = ["render"]` |
@@ -1104,6 +1104,55 @@ Events run after a step's command, before assertions. `expect.canvas` can check
 beside its existing corner, size, shape/image and round-image counts.
 `expect.canvas-screen` checks `open`, `title`, shape count and `texts` (the text
 shapes in drawing order).
+
+**API level 20: client blocks, world lines, touch buttons and queued player breaks.**
+All additions are new functions; mods built for API levels 19 and earlier keep linking unchanged.
+
+- Capability `world-read`: `client-world.block-at(x, y, z) -> option<string>` reads the
+  client's block state in the player's dimension, including properties (`minecraft:oak_log[axis=y]`).
+  Unloaded chunks and the title screen return `none`.
+- Capability `render`: `render.set-world-lines(lines, color, hidden-color)` replaces up to 4096
+  world-space segments `{x1, y1, z1, x2, y2, z2}` in block units, at the crosshair block outline's
+  width. ARGB `color` draws visible parts; `hidden-color` draws occluded parts (alpha zero omits
+  them). F1 hides them. An empty list, stopping the mod or leaving the world clears them.
+- Capability `input`: `input.set-touch-button(name, button) -> result<_, string>` adds or updates
+  a button for a key already registered with `register-key`; `none` removes it. At most four per
+  mod, drawn above the game's touch controls, clamped inside the screen including selection rings.
+  `button` has a four-character `label`, optional `icon` (a namespaced item id), a render `corner`
+  as `anchor`, inward GUI-pixel offsets `dx`/`dy`, square `size` (clamped to 16..64) and `lit` toggle
+  highlight. Malformed icon ids reject the update; unknown items fall back to the label.
+  Mod buttons use the game-mode switcher's slot artwork at 70% opacity, a centred 16x16 item icon
+  at 1x (or a white shadowed label), a white pressed inset, and a gold selection frame when lit.
+  At size 20 and up, off-state icons are dimmed. Below 20, a dark plate replaces the slot, icons
+  stay undimmed and the lit frame sits 3 pixels outside the box, kept on screen. Hit areas are at
+  least 24x24 GUI pixels, centred on the button. The game's built-in and menu touch buttons share the slot frame.
+  Press and lift send
+  that mod key's `key-down`/`key-up`, consuming the finger without camera motion or block actions.
+  `input.touch-active()` reports whether the game's touch controls are shown while playing.
+  Desktop testing can force them with `HORIZON_TOUCH=1`.
+- Server capability `world`: `world.break-blocks-as(player, blocks, options) -> result<_, string>`
+  validates an online player and queues plain `{x, y, z}` positions, in order, for application after
+  the hooks return and before the dimension's next tick. Limits are 2048 positions per call and
+  4096 per mod per tick; a rejected call queues nothing. The live player break path handles spawn
+  protection, the world border, tool requirements, loot enchantments, XP, wear, statistics,
+  container contents, neighbours and multiplayer updates. At application time it skips air,
+  liquids, unloaded chunks, blocks over 80 blocks away and negative-hardness blocks in survival;
+  an offline player cancels the remaining work. `options.keep-tool` stops the batch before a
+  break that could spend the main-hand tool's last durability point; `drops-at` optionally moves
+  every item and XP drop to that point; `exhaustion` adds 0..1 per successful survival break.
+  Creative breaks produce no drops or wear. Other mods hear `block-broken`; the originating mod
+  does not receive its own queued breaks. No count is returned.
+
+**API level 20: quiet server-mod commands.** Capability `command` adds
+`command.run-mod-quiet(lines)` (`command::run_mod_quiet` in the Rust SDK): lines without
+slashes, at most 16 per call and 64 per tick per mod. They reach a registered server mod's
+`command` hook with the same player, arguments and rights as a typed command. Replies and
+parse/command errors are discarded; the hook's world and player operations still apply.
+Vanilla names and unregistered commands are silently dropped. It works in the window's own
+world, through the integrated-server connection, and as a guest of a supporting Horizon
+LAN/friends host or dedicated server. A separate channel is advertised during configuration;
+older Horizon and other servers receive no fallback chat command. Existing `command.run` and
+`run-quiet` keep their vanilla-only behavior.
 
 ## Horizon's official mods
 

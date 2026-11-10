@@ -89,6 +89,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `options-get [KEY...]` | `options_get` | The game's options (options.txt) by key, with their type and range or choices | `keys` (text): option keys (default: all) |
 | `options-set KEY VALUE` | `options_set` | Set one option, apply it at once and save options.txt, as the options screen does | `key` (string, required): option key from options-get<br>`value` (text, required): the new value |
 | `click-button LABEL` | `click_button` | Click a button of the open screen or title menu by its label | `label` (text, required): button label |
+| `touch down\|move\|up\|tap X Y [--id N]` | `touch` | Send a touchscreen event at GUI pixel X Y (requires touch controls) | `action` (down, move, up, tap, required): touch phase<br>`x` (number, required): GUI x<br>`y` (number, required): GUI y<br>`--id` (integer): nonnegative finger id (default 0) |
 | `click-at X Y [right]` | `click_at` | Click at GUI pixel X Y of the window (screen gives button rectangles) | `x` (number, required): GUI x<br>`y` (number, required): GUI y<br>`right` (boolean): right-click |
 | `drag-at [right] X Y X Y...` | `drag_at` | Press at the first GUI point, move through the others, release at the last | `points` (text, required): right, then GUI x y pairs |
 | `scroll-at X Y STEPS` | `scroll_at` | Turn the mouse wheel at GUI pixel X Y (positive scrolls up) | `x` (number, required): GUI x<br>`y` (number, required): GUI y<br>`steps` (number, required): wheel steps |

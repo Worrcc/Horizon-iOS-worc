@@ -47,6 +47,7 @@ impl Mod for Guest {
             "budget",
             "work",
             "world_id",
+            "block_at",
             "table",
             "texture",
             "columns",
@@ -109,6 +110,10 @@ impl Mod for Guest {
         let n = nums(args);
         let at = |i: usize| n.get(i).copied().unwrap_or(0);
         Ok(Some(match name {
+            "block_at" => format!(
+                "{:?}",
+                client_world::block_at(at(0) as i32, at(1) as i32, at(2) as i32)
+            ),
             "image" => format!("image {}", canvas::create_image(at(0), at(1))?),
             "update" => {
                 let (w, h) = (at(3), at(4));

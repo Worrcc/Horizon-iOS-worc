@@ -91,6 +91,7 @@ const REPLAY_COMMANDS: &[&str] = &[
     "scroll-at",
     "select",
     "stop",
+    "touch",
     "tp",
     "turn",
     "use-item",

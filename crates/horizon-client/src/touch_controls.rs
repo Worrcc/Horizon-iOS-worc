@@ -84,6 +84,19 @@ impl Button {
             Button::Pause => "||",
         }
     }
+    /// Translation for the label; the renderer retains `label()` before languages load.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Button::Jump => "horizon.touch.jump",
+            Button::Sneak => "horizon.touch.sneak",
+            Button::Use => "horizon.touch.use",
+            Button::Drop => "horizon.touch.drop",
+            Button::Inventory => "horizon.touch.inventory",
+            Button::Chat => "horizon.touch.chat",
+            Button::Perspective => "horizon.touch.perspective",
+            Button::Pause => "horizon.touch.pause",
+        }
+    }
     /// Held while the finger is on it; the others are a tap of their key.
     fn held(self) -> bool {
         matches!(self, Button::Jump | Button::Use)
@@ -95,6 +108,8 @@ impl Button {
 pub struct Layout {
     pub width: f32,
     pub height: f32,
+    /// Inventory goes opposite the actual off-hand slot, mirroring with the main arm.
+    pub main_hand_left: bool,
 }
 
 impl Layout {
@@ -107,11 +122,27 @@ impl Layout {
             Button::Sneak => [w - 38.0, h - 32.0, 32.0, 24.0],
             Button::Use => [w - 74.0, h - 60.0, 32.0, 24.0],
             Button::Drop => [w - 38.0, h - 88.0, 32.0, 24.0],
-            Button::Inventory => [centre + 95.0, h - 22.0, 20.0, 20.0],
-            Button::Pause => [w - 22.0, 4.0, 18.0, 18.0],
-            Button::Chat => [w - 44.0, 4.0, 18.0, 18.0],
-            Button::Perspective => [w - 66.0, 4.0, 18.0, 18.0],
+            Button::Inventory => [
+                if self.main_hand_left {
+                    centre - 120.0
+                } else {
+                    centre + 91.0
+                },
+                h - 23.0,
+                29.0,
+                24.0,
+            ],
+            Button::Pause => [w - 24.0, 54.0, 20.0, 20.0],
+            Button::Chat => [w - 46.0, 54.0, 20.0, 20.0],
+            Button::Perspective => [w - 68.0, 54.0, 20.0, 20.0],
         }
+    }
+    /// The off-hand artwork is asymmetric: centre the label over its item well.
+    pub fn inventory_label_center(&self) -> (f32, f32) {
+        (
+            (self.width / 2.0).floor() + if self.main_hand_left { -109.0 } else { 109.0 },
+            self.height - 11.0,
+        )
     }
     pub fn button_at(&self, x: f32, y: f32) -> Option<Button> {
         Button::ALL.into_iter().find(|&b| {
@@ -380,11 +411,17 @@ impl TouchControls {
     }
     /// Whether a finger is on `button`, or the sneak toggle is on.
     pub fn pressed(&self, button: Button) -> bool {
-        (button == Button::Sneak && self.sneaking)
-            || self
-                .fingers
-                .values()
-                .any(|f| matches!(f, Finger::Button(b) if *b == button))
+        self.latched(button) || self.touching(button)
+    }
+    /// A finger is on this button, independently of the Sneak latch.
+    pub fn touching(&self, button: Button) -> bool {
+        self.fingers
+            .values()
+            .any(|f| matches!(f, Finger::Button(b) if *b == button))
+    }
+    /// The existing touch Sneak toggle, for the gold selection frame.
+    pub fn latched(&self, button: Button) -> bool {
+        button == Button::Sneak && self.sneaking
     }
 
     fn press_button(&mut self, button: Button) -> Vec<Output> {
@@ -471,6 +508,7 @@ mod tests {
     const LAYOUT: Layout = Layout {
         width: 633.0,
         height: 292.0,
+        main_hand_left: false,
     };
 
     fn at(
@@ -481,6 +519,52 @@ mod tests {
         now: Instant,
     ) -> Vec<Output> {
         controls.touch(id, phase, p, &LAYOUT, true, now)
+    }
+
+    #[test]
+    fn top_row_and_inventory_follow_the_art_layout_and_main_arm() {
+        for (button, rect) in [
+            (Button::Perspective, [565.0, 54.0, 20.0, 20.0]),
+            (Button::Chat, [587.0, 54.0, 20.0, 20.0]),
+            (Button::Pause, [609.0, 54.0, 20.0, 20.0]),
+            (Button::Jump, [595.0, 232.0, 32.0, 24.0]),
+            (Button::Sneak, [595.0, 260.0, 32.0, 24.0]),
+            (Button::Use, [559.0, 232.0, 32.0, 24.0]),
+            (Button::Drop, [595.0, 204.0, 32.0, 24.0]),
+        ] {
+            assert_eq!(LAYOUT.button(button), rect);
+            assert_eq!(
+                LAYOUT.button_at(rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0),
+                Some(button)
+            );
+        }
+        assert_eq!(LAYOUT.button_at(619.0, 13.0), None);
+        for (left, rect, centre) in [
+            (false, [407.0, 269.0, 29.0, 24.0], (425.0, 281.0)),
+            (true, [196.0, 269.0, 29.0, 24.0], (207.0, 281.0)),
+        ] {
+            let layout = Layout {
+                main_hand_left: left,
+                ..LAYOUT
+            };
+            assert_eq!(layout.button(Button::Inventory), rect);
+            assert_eq!(layout.inventory_label_center(), centre);
+            let mut controls = TouchControls::default();
+            assert_eq!(
+                controls.touch(
+                    0,
+                    TouchPhase::Started,
+                    centre,
+                    &layout,
+                    true,
+                    Instant::now()
+                ),
+                vec![
+                    Output::Key(KeyCode::KeyE, true),
+                    Output::Key(KeyCode::KeyE, false)
+                ]
+            );
+        }
     }
 
     #[test]
@@ -577,10 +661,14 @@ mod tests {
         );
         assert!(at(&mut c, 2, TouchPhase::Ended, sneak, t).is_empty());
         assert!(c.pressed(Button::Sneak));
+        assert!(c.latched(Button::Sneak));
+        assert!(!c.touching(Button::Sneak));
         assert_eq!(
             at(&mut c, 3, TouchPhase::Started, sneak, t),
             vec![Output::Key(KeyCode::ShiftLeft, false)]
         );
+        assert!(!c.latched(Button::Sneak));
+        assert!(c.touching(Button::Sneak));
         let [x, y, w, h] = LAYOUT.button(Button::Use);
         let use_at = (x + w / 2.0, y + h / 2.0);
         assert_eq!(

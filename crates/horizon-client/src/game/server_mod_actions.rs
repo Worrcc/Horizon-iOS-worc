@@ -254,6 +254,14 @@ impl Game<'_> {
         }
     }
     fn with_mod_guest(&mut self, host: &mut LanHost, player: &str, f: impl FnOnce(&mut Self)) {
+        self.with_mod_guest_host(host, player, |g, _| f(g));
+    }
+    pub(super) fn with_mod_guest_host(
+        &mut self,
+        host: &mut LanHost,
+        player: &str,
+        f: impl FnOnce(&mut Self, &LanHost),
+    ) {
         if let Some(conn) = host
             .hub
             .guests
@@ -273,7 +281,7 @@ impl Game<'_> {
                 return;
             }
             let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
-            self.as_guest(host, conn, f);
+            self.as_guest_with_host(host, conn, f);
             // Capture only this operation's sounds, while its dimension is in place.
             // Older queued sounds still belong to the level we will return to.
             if let Some(capture) = self.audio.capture.as_mut() {

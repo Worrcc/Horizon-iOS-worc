@@ -42,6 +42,10 @@ pub const NO_SPRITE: u32 = u32::MAX;
 pub trait ClientWorldView: std::any::Any + Send {
     /// The player's dimension; none on the title screen.
     fn dimension(&self) -> Option<ClientDimension>;
+    /// API 20: a loaded state in the current dimension.
+    fn block_at(&self, _x: i32, _y: i32, _z: i32) -> Option<String> {
+        None
+    }
     /// The loaded packs' block table (`client-world.block-table`).
     fn block_table(&mut self) -> BlockTable;
     /// The block table's `version` (`client-world.table-version`), without
@@ -93,6 +97,10 @@ fn no_table() -> BlockTable {
 }
 
 impl client_world::Host for State {
+    fn block_at(&mut self, x: i32, y: i32, z: i32) -> Option<String> {
+        self.with_view(|v| v.dimension().and_then(|_| v.block_at(x, y, z)))
+            .flatten()
+    }
     fn dimension(&mut self) -> Option<ClientDimension> {
         self.with_view(|v| v.dimension()).flatten()
     }
