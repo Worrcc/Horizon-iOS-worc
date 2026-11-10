@@ -706,6 +706,17 @@ pub struct RecipePage {
     pub tabs: Vec<BrowserStack>,
     pub tab: u32,
     pub recipes: Vec<BrowserRecipe>,
+    pub custom: Vec<Option<CustomGeometry>>,
+}
+/// Geometry beside a recipe, without changing the older browser recipe type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub slots: Vec<(i32, i32)>,
+    pub result: Option<(i32, i32)>,
+    pub texts: Vec<(i32, i32, String, u32)>,
+    pub sprites: Vec<(i32, i32, String)>,
 }
 static BROWSER_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
@@ -719,6 +730,46 @@ const RECIPE_TABS: usize = 16;
 const SLOT_STACKS: usize = 64;
 const BROWSER_EVENTS: usize = 256;
 impl BrowserState {
+    fn set_recipes(
+        &mut self,
+        title: String,
+        tabs: Vec<BrowserStack>,
+        tab: u32,
+        entries: impl Iterator<Item = (BrowserRecipe, Option<CustomGeometry>)>,
+    ) {
+        let stack = |s: BrowserStack| BrowserStack {
+            item: clip(s.item),
+            components: clip_to(s.components, 4096),
+            ..s
+        };
+        let cycle = |list: Vec<BrowserStack>| -> Vec<BrowserStack> {
+            list.into_iter().take(SLOT_STACKS).map(stack).collect()
+        };
+        let (recipes, custom): (Vec<_>, Vec<_>) = entries
+            .take(BROWSER_RECIPES)
+            .map(|(r, custom)| {
+                (
+                    BrowserRecipe {
+                        width: r.width.clamp(1, 3),
+                        height: r.height.clamp(1, 3),
+                        slots: r.slots.into_iter().take(RECIPE_SLOTS).map(cycle).collect(),
+                        results: cycle(r.results),
+                        note: clip(r.note),
+                        ..r
+                    },
+                    custom,
+                )
+            })
+            .unzip();
+        self.recipes = (!recipes.is_empty()).then(|| RecipePage {
+            title: clip(title),
+            tabs: tabs.into_iter().take(RECIPE_TABS).map(stack).collect(),
+            tab,
+            recipes,
+            custom,
+        });
+        self.version = BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     fn push(&mut self, event: BrowserEvent) {
         if self.events.len() == BROWSER_EVENTS {
             self.events.pop_front();
@@ -2035,41 +2086,74 @@ impl browser::Host for State {
         tab: u32,
         recipes: Vec<BrowserRecipe>,
     ) {
-        let stack = |s: BrowserStack| BrowserStack {
-            item: clip(s.item),
-            components: clip_to(s.components, 4096),
-            ..s
-        };
-        let cycle = |list: Vec<BrowserStack>| -> Vec<BrowserStack> {
-            list.into_iter().take(SLOT_STACKS).map(stack).collect()
-        };
-        self.browser.recipes = (!recipes.is_empty()).then(|| {
-            let recipes = recipes
-                .into_iter()
-                .take(BROWSER_RECIPES)
-                .map(|r| BrowserRecipe {
-                    width: r.width.clamp(1, 3),
-                    height: r.height.clamp(1, 3),
-                    slots: r.slots.into_iter().take(RECIPE_SLOTS).map(cycle).collect(),
-                    results: cycle(r.results),
-                    note: clip(r.note),
-                    ..r
-                })
-                .collect();
-            RecipePage {
-                title: clip(title),
-                tabs: tabs.into_iter().take(RECIPE_TABS).map(stack).collect(),
-                tab,
-                recipes,
-            }
-        });
-        self.browser.version = BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.browser
+            .set_recipes(title, tabs, tab, recipes.into_iter().map(|r| (r, None)));
     }
     fn poll(&mut self) -> Vec<BrowserEvent> {
         self.browser.events.drain(..).collect()
     }
 }
 impl browser_ext::Host for State {
+    fn set_recipes(
+        &mut self,
+        title: String,
+        tabs: Vec<BrowserStack>,
+        tab: u32,
+        recipes: Vec<browser_ext::RecipeEntry>,
+    ) {
+        self.browser.set_recipes(
+            title,
+            tabs,
+            tab,
+            recipes.into_iter().map(|entry| {
+                let c = match entry {
+                    browser_ext::RecipeEntry::Custom(c) => c,
+                    browser_ext::RecipeEntry::Standard(r) => return (r, None),
+                };
+                let (width, height) = (c.width.clamp(1, 160), c.height.clamp(1, 120));
+                let pos =
+                    |x: i32, y: i32| (x.clamp(0, width as i32 - 1), y.clamp(0, height as i32 - 1));
+                let slots: Vec<_> = c.slots.into_iter().take(RECIPE_SLOTS).collect();
+                let custom = CustomGeometry {
+                    width,
+                    height,
+                    slots: slots.iter().map(|s| pos(s.x, s.y)).collect(),
+                    result: c.result.as_ref().map(|s| pos(s.x, s.y)),
+                    texts: c
+                        .texts
+                        .into_iter()
+                        .take(16)
+                        .map(|t| {
+                            let (x, y) = pos(t.x, t.y);
+                            (x, y, clip(t.text), t.color & 0xFFFFFF)
+                        })
+                        .collect(),
+                    sprites: c
+                        .sprites
+                        .into_iter()
+                        .take(16)
+                        .map(|s| {
+                            let (x, y) = pos(s.x, s.y);
+                            (x, y, clip(s.sprite))
+                        })
+                        .collect(),
+                };
+                (
+                    BrowserRecipe {
+                        layout: BrowserLayout::Single,
+                        width: 1,
+                        height: 1,
+                        slots: slots.into_iter().map(|s| s.stacks).collect(),
+                        results: c.result.map_or_else(Vec::new, |s| s.stacks),
+                        note: String::new(),
+                        action: c.action,
+                    },
+                    Some(custom),
+                )
+            }),
+        );
+    }
+
     fn set_item_lines(&mut self, bookmarks: bool, lines: Vec<browser_ext::ItemLines>) {
         let lines = lines
             .into_iter()

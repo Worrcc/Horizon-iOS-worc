@@ -124,6 +124,7 @@ impl Mod for Guest {
             "item_lines",
             "bookmarks_poll",
             "browser_recipes",
+            "custom_recipes",
             "recipe_place",
             "recipe_give",
             "corner",
@@ -407,6 +408,66 @@ impl Mod for Guest {
                 }
                 browser::set_recipes(&format!("Recipes for {args}"), &tabs, 0, &views);
                 chat::show(&format!("recipes shown: {}", views.len()));
+            }
+            "custom_recipes" => {
+                use browser_ext::{CustomView, PlacedSlot, PlacedSprite, PlacedText, RecipeEntry};
+                let stack = browser::Stack {
+                    item: "minecraft:stone".into(),
+                    count: 2,
+                    components: String::new(),
+                };
+                let standard = browser::RecipeView {
+                    layout: browser::Layout::Grid,
+                    width: 99,
+                    height: 0,
+                    slots: vec![vec![stack.clone()]; 10],
+                    results: vec![stack.clone()],
+                    note: "standard".into(),
+                    action: None,
+                };
+                let slot = PlacedSlot {
+                    x: -20,
+                    y: 500,
+                    stacks: vec![stack.clone(); 65],
+                };
+                let custom = RecipeEntry::Custom(CustomView {
+                    width: 300,
+                    height: 300,
+                    slots: vec![slot; 10],
+                    result: (args != "no_result").then_some(PlacedSlot {
+                        x: 500,
+                        y: -20,
+                        stacks: vec![stack.clone()],
+                    }),
+                    texts: vec![
+                        PlacedText {
+                            x: 500,
+                            y: -20,
+                            text: "界".repeat(300),
+                            color: 0x123456
+                        };
+                        17
+                    ],
+                    sprites: vec![
+                        PlacedSprite {
+                            x: -20,
+                            y: 500,
+                            sprite: "container/furnace/lit_progress".into()
+                        };
+                        17
+                    ],
+                    action: Some(true),
+                });
+                if args == "standard" {
+                    browser::set_recipes("standard", &[], 0, &[standard]);
+                } else {
+                    let entries = if args == "empty" {
+                        vec![]
+                    } else {
+                        vec![custom, RecipeEntry::Standard(standard)]
+                    };
+                    browser_ext::set_recipes("custom", &vec![stack; 17], 3, &entries);
+                }
             }
             "recipe_place" => {
                 let mut words = args.split_whitespace();

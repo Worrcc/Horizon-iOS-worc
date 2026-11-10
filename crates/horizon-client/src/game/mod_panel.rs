@@ -8,7 +8,7 @@ use super::{
         NativeStack as BrowserStack,
     },
     native_panel::{Owner, Shown},
-    native_panel_recipes::RecipePage,
+    native_panel_recipes::{CustomGeometry, RecipePage},
 };
 use horizon_mods as m;
 
@@ -110,6 +110,20 @@ pub(super) fn page(p: &m::RecipePage) -> RecipePage {
         title: p.title.clone(),
         tabs: stacks(&p.tabs),
         tab: p.tab,
+        custom: p
+            .custom
+            .iter()
+            .map(|c| {
+                c.as_ref().map(|c| CustomGeometry {
+                    width: c.width,
+                    height: c.height,
+                    slots: c.slots.clone(),
+                    result: c.result,
+                    texts: c.texts.clone(),
+                    sprites: c.sprites.clone(),
+                })
+            })
+            .collect(),
         recipes: p
             .recipes
             .iter()

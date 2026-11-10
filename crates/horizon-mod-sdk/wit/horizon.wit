@@ -878,7 +878,32 @@ interface browser {
 
 /// Capability `ui` (experimental), API level 19: bookmarks beside the browser.
 interface browser-ext {
-    use browser.{stack, click};
+    use browser.{stack, click, recipe-view};
+    /// A slot placed in a custom recipe's box, in GUI px from the box's top left; it cycles through
+    /// its stacks like the standard layouts' slots.
+    record placed-slot { x: s32, y: s32, stacks: list<stack> }
+    /// Text in the box (`color` 0xRRGGBB), drawn with the game's font and shadow.
+    record placed-text { x: s32, y: s32, text: string, color: u32 }
+    /// One of the game's GUI sprites (`gui/sprites/...` names, e.g. `container/furnace/lit_progress`,
+    /// `recipe_book/...`); an unknown name draws nothing.
+    record placed-sprite { x: s32, y: s32, sprite: string }
+    /// A recipe the mod lays out itself. At most 9 slots, 16 texts, 16 sprites; the box at most 160 x 120.
+    /// The panel is 2 to 12 slots (36 to 216 GUI px) wide, about 108 at GUI scale 3 on a 1280 x 720
+    /// window: a wider box runs off the screen's edge, so keep boxes narrow.
+    record custom-view {
+        width: u32,
+        height: u32,
+        slots: list<placed-slot>,
+        %result: option<placed-slot>,
+        texts: list<placed-text>,
+        sprites: list<placed-sprite>,
+        /// The action button beside it (as `browser.recipe-view.action`).
+        action: option<bool>,
+    }
+    variant recipe-entry { standard(recipe-view), custom(custom-view) }
+    /// `browser.set-recipes` with custom layouts mixed in. Same limits, same events
+    /// (`browser.event.slot-clicked` counts a custom recipe's slots in order, then its result).
+    set-recipes: func(title: string, tabs: list<stack>, tab: u32, recipes: list<recipe-entry>);
     variant event {
         /// A click on the bookmark panel's item at this index of `set-bookmarks`.
         bookmark-clicked(click),

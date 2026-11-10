@@ -861,6 +861,62 @@ Capability `ui` (experimental), API level 19: bookmarks beside the browser.
 
 `type click = click`
 
+### type `recipe-view`
+
+`type recipe-view = recipe-view`
+
+### record `placed-slot`
+
+A slot placed in a custom recipe's box, in GUI px from the box's top left; it cycles through its stacks like the standard layouts' slots.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `stacks` | `list<stack>` |  |
+
+### record `placed-text`
+
+Text in the box (`color` 0xRRGGBB), drawn with the game's font and shadow.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `text` | `string` |  |
+| `color` | `u32` |  |
+
+### record `placed-sprite`
+
+One of the game's GUI sprites (`gui/sprites/...` names, e.g. `container/furnace/lit_progress`, `recipe_book/...`); an unknown name draws nothing.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `sprite` | `string` |  |
+
+### record `custom-view`
+
+A recipe the mod lays out itself. At most 9 slots, 16 texts, 16 sprites; the box at most 160 x 120. The panel is 2 to 12 slots (36 to 216 GUI px) wide, about 108 at GUI scale 3 on a 1280 x 720 window: a wider box runs off the screen's edge, so keep boxes narrow.
+
+| Field | Type | |
+| --- | --- | --- |
+| `width` | `u32` |  |
+| `height` | `u32` |  |
+| `slots` | `list<placed-slot>` |  |
+| `result` | `option<placed-slot>` |  |
+| `texts` | `list<placed-text>` |  |
+| `sprites` | `list<placed-sprite>` |  |
+| `action` | `option<bool>` | The action button beside it (as `browser.recipe-view.action`). |
+
+### variant `recipe-entry`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `standard` | `recipe-view` |  |
+| `custom` | `custom-view` |  |
+
 ### variant `event`
 
 | Case | Payload | |
@@ -878,6 +934,7 @@ Extra tooltip lines for some of a panel's items.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `set-recipes` | `func(title: string, tabs: list<stack>, tab: u32, recipes: list<recipe-entry>)` | `browser.set-recipes` with custom layouts mixed in. Same limits, same events (`browser.event.slot-clicked` counts a custom recipe's slots in order, then its result). |
 | `set-bookmarks` | `func(items: list<stack>)` | A second panel left of the screen's window, as JEI's bookmarks (an empty list hides it). At most 1024. Hidden while the screen's recipe book is open. |
 | `set-item-lines` | `func(bookmarks: bool, lines: list<item-lines>)` | Extra tooltip lines under these items' names, for the main panel (`bookmarks` false) or the bookmark panel. Replaces earlier ones for that panel. At most 8 lines of 128 characters per item, 8192 items. Dropped when that panel's items change (`set-items` / `set-bookmarks`). |
 | `keep-empty` | `func(keep: bool)` | With true, an empty `browser.set-items` keeps the panel and its search box up. |

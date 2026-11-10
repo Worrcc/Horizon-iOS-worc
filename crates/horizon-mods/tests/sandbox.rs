@@ -1391,6 +1391,64 @@ fn browser_item_lines_are_bounded_replaced_and_cleared_per_panel() {
 }
 
 #[test]
+fn browser_custom_recipes_clip_geometry_and_mix_with_standard_pages() {
+    use horizon_mods::BrowserLayout;
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let command = |mods: &mut Mods, arg: &str| {
+        assert!(mods.command(&format!("custom_recipes {arg}")));
+        mods.drain();
+    };
+    command(&mut mods, "mixed");
+    let (owner, version, _) = mods.browser_items().unwrap();
+    let p = mods.browser_recipes(owner).unwrap();
+    assert_eq!((p.title.as_str(), p.tabs.len(), p.tab), ("custom", 16, 3));
+    assert_eq!((p.recipes.len(), p.custom.len()), (2, 2));
+    let c = p.custom[0].as_ref().unwrap();
+    assert_eq!((c.width, c.height), (160, 120));
+    assert_eq!(c.slots, vec![(0, 119); 9]);
+    assert_eq!(c.result, Some((159, 0)));
+    assert_eq!(c.texts, vec![(159, 0, "界".repeat(256), 0x123456); 16]);
+    assert_eq!(
+        c.sprites,
+        vec![(0, 119, "container/furnace/lit_progress".into()); 16]
+    );
+    let r = &p.recipes[0];
+    assert_eq!(
+        (r.layout, r.width, r.height, r.action),
+        (BrowserLayout::Single, 1, 1, Some(true))
+    );
+    assert!(r.note.is_empty());
+    assert_eq!(r.slots.len(), 9);
+    assert!(
+        r.slots
+            .iter()
+            .all(|s| s.len() == 64 && s[0].item == "minecraft:stone")
+    );
+    assert_eq!(r.results.len(), 1);
+    assert!(p.custom[1].is_none());
+    assert_eq!(
+        (
+            p.recipes[1].width,
+            p.recipes[1].height,
+            p.recipes[1].slots.len()
+        ),
+        (3, 1, 9)
+    );
+    command(&mut mods, "no_result");
+    let p = mods.browser_recipes(owner).unwrap();
+    assert!(p.custom[0].as_ref().unwrap().result.is_none());
+    assert!(p.recipes[0].results.is_empty());
+    assert_ne!(mods.browser_items().unwrap().1, version);
+    command(&mut mods, "standard");
+    let p = mods.browser_recipes(owner).unwrap();
+    assert_eq!(p.title, "standard");
+    assert_eq!(p.recipes.len(), 1);
+    assert_eq!(p.custom, [None]);
+    command(&mut mods, "empty");
+    assert!(mods.browser_recipes(owner).is_none());
+}
+
+#[test]
 fn browser_lists_items_and_hears_the_player() {
     use horizon_mods::{BrowserClick, BrowserEvent, BrowserStack};
     let mut mods = load("horizon_mods_test_ui_guest.hmod");

@@ -30,6 +30,16 @@ const RECIPE_SLOTS: usize = 9;
 const SLOT_STACKS: usize = 64;
 const TABS: usize = 16;
 
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct CustomGeometry {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) slots: Vec<(i32, i32)>,
+    pub(super) result: Option<(i32, i32)>,
+    pub(super) texts: Vec<(i32, i32, String, u32)>,
+    pub(super) sprites: Vec<(i32, i32, String)>,
+}
+
 /// What the panel shows instead of its items: a title, tabs (`tab` the
 /// selected one) and the recipes.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +48,7 @@ pub(super) struct RecipePage {
     pub(super) tabs: Vec<BrowserStack>,
     pub(super) tab: u32,
     pub(super) recipes: Vec<BrowserRecipe>,
+    pub(super) custom: Vec<Option<CustomGeometry>>,
 }
 impl RecipePage {
     /// `native_panel_recipes`' page, cut as `set-recipes` cuts one; none
@@ -67,6 +78,7 @@ impl RecipePage {
             title: title.to_owned(),
             tabs: tabs.into_iter().take(TABS).collect(),
             tab,
+            custom: vec![None; recipes.len()],
             recipes,
         })
     }
@@ -74,6 +86,7 @@ impl RecipePage {
 
 /// One recipe as the game draws it.
 pub(super) struct Shown {
+    custom: Option<CustomGeometry>,
     layout: BrowserLayout,
     width: usize,
     height: usize,
@@ -111,10 +124,12 @@ impl Pages {
         };
         let recipes = list
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 let mut slots: Vec<_> = r.slots.iter().map(|s| cycle(s)).collect();
                 slots.push(cycle(&r.results));
                 Shown {
+                    custom: shown.custom.get(i).cloned().flatten(),
                     layout: r.layout,
                     width: r.width as usize,
                     height: r.height as usize,
@@ -160,7 +175,10 @@ impl Shown {
     }
     /// The height of its slots, arrow and button, `room` wide.
     fn block(&self, room: f32) -> f32 {
-        let h = self.inputs().0.1;
+        let h = self
+            .custom
+            .as_ref()
+            .map_or_else(|| self.inputs().0.1, |c| c.height as f32);
         let (_, _, action) = self.places(room);
         match self.action {
             Some(_) => h.max(action.1 + 12.0),
@@ -175,6 +193,22 @@ impl Shown {
     /// arrow's and the action button's: beside the result, or under it
     /// when the panel is `room` wide and that doesn't fit.
     fn places(&self, room: f32) -> (Vec<(f32, f32)>, (f32, f32), (f32, f32)) {
+        if let Some(c) = &self.custom {
+            let at = c
+                .slots
+                .iter()
+                .copied()
+                .chain(c.result)
+                .map(|(x, y)| (x as f32, y as f32))
+                .collect();
+            let (w, h) = (c.width as f32, c.height as f32);
+            let action = if w + 16.0 <= room {
+                (w + 4.0, ((h - 12.0) / 2.0).floor())
+            } else {
+                ((w - 15.0).max(0.0), h + 2.0)
+            };
+            return (at, (f32::NAN, f32::NAN), action);
+        }
         let ((w, h), mut at) = self.inputs();
         // The mod's slots beyond the layout's are not shown.
         at.truncate(self.slots.len() - 1);
@@ -387,7 +421,21 @@ impl Game<'_> {
             for &(sx, sy) in at.iter().filter(|p| p.0.is_finite()) {
                 batch.sprite(atlas, "gui/sprites/container/slot", x + sx, y + sy);
             }
-            if cooking {
+            if let Some(c) = &r.custom {
+                for (sx, sy, name) in &c.sprites {
+                    batch.sprite(
+                        atlas,
+                        &format!("gui/sprites/{name}"),
+                        x + *sx as f32,
+                        y + *sy as f32,
+                    );
+                }
+                for (tx, ty, text, color) in &c.texts {
+                    let color = rgba((color >> 16) as u8, (color >> 8) as u8, *color as u8, 255);
+                    batch.text(atlas, text, x + *tx as f32, y + *ty as f32, color, true);
+                }
+            }
+            if r.custom.is_none() && cooking {
                 batch.sprite(
                     atlas,
                     "gui/sprites/container/furnace/lit_progress",
@@ -395,12 +443,14 @@ impl Game<'_> {
                     y + SLOT + 2.0,
                 );
             }
-            batch.sprite(
-                atlas,
-                "gui/sprites/container/furnace/burn_progress",
-                x + arrow.0,
-                y + arrow.1,
-            );
+            if r.custom.is_none() {
+                batch.sprite(
+                    atlas,
+                    "gui/sprites/container/furnace/burn_progress",
+                    x + arrow.0,
+                    y + arrow.1,
+                );
+            }
             if let Some(enabled) = button {
                 let rect = [x + action.0, y + action.1, 12.0, 12.0];
                 let sprite = match (enabled, inside(cursor, rect)) {
@@ -564,5 +614,46 @@ impl Game<'_> {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_panel_custom_places_height_and_slot_indices() {
+        let mut r = Shown {
+            layout: BrowserLayout::Grid,
+            width: 3,
+            height: 3,
+            slots: vec![vec![]; 3],
+            note: String::new(),
+            action: Some(true),
+            custom: Some(CustomGeometry {
+                width: 90,
+                height: 70,
+                slots: vec![(40, 20), (2, 4)],
+                result: Some((70, 50)),
+                texts: vec![],
+                sprites: vec![],
+            }),
+        };
+        let (at, _, action) = r.places(120.0);
+        assert_eq!(at, [(40.0, 20.0), (2.0, 4.0), (70.0, 50.0)]);
+        assert_eq!(action, (94.0, 29.0));
+        assert_eq!(r.height(120.0), 76.0);
+        // The same enumeration drives hover, tooltips and slot-clicked: inputs then result.
+        for (cursor, slot) in [((41.0, 21.0), 0), ((3.0, 5.0), 1), ((71.0, 51.0), 2)] {
+            assert_eq!(
+                at.iter()
+                    .position(|&(x, y)| inside(cursor, [x, y, SLOT, SLOT])),
+                Some(slot)
+            );
+        }
+        assert_eq!(r.places(90.0).2, (75.0, 72.0));
+        assert_eq!(r.height(90.0), 90.0);
+        r.custom.as_mut().unwrap().result = None;
+        assert_eq!(r.places(120.0).0, [(40.0, 20.0), (2.0, 4.0)]);
     }
 }
