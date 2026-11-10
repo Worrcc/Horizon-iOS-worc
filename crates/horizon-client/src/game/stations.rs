@@ -2720,6 +2720,23 @@ impl Game<'_> {
     ) {
         self.draw_stack_tooltip_with(batch, stack, false, x, y, Vec::new());
     }
+    /// A panel item's normal tooltip with additional plain lines below it.
+    pub(super) fn draw_stack_tooltip_extra(
+        &mut self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        extra: Vec<(Text, u32)>,
+    ) {
+        let lines = self.stack_tooltip_lines(stack, false, false);
+        if lines.is_empty() {
+            return;
+        }
+        let mut lines = Self::resolved(&lines);
+        lines.extend(extra);
+        self.draw_stack_tooltip_lines(batch, stack, x, y, lines);
+    }
     /// [`Self::draw_stack_tooltip`] with `TooltipFlag.isCreative` set when
     /// `creative` (a creative tab's own slot), and `after_name` inserted from
     /// line 1, as the creative screen adds its tab names.
@@ -2737,7 +2754,16 @@ impl Game<'_> {
             return;
         }
         lines.splice(1..1, after_name);
-        let lines = Self::resolved(&lines);
+        self.draw_stack_tooltip_lines(batch, stack, x, y, Self::resolved(&lines));
+    }
+    fn draw_stack_tooltip_lines(
+        &mut self,
+        batch: &mut HudBatch,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        lines: Vec<(Text, u32)>,
+    ) {
         // The component's height does not depend on where it is drawn, so a
         // probe at the origin gives the box its extra height.
         let probe = horizon_client::bundle::tooltip_layout(self.items(), stack, 0.0, 0.0, 96.0);

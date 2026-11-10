@@ -6,6 +6,7 @@ use server_bindings::{
     horizon::mods::{entities, players, world as mod_world},
 };
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
@@ -730,6 +731,8 @@ impl BrowserState {
 #[derive(Default)]
 struct BrowserExtState {
     bookmarks: Vec<BrowserStack>,
+    item_lines: HashMap<u32, Vec<String>>,
+    bookmark_lines: HashMap<u32, Vec<String>>,
     keep_empty: bool,
     version: u64,
     events: std::collections::VecDeque<BrowserExtEvent>,
@@ -1512,6 +1515,30 @@ impl Mods {
             .browser_ext;
         Some((b.version, &b.bookmarks))
     }
+    /// Mod `owner`'s extra main-panel tooltip lines, if any.
+    pub fn browser_item_lines(&self, owner: usize) -> Option<&HashMap<u32, Vec<String>>> {
+        let b = &self
+            .entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .browser_ext;
+        (!b.item_lines.is_empty()).then_some(&b.item_lines)
+    }
+    /// Mod `owner`'s extra bookmark tooltip lines, if any.
+    pub fn browser_bookmark_lines(&self, owner: usize) -> Option<&HashMap<u32, Vec<String>>> {
+        let b = &self
+            .entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .browser_ext;
+        (!b.bookmark_lines.is_empty()).then_some(&b.bookmark_lines)
+    }
     /// The player did `event` on mod `owner`'s bookmark panel.
     pub fn browser_ext_event(&mut self, owner: usize, event: BrowserExtEvent) {
         if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
@@ -1989,6 +2016,7 @@ impl game::Host for State {
 }
 impl browser::Host for State {
     fn set_items(&mut self, items: Vec<BrowserStack>) {
+        self.browser_ext.item_lines.clear();
         self.browser.items = items
             .into_iter()
             .take(BROWSER_ITEMS)
@@ -2042,7 +2070,31 @@ impl browser::Host for State {
     }
 }
 impl browser_ext::Host for State {
+    fn set_item_lines(&mut self, bookmarks: bool, lines: Vec<browser_ext::ItemLines>) {
+        let lines = lines
+            .into_iter()
+            .take(BROWSER_ITEMS)
+            .map(|item| {
+                let lines = item
+                    .lines
+                    .into_iter()
+                    .take(8)
+                    .map(|s| clip_to(s, 128))
+                    .collect();
+                (item.index, lines)
+            })
+            .collect();
+        let version = BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if bookmarks {
+            self.browser_ext.bookmark_lines = lines;
+            self.browser_ext.version = version;
+        } else {
+            self.browser_ext.item_lines = lines;
+            self.browser.version = version;
+        }
+    }
     fn set_bookmarks(&mut self, items: Vec<BrowserStack>) {
+        self.browser_ext.bookmark_lines.clear();
         self.browser_ext.bookmarks = items
             .into_iter()
             .take(1024)

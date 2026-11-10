@@ -121,6 +121,7 @@ impl Mod for Guest {
             "browser_poll",
             "bookmarks",
             "browser_keep_empty",
+            "item_lines",
             "bookmarks_poll",
             "browser_recipes",
             "recipe_place",
@@ -460,6 +461,25 @@ impl Mod for Guest {
                     items[0].components = "界".repeat(4200);
                 }
                 browser_ext::set_bookmarks(&items);
+            }
+            // /item_lines BOOKMARKS COUNT LINE|LINE... replaces that panel's lines.
+            "item_lines" => {
+                let mut args = args.splitn(3, ' ');
+                let bookmarks = args.next() == Some("true");
+                let count = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let lines: Vec<String> = args
+                    .next()
+                    .unwrap_or("")
+                    .split('|')
+                    .map(str::to_owned)
+                    .collect();
+                let items: Vec<_> = (0..count)
+                    .map(|index| browser_ext::ItemLines {
+                        index,
+                        lines: lines.clone(),
+                    })
+                    .collect();
+                browser_ext::set_item_lines(bookmarks, &items);
             }
             "browser_keep_empty" => browser_ext::keep_empty(args == "true"),
             "bookmarks_poll" => {

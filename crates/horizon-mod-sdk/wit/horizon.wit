@@ -886,6 +886,16 @@ interface browser-ext {
     /// A second panel left of the screen's window, as JEI's bookmarks (an empty
     /// list hides it). At most 1024. Hidden while the screen's recipe book is open.
     set-bookmarks: func(items: list<stack>);
+    /// Extra tooltip lines for some of a panel's items.
+    record item-lines {
+        /// The item's index in `browser.set-items` (or `set-bookmarks` for the bookmark panel).
+        index: u32,
+        lines: list<string>,
+    }
+    /// Extra tooltip lines under these items' names, for the main panel (`bookmarks` false) or the
+    /// bookmark panel. Replaces earlier ones for that panel. At most 8 lines of 128 characters per
+    /// item, 8192 items. Dropped when that panel's items change (`set-items` / `set-bookmarks`).
+    set-item-lines: func(bookmarks: bool, lines: list<item-lines>);
     /// With true, an empty `browser.set-items` keeps the panel and its search box up.
     keep-empty: func(keep: bool);
     /// What the player did on the bookmark panel since the last poll, at most 256 kept.

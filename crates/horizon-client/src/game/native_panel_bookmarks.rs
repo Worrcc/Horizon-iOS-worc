@@ -11,6 +11,7 @@ pub(super) struct Bookmarks {
     pub(super) of: Option<(usize, u64)>,
     pub(super) items: Vec<BrowserStack>,
     pub(super) stacks: Vec<Option<ItemStack>>,
+    pub(super) lines: super::native_panel::ItemLines,
     page: usize,
 }
 
@@ -61,7 +62,10 @@ impl Game<'_> {
         })
     }
 
-    pub(super) fn draw_browser_bookmarks(&mut self, batch: &mut HudBatch) -> Option<ItemStack> {
+    pub(super) fn draw_browser_bookmarks(
+        &mut self,
+        batch: &mut HudBatch,
+    ) -> Option<(usize, ItemStack)> {
         let layout = self.bookmarks_layout(batch)?;
         let b = &mut self.panel.bookmarks;
         let pages = b.stacks.len().div_ceil(layout.per_page()).max(1);
@@ -75,7 +79,8 @@ impl Game<'_> {
             .cloned()
             .collect::<Vec<_>>();
         self.draw_browser_grid(batch, &layout, &stacks, page, pages);
-        self.bookmarks_hovered(&layout).map(|(_, _, stack)| stack)
+        self.bookmarks_hovered(&layout)
+            .map(|(index, _, stack)| (index, stack))
     }
 
     pub(super) fn bookmarks_press(&mut self, batch: &HudBatch, owner: &Owner, right: bool) -> bool {

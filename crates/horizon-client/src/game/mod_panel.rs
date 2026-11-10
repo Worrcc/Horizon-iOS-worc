@@ -34,6 +34,7 @@ impl Game<'_> {
             .iter()
             .map(|s| super::native_panel::browser_stack(world_items!(self), s))
             .collect();
+        b.lines = item_lines(self.mods.mods.browser_bookmark_lines(*index));
         b.of = Some((*index, version));
     }
     pub(super) fn panel_wasm_sync(&mut self) {
@@ -55,6 +56,26 @@ impl Game<'_> {
             recipes,
         });
     }
+}
+
+/// Convert plain mod lines once per panel version, using ChatFormatting.GRAY.
+pub(super) fn item_lines(
+    lines: Option<&std::collections::HashMap<u32, Vec<String>>>,
+) -> super::native_panel::ItemLines {
+    use horizon_client::{hud::rgba, text::Text};
+    lines
+        .into_iter()
+        .flatten()
+        .map(|(&index, lines)| {
+            (
+                index,
+                lines
+                    .iter()
+                    .map(|s| (Text::literal(s.clone()), rgba(170, 170, 170, 255)))
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 pub(super) fn stack(s: &m::BrowserStack) -> BrowserStack {

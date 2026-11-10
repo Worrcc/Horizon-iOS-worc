@@ -867,9 +867,19 @@ Capability `ui` (experimental), API level 19: bookmarks beside the browser.
 | --- | --- | --- |
 | `bookmark-clicked` | `click` | A click on the bookmark panel's item at this index of `set-bookmarks`. |
 
+### record `item-lines`
+
+Extra tooltip lines for some of a panel's items.
+
+| Field | Type | |
+| --- | --- | --- |
+| `index` | `u32` | The item's index in `browser.set-items` (or `set-bookmarks` for the bookmark panel). |
+| `lines` | `list<string>` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `set-bookmarks` | `func(items: list<stack>)` | A second panel left of the screen's window, as JEI's bookmarks (an empty list hides it). At most 1024. Hidden while the screen's recipe book is open. |
+| `set-item-lines` | `func(bookmarks: bool, lines: list<item-lines>)` | Extra tooltip lines under these items' names, for the main panel (`bookmarks` false) or the bookmark panel. Replaces earlier ones for that panel. At most 8 lines of 128 characters per item, 8192 items. Dropped when that panel's items change (`set-items` / `set-bookmarks`). |
 | `keep-empty` | `func(keep: bool)` | With true, an empty `browser.set-items` keeps the panel and its search box up. |
 | `poll` | `func() -> list<event>` | What the player did on the bookmark panel since the last poll, at most 256 kept. |
 

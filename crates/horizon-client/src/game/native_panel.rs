@@ -56,6 +56,9 @@ pub(super) struct Shown {
     pub(super) recipes: Option<RecipePage>,
 }
 
+#[cfg(feature = "mods")]
+pub(super) type ItemLines = std::collections::HashMap<u32, Vec<(horizon_client::text::Text, u32)>>;
+
 /// The panel's state in the game.
 #[derive(Default)]
 pub(super) struct Panel {
@@ -70,6 +73,8 @@ pub(super) struct Panel {
     of: Option<(Owner, u64)>,
     /// The mod's items as stacks; `None` for an item the game doesn't have.
     stacks: Vec<Option<ItemStack>>,
+    #[cfg(feature = "mods")]
+    lines: ItemLines,
     page: usize,
     #[cfg(feature = "mods")]
     pub(super) bookmarks: super::native_panel_bookmarks::Bookmarks,
@@ -231,6 +236,13 @@ impl Game<'_> {
             self.panel.recipes = shown
                 .as_ref()
                 .map(|shown| super::native_panel_recipes::Pages::new(items, shown, old));
+            #[cfg(feature = "mods")]
+            {
+                self.panel.lines = super::mod_panel::item_lines(match &of.0 {
+                    Owner::Wasm(owner) => self.mods.mods.browser_item_lines(*owner),
+                    Owner::Native(_) => None,
+                });
+            }
             self.panel.of = Some(of.clone());
         }
         #[cfg(feature = "mods")]
@@ -422,11 +434,27 @@ impl Game<'_> {
         if self.carried.is_some() {
             self.draw_carried(batch);
         } else if let Some(stack) = layout.as_ref().and_then(|l| self.browser_pointed_stack(l)) {
-            self.draw_stack_tooltip(batch, &stack.1, cursor.0, cursor.1);
+            #[cfg(feature = "mods")]
+            let extra = layout
+                .as_ref()
+                .and_then(|l| self.browser_hovered(l))
+                .and_then(|(index, _)| self.panel.lines.get(&(index as u32)))
+                .cloned()
+                .unwrap_or_default();
+            #[cfg(not(feature = "mods"))]
+            let extra = Vec::new();
+            self.draw_stack_tooltip_extra(batch, &stack.1, cursor.0, cursor.1, extra);
         } else {
             #[cfg(feature = "mods")]
-            if let Some(stack) = bookmark_tooltip {
-                self.draw_stack_tooltip(batch, &stack, cursor.0, cursor.1);
+            if let Some((index, stack)) = bookmark_tooltip {
+                let extra = self
+                    .panel
+                    .bookmarks
+                    .lines
+                    .get(&(index as u32))
+                    .cloned()
+                    .unwrap_or_default();
+                self.draw_stack_tooltip_extra(batch, &stack, cursor.0, cursor.1, extra);
                 return;
             }
             self.draw_slot_tooltip(batch);

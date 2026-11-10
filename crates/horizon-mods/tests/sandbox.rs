@@ -1298,6 +1298,99 @@ fn browser_extension_keeps_empty_panels_and_delivers_bounded_bookmarks() {
 }
 
 #[test]
+fn browser_item_lines_are_bounded_replaced_and_cleared_per_panel() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let command = |mods: &mut Mods, text: &str| {
+        assert!(mods.command(text));
+        mods.drain();
+    };
+    command(&mut mods, "browser minecraft:stone minecraft:dirt");
+    command(&mut mods, "bookmarks 2");
+    let (owner, main_version, _) = mods.browser_items().unwrap();
+    let bookmark_version = mods.browser_bookmarks(owner).unwrap().0;
+    assert!(mods.browser_item_lines(owner).is_none());
+    assert!(mods.browser_bookmark_lines(owner).is_none());
+    assert!(mods.browser_item_lines(usize::MAX).is_none());
+    assert!(mods.browser_bookmark_lines(usize::MAX).is_none());
+
+    let long = "界".repeat(200);
+    for bookmarks in [false, true] {
+        command(
+            &mut mods,
+            &format!("item_lines {bookmarks} 2 {long}|1|2|3|4|5|6|7|8"),
+        );
+        let lines = if bookmarks {
+            mods.browser_bookmark_lines(owner)
+        } else {
+            mods.browser_item_lines(owner)
+        }
+        .unwrap();
+        assert_eq!(lines.len(), 2);
+        for index in [0, 1] {
+            assert_eq!(
+                lines[&index],
+                [
+                    "界".repeat(128),
+                    "1".into(),
+                    "2".into(),
+                    "3".into(),
+                    "4".into(),
+                    "5".into(),
+                    "6".into(),
+                    "7".into()
+                ]
+            );
+        }
+        if !bookmarks {
+            assert_ne!(mods.browser_items().unwrap().1, main_version);
+            assert_eq!(mods.browser_bookmarks(owner).unwrap().0, bookmark_version);
+            assert!(mods.browser_bookmark_lines(owner).is_none());
+        }
+    }
+    assert_ne!(mods.browser_bookmarks(owner).unwrap().0, bookmark_version);
+    for bookmarks in [false, true] {
+        let main_version = mods.browser_items().unwrap().1;
+        let bookmark_version = mods.browser_bookmarks(owner).unwrap().0;
+        command(
+            &mut mods,
+            &format!("item_lines {bookmarks} 1 replacement|tail"),
+        );
+        let lines = if bookmarks {
+            assert_eq!(mods.browser_items().unwrap().1, main_version);
+            assert_ne!(mods.browser_bookmarks(owner).unwrap().0, bookmark_version);
+            mods.browser_bookmark_lines(owner)
+        } else {
+            assert_ne!(mods.browser_items().unwrap().1, main_version);
+            assert_eq!(mods.browser_bookmarks(owner).unwrap().0, bookmark_version);
+            mods.browser_item_lines(owner)
+        }
+        .unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[&0], ["replacement", "tail"]);
+    }
+    command(&mut mods, "browser minecraft:stone");
+    assert!(mods.browser_item_lines(owner).is_none());
+    assert_eq!(
+        mods.browser_bookmark_lines(owner).unwrap()[&0],
+        ["replacement", "tail"]
+    );
+    command(&mut mods, "item_lines false 8193 capped");
+    let lines = mods.browser_item_lines(owner).unwrap();
+    assert_eq!(lines.len(), 8192);
+    assert_eq!(lines[&8191], ["capped"]);
+    assert!(!lines.contains_key(&8192));
+    command(&mut mods, "bookmarks 1");
+    assert!(mods.browser_bookmark_lines(owner).is_none());
+    assert_eq!(mods.browser_item_lines(owner).unwrap().len(), 8192);
+    command(&mut mods, "item_lines false 0");
+    assert!(mods.browser_item_lines(owner).is_none());
+
+    let untouched = load("horizon_mods_test_guest.hmod");
+    assert!(untouched.browser_item_lines(0).is_none());
+    assert!(untouched.browser_bookmark_lines(0).is_none());
+}
+
+#[test]
 fn browser_lists_items_and_hears_the_player() {
     use horizon_mods::{BrowserClick, BrowserEvent, BrowserStack};
     let mut mods = load("horizon_mods_test_ui_guest.hmod");
