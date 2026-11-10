@@ -2810,6 +2810,7 @@ def check_shift_double_click(host, guest, out):
 
 def check_recipe_furnace(host, guest, out):
     # Only the one recipe known, so the book's only recipe button is raw iron's.
+    guest('command', command='gamemode survival')
     guest('command', command='clear @s')
     guest('command', command='recipe take @s *')
     guest('command', command='recipe give @s minecraft:iron_ingot_from_smelting_raw_iron')
@@ -2818,10 +2819,15 @@ def check_recipe_furnace(host, guest, out):
     x, y, z = (int(v // 1) for v in pos_of(guest))
     host('command', command=f'setblock {x} {y} {z - 2} minecraft:furnace')
     guest.wait(10)
+    # A guest that just (re)joined has no grabbed pointer: interact needs one (as datapack-recipe does).
+    grab(guest)
     guest.raw('interact', x, y, z - 2)
+    guest.raw('wait-for', 'screen', 'container', '--timeout', 10)
     guest.wait(10)
     try:
-        book = guest('screen').get('recipe_book')
+        screen = guest('screen')
+        assert screen.get('container'), f'the furnace did not open on the guest: {screen.get("screen")}'
+        book = screen.get('recipe_book')
         assert book, f'the guest\'s furnace has no recipe book: {guest("screen")}'
         if len(book['targets']) == 1:
             guest.raw('click-at', *centre(book['targets'][0]))

@@ -720,17 +720,29 @@ pub(crate) fn crafting_station(kind: &str) -> &'static str {
     }
 }
 impl RecipeIndex {
-    /// Reads `data/minecraft/recipe/*.json` under `root`, with the world's
-    /// packs' recipe files over it (`overlay`).
+    /// Reads recipes under `root` from minecraft and the content mods'
+    /// namespaces, with the world's packs' recipe files over them (`overlay`).
     pub fn load(root: &std::path::Path, overlay: &PackOverlay) -> Self {
         let mut recipes = std::collections::BTreeMap::new();
         let mut insert = |id: String, v: &serde_json::Value| {
             let kind = v["type"].as_str().unwrap_or_default();
-            let special = kind.starts_with("minecraft:crafting_special_")
-                || kind == "minecraft:crafting_decorated_pot"
-                // A brewing recipe has no recipe book display of its own
-                // (`BrewingRecipe`), so it never takes display numbers.
-                || kind == "minecraft:brewing";
+            // Special recipes, brewing and unsupported custom types have no
+            // displays, so none of them takes display numbers.
+            let special = !matches!(
+                kind,
+                "minecraft:crafting_shaped"
+                    | "minecraft:crafting_shapeless"
+                    | "minecraft:crafting_transmute"
+                    | "minecraft:crafting_dye"
+                    | "minecraft:crafting_imbue"
+                    | "minecraft:smelting"
+                    | "minecraft:blasting"
+                    | "minecraft:smoking"
+                    | "minecraft:campfire_cooking"
+                    | "minecraft:stonecutting"
+                    | "minecraft:smithing_transform"
+                    | "minecraft:smithing_trim"
+            );
             let displays = if special {
                 0
             } else if kind == "minecraft:crafting_transmute" {
@@ -758,7 +770,6 @@ impl RecipeIndex {
                 },
             );
         };
-        let dir = root.join("data/minecraft/recipe");
         // NeoForge's load conditions: the book lists only what loaded; a
         // recipe gated on an absent mod isn't in the manager either.
         let mods: Vec<String> = {
@@ -777,15 +788,20 @@ impl RecipeIndex {
         // The packs' files replace first and the gate answers the merged
         // file, as the crafting loader's does: a false-conditioned pack
         // file leaves the lower one gone too.
-        let folder = crate::json_folder::read(&dir).ok();
-        let mut sources: Vec<(String, serde_json::Value)> = folder
-            .iter()
-            .flat_map(|folder| &folder.files)
-            .filter_map(|file| {
-                let v = serde_json::from_slice::<serde_json::Value>(file.bytes().ok()?).ok()?;
-                Some((format!("minecraft:{}", file.name), v))
-            })
-            .collect();
+        let mut sources = Vec::new();
+        // Match Recipes::sources: content roots declare the namespaces the
+        // recipe tables load besides minecraft in their content marker.
+        for namespace in
+            std::iter::once("minecraft".to_owned()).chain(crate::mod_content::namespaces(root))
+        {
+            let dir = root.join(format!("data/{namespace}/recipe"));
+            if let Ok(folder) = crate::json_folder::read(&dir) {
+                sources.extend(folder.files.iter().filter_map(|file| {
+                    let v = serde_json::from_slice::<serde_json::Value>(file.bytes().ok()?).ok()?;
+                    Some((format!("{namespace}:{}", file.name), v))
+                }));
+            }
+        }
         for (id, files) in overlay.kind("recipe") {
             match serde_json::from_slice::<serde_json::Value>(PackOverlay::top(files)) {
                 Ok(v) => match sources.iter_mut().find(|(n, _)| n == id) {
@@ -1129,6 +1145,61 @@ mod tests {
 
     fn ing(items: &[&str]) -> Ingredient {
         Ingredient::of(items.iter().map(|s| (*s).to_owned()).collect())
+    }
+    #[test]
+    fn recipe_index_gives_content_mod_recipes_book_displays() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-mod-recipe-index-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        std::fs::create_dir_all(root.join("data/othermod/recipe/sub")).unwrap();
+        std::fs::write(
+            root.join(horizon_items::content_namespaces::MARKER),
+            r#"["othermod"]"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("items.json"), r#"{"minecraft:stone":{}}"#).unwrap();
+        let shaped = r##"{"type":"minecraft:crafting_shaped","pattern":["#"],"key":{"#":"minecraft:stone"},"result":{"id":"minecraft:stone"}}"##;
+        for path in [
+            "data/minecraft/recipe/a.json",
+            "data/othermod/recipe/b.json",
+            "data/othermod/recipe/sub/c.json",
+        ] {
+            std::fs::write(root.join(path), shaped).unwrap();
+        }
+        std::fs::write(
+            root.join("data/othermod/recipe/d.json"),
+            r#"{"type":"othermod:custom","result":{"id":"minecraft:stone"}}"#,
+        )
+        .unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+        let index = RecipeIndex::load(&root, &PackOverlay::NONE);
+        let mut book = Book::build(&recipes, &items);
+        book.set_display_ids(&index);
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(
+            index.ids().map(String::as_str).collect::<Vec<_>>(),
+            ["minecraft:a", "othermod:b", "othermod:d", "othermod:sub/c"]
+        );
+        for (id, display) in [("minecraft:a", 0), ("othermod:b", 1), ("othermod:sub/c", 2)] {
+            assert_eq!(index.displays(id), 1, "{id}");
+            assert_eq!(index.first_display(id), Some(display), "{id}");
+            assert_eq!(index.recipe_of_display(display), Some(id));
+            let entry = book.entry(id).unwrap();
+            assert_eq!(entry.display_id, display);
+            assert_eq!(
+                book.entry_of_display(display).map(|i| &book.entries[i].id),
+                Some(&entry.id)
+            );
+            assert!(book.placements.contains_key(id));
+        }
+        assert!(index.special("othermod:d"));
+        assert_eq!(index.displays("othermod:d"), 0);
+        assert_eq!(index.first_display("othermod:d"), None);
+        assert!(index.display_ids("othermod:d").is_empty());
+        assert!(book.entry("othermod:d").is_none());
+        assert_eq!(index.recipe_of_display(3), None);
     }
     #[test]
     fn the_index_knows_each_recipes_toast_station_and_result() {
