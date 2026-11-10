@@ -278,6 +278,39 @@ impl Mod for Guest {
                 });
             }
             "recipe_facts" => {
+                let all = recipes::all();
+                let count = browser_ext::recipe_count();
+                let mut page = Vec::new();
+                let mut start = 0;
+                loop {
+                    let next = browser_ext::recipes_page(start, 7);
+                    if next.is_empty() {
+                        break;
+                    }
+                    start += next.len() as u32;
+                    page.extend(next);
+                }
+                let count_matches = count as usize == all.len();
+                let same = page.len() == all.len()
+                    && page.iter().zip(&all).all(|(a, b)| {
+                        a.book_id == b.book_id
+                            && a.results.len() == b.results.len()
+                            && a.results.iter().zip(&b.results).all(|(x, y)| {
+                                x.item == y.item
+                                    && x.count == y.count
+                                    && x.components == y.components
+                            })
+                    });
+                let empty_edges = browser_ext::recipes_page(count, 5).is_empty()
+                    && browser_ext::recipes_page(u32::MAX, u32::MAX).is_empty();
+                chat::show(&format!(
+                    "recipe count {}, all {}, count matches {}, page matches {}, empty edges {}",
+                    count,
+                    all.len(),
+                    count_matches,
+                    same,
+                    empty_edges
+                ));
                 let facts = browser_ext::item_facts();
                 let others = browser_ext::other_recipes();
                 chat::show(&format!(

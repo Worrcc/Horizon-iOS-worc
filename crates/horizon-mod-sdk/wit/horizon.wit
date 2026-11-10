@@ -898,6 +898,11 @@ interface browser-ext {
     /// and content mods. Empty on servers that are not Horizon (a client is sent no recipe files).
     /// At most 4096, each file at most 16 KiB.
     other-recipes: func() -> list<other-recipe>;
+    use recipes.{recipe};
+    /// Capability `recipes`. How many recipes `recipes.all` holds.
+    recipe-count: func() -> u32;
+    /// Capability `recipes`. `count` recipes of `recipes.all` from index `start`, in the same order (fewer at the end, none past it). At most 2048 a call. For big packs, where one `recipes.all` call costs more than a frame's fuel.
+    recipes-page: func(start: u32, count: u32) -> list<recipe>;
     use browser.{stack, click, recipe-view};
     /// A slot placed in a custom recipe's box, in GUI px from the box's top left; it cycles through
     /// its stacks like the standard layouts' slots.

@@ -1134,14 +1134,38 @@ fn browser_reads_component_facts_and_other_recipe_files() {
             .collect()
     }
 
-    use horizon_mods::{ItemFacts, OtherRecipe, Recipes};
+    use horizon_mods::{ItemFacts, OtherRecipe, Recipe, RecipeKind, RecipeStack, Recipes};
     let mut mods = load("horizon_mods_test_ui_guest.hmod");
     assert_eq!(
         said(&mut mods, "recipe_facts"),
-        ["0 facts, 0 other recipes"]
+        [
+            "recipe count 0, all 0, count matches true, page matches true, empty edges true",
+            "0 facts, 0 other recipes"
+        ]
     );
     mods.set_snapshot(Snapshot {
         recipes: Some(std::sync::Arc::new(Recipes {
+            recipes: vec![Recipe {
+                id: "minecraft:stone".into(),
+                kind: RecipeKind::CraftingShapeless,
+                category: "building".into(),
+                group: String::new(),
+                width: 0,
+                height: 0,
+                slots: vec![vec![RecipeStack {
+                    item: 1,
+                    count: 1,
+                    components: String::new(),
+                }]],
+                results: vec![RecipeStack {
+                    item: 2,
+                    count: 1,
+                    components: String::new(),
+                }],
+                cooking_time: 0,
+                experience: 0.0,
+                book_id: 4,
+            }],
             facts: vec![ItemFacts {
                 item: 3,
                 burn_ticks: 1600,
@@ -1160,6 +1184,7 @@ fn browser_reads_component_facts_and_other_recipe_files() {
     assert_eq!(
         said(&mut mods, "recipe_facts"),
         [
+            "recipe count 1, all 1, count matches true, page matches true, empty edges true",
             "1 facts, 1 other recipes",
             "3: burn 1600, compost 0.3, repaired by [1, 4]",
             "iceandfire:silver: iceandfire:dragonforge {\"type\":\"iceandfire:dragonforge\"}",

@@ -1237,7 +1237,10 @@ impl Mods {
                 f.starts_with("recipes.")
                     || matches!(
                         f.as_str(),
-                        "browser-ext.item-facts" | "browser-ext.other-recipes"
+                        "browser-ext.item-facts"
+                            | "browser-ext.other-recipes"
+                            | "browser-ext.recipe-count"
+                            | "browser-ext.recipes-page"
                     )
             }),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
@@ -2114,6 +2117,21 @@ impl browser::Host for State {
     }
 }
 impl browser_ext::Host for State {
+    fn recipe_count(&mut self) -> u32 {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map_or(0, |r| r.recipes.len().min(u32::MAX as usize) as u32)
+    }
+    fn recipes_page(&mut self, start: u32, count: u32) -> Vec<Recipe> {
+        self.snapshot.recipes.as_ref().map_or_else(Vec::new, |r| {
+            let start = (start as usize).min(r.recipes.len());
+            let end = start
+                .saturating_add((count.min(2048)) as usize)
+                .min(r.recipes.len());
+            r.recipes[start..end].to_vec()
+        })
+    }
     fn item_facts(&mut self) -> Vec<ItemFacts> {
         self.snapshot
             .recipes
