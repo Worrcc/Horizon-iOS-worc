@@ -55,13 +55,13 @@ fn ingredient(v: &Value) -> Option<Ingredient> {
 /// Every recipe file, by recipe id (the registry's order): read through
 /// `json_folder`, so a load holding the folder shares one read of it. A file
 /// that can't be read or doesn't parse is left out.
-pub(super) fn recipes(dir: &Path, out: &mut BTreeMap<String, Value>) {
+pub(super) fn recipes(dir: &Path, namespace: &str, out: &mut BTreeMap<String, Value>) {
     let Ok(folder) = horizon_world::json_folder::read(dir) else {
         return;
     };
     for file in &folder.files {
         if let Ok(v) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
-            out.insert(format!("minecraft:{}", file.name), v);
+            out.insert(format!("{namespace}:{}", file.name), v);
         }
     }
 }
@@ -102,8 +102,27 @@ pub(super) fn network_recipes(
     overlay: &horizon_world::loot::PackOverlay,
 ) -> (BTreeMap<String, Box<str>>, HashMap<String, i32>) {
     let mut all = BTreeMap::new();
-    recipes(&resources.join("data/minecraft/recipe"), &mut all);
+    // Minecraft's, then the content mods' namespaces, as the recipe tables
+    // and the book's index read them (`RecipeIndex::load`).
+    for namespace in
+        std::iter::once("minecraft".to_owned()).chain(crate::mod_content::namespaces(resources))
+    {
+        let dir = resources.join(format!("data/{namespace}/recipe"));
+        recipes(&dir, &namespace, &mut all);
+    }
     overlay_recipes(overlay, &mut all);
+    // NeoForge's load conditions, as the index answers them: a recipe gated
+    // on an absent mod isn't in the manager.
+    let mods: Vec<String> = {
+        let mut mods = horizon_items::content_namespaces::mod_ids(resources);
+        if !mods.iter().any(|m| m == "minecraft") {
+            mods.push("minecraft".to_owned());
+        }
+        mods
+    };
+    all.retain(|_, r| {
+        horizon_world::conditions::conditions_hold(r, &|id: &str| mods.iter().any(|m| m == id))
+    });
     // The data's recipe filters, as the server's own tables apply them
     // (#5910), once, before the ingredient normalization, so a swapped
     // name resolves and every copy — the book's displays, the property

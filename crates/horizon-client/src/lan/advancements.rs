@@ -683,6 +683,29 @@ mod tests {
         root
     }
 
+    /// A content mod's recipe (`data/<mod>/recipe`) reaches the client's book
+    /// as vanilla's do: the network copy reads the mods' namespaces too, so
+    /// a recipe-book click or a mod's `recipes.place` can place it.
+    #[test]
+    fn a_content_mod_recipe_has_a_book_entry() {
+        let root = resources("content_mod_recipe", &[]);
+        let dir = root.join("data/othermod/recipe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            root.join(horizon_items::content_namespaces::MARKER),
+            r#"["othermod"]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("ingot.json"),
+            r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:stick"}}"#,
+        )
+        .unwrap();
+        let (sync, _) = entry(&root, "othermod:ingot");
+        assert!(sync.advancements.recipes.contains_key("othermod:ingot"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The server's sync over `root`, and the one entry of `id` read back as
     /// the client's `RecipeBookEntry::read` reads it.
     fn entry(root: &std::path::Path, id: &str) -> (SyncData, RecipeBookEntry) {
