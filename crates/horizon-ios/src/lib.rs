@@ -398,3 +398,18 @@ mod ios {
         }
     }
 }
+
+/// Present the ZIP document picker (main thread only).
+pub fn pick_modpack() {
+    #[cfg(target_os = "ios")]
+    document_picker::present();
+}
+/// Take a copied document path once, on the main thread. Cancel produces no path.
+pub fn take_modpack() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "ios")]
+    return document_picker::take();
+    #[cfg(not(target_os = "ios"))]
+    None
+}
+#[cfg(target_os = "ios")]
+mod document_picker;

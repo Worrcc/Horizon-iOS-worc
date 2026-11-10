@@ -796,5 +796,14 @@
   "horizon.instances.new": "New Instance",
   "horizon.instances.current": "This instance",
   "horizon.pages.launcher.tooltip": "Pick an instance, then its mods, shader packs and settings. Play opens the title screen.",
-  "horizon.pages.instances.tooltip": "Separate game folders, each with its own worlds, options, packs, shader packs and mods."
+  "horizon.pages.instances.tooltip": "Separate game folders, each with its own worlds, options, packs, shader packs and mods.",
+  "horizon.modpack.title": "Import Modpack",
+  "horizon.modpack.import": "Import Modpack...",
+  "horizon.modpack.import_file": "Import %s",
+  "horizon.modpack.progress": "Importing mods: %s / %s",
+  "horizon.modpack.summary": "%s added, %s replaced, %s skipped",
+  "horizon.modpack.restart": "Turn them on, then restart the game to finish loading the modpack.",
+  "horizon.modpack.enable": "Turn All On",
+  "horizon.modpack.error": "Import failed: %s",
+  "horizon.modpack.skipped": "%s: %s"
 }

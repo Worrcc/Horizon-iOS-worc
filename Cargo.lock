@@ -1893,6 +1893,7 @@ dependencies = [
  "objc2-game-controller",
  "objc2-quartz-core 0.2.2",
  "objc2-ui-kit",
+ "objc2-uniform-type-identifiers",
  "raw-window-handle",
  "security-framework",
 ]
@@ -1949,6 +1950,7 @@ dependencies = [
  "horizon-shader-api",
  "log",
  "minisign-verify",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

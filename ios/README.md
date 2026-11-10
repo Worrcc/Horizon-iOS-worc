@@ -157,6 +157,25 @@ The app's build comes with Horizon's **Block Info** mod (`block_info.hmod`, next
 `.ipa`): it shows the block under the crosshair, its icon, name and the game or mod it comes
 from, in a box at the top of the screen.
 
+#### Importing a modpack
+
+Open **Mods...** for the current instance and tap **Import Modpack...**. Choose a `.zip`
+in Files. Horizon copies it temporarily, finds every `.hmod` inside (including nested
+folders), and installs the mods in that instance. The import runs in the background and
+shows progress, then **N added, M replaced, K skipped**, with reasons for skipped files.
+Existing mods keep their on/off state; new mods stay off. Tap **Turn All On** to enable
+all imported mods, or **Done** to keep those choices. Content changes need a restart.
+
+Alternatively, copy a ZIP into the instance's `horizon-mods` folder and tap its
+**Import <file name>** row on the Mods page. A successfully imported ZIP is removed only
+when at least one mod was installed. The system picker's temporary copy is removed after
+processing, including on failure; the original in Files stays untouched.
+
+Only Horizon `.hmod` packages are imported. Java modpacks, resource packs and shader packs
+are not installed by this feature. For duplicate mod ids, the highest version in the ZIP
+wins. Imports accept at most 512 `.hmod` entries and 2 GiB of uncompressed package bytes,
+and reject compression ratios above 1000:1.
+
 ## Controls
 
 Installed as its own app, Horizon runs in landscape. Under LiveContainer it follows the phone's

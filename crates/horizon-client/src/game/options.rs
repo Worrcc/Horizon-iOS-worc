@@ -420,6 +420,9 @@ impl Game<'_> {
                     let _ = std::fs::create_dir_all(&dir);
                     super::packs::open_folder(&dir);
                 }
+                Event::ImportModpack => super::modpack_import::pick(),
+                Event::ImportArchive(i) => self.import_archive(i),
+                Event::EnableImported => self.enable_imported(),
                 Event::OpenModFolder => {
                     let dir = Self::game_dir().join(horizon_client::mod_list::DIR);
                     let _ = std::fs::create_dir_all(&dir);
@@ -450,7 +453,11 @@ impl Game<'_> {
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::ModSettings(i) => self.open_mod_screen(i, true),
                 // The running game's list is its mods' own (`list_mods`).
-                Event::ListMods => {}
+                Event::ListMods => self
+                    .ui
+                    .options
+                    .modpack
+                    .scan(&Self::game_dir().join(horizon_client::mod_list::DIR)),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
                 // AccessibilityOptionsScreen's link button: ConfirmLinkScreen
                 // back to the options screen.

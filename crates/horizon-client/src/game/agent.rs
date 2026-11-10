@@ -1071,6 +1071,15 @@ impl Game<'_> {
             return Err(format!("busy with {}; wait for it or send stop", task.name).into());
         }
         match name {
+            "modpack-import" => {
+                let path = a.pos.first().ok_or("modpack-import requires PATH")?;
+                self.control_import_modpack(
+                    std::path::Path::new(path),
+                    a.flags.contains_key("enable"),
+                    reply.clone(),
+                )?;
+                Ok(Handled::Deferred)
+            }
             "state" => ok(self.state_value()),
             "looking-at" | "target" => {
                 self.need_world()?;

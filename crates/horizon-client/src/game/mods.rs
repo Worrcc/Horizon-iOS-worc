@@ -37,6 +37,7 @@ use {
 
 #[derive(Default)]
 pub(super) struct ModsState {
+    pub(super) import: super::modpack_import::Job,
     #[cfg(feature = "mods")]
     pub(super) mods: Mods,
     /// Capability `input`: a claimed item's use while the button is down.

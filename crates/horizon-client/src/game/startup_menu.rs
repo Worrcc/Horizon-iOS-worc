@@ -12,8 +12,9 @@ use winit::{event::KeyEvent, keyboard::ModifiersState};
 
 #[derive(Default)]
 pub(super) struct StartupMenu {
+    pub(super) import: super::modpack_import::Job,
     title: Option<Title>,
-    options: OptionsUi,
+    pub(super) options: OptionsUi,
     options_open: bool,
     /// The credits from Credits & Attribution, and their last frame.
     win: Option<(horizon_client::win_screen::WinScreen, Instant)>,
@@ -112,6 +113,7 @@ impl StartupMenu {
     }
 
     pub(super) fn handoff(&mut self, game: &mut Game<'_>) {
+        game.mods.import = std::mem::take(&mut self.import);
         game.title = self
             .title
             .take()
@@ -599,6 +601,9 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::ImportModpack => super::modpack_import::pick(),
+                Event::ImportArchive(i) => self.menu_import_archive(i),
+                Event::EnableImported => self.menu_enable_imported(),
                 Event::OpenModFolder => {
                     let dir = Game::game_dir().join(horizon_client::mod_list::DIR);
                     let _ = std::fs::create_dir_all(&dir);
@@ -661,6 +666,10 @@ impl Loading {
                 // Mods' settings pages open only in a running game.
                 Event::NativeSettings(_) | Event::NativeButton(..) | Event::ModSettings(_) => {}
                 Event::ListMods => {
+                    self.menu
+                        .options
+                        .modpack
+                        .scan(&Game::game_dir().join(horizon_client::mod_list::DIR));
                     let dev = self.options.as_ref().map_or(&[][..], |o| &o.dev_mods[..]);
                     self.settings.mods.installed = super::mods::installed_on_disk(dev);
                 }

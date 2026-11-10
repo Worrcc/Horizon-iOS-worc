@@ -209,6 +209,28 @@ the reason in the log.
 
 Benchmarks (`--benchmark`) never load mods.
 
+### Importing a modpack
+
+On either Mods page (the startup menu's **Mods...** or **Options > Mods**), use
+**Import Modpack...**. On iOS this opens the system ZIP picker. On desktop it opens the
+current instance's `horizon-mods` folder: put a `.zip` there, then press its
+**Import <file name>** row (the page follows the folder: a zip copied in appears within a second).
+
+Horizon installs every `.hmod` found at any depth in that ZIP, and nothing else. It checks
+each manifest, installs by mod id, and keeps the highest version when the ZIP contains
+that id more than once (semantic versions, or natural ordering for other release names).
+An existing mod with that id is replaced, keeping its on/off state. New mods stay off.
+The import runs on a worker while the page shows progress. Its result lists the added,
+replaced and skipped counts and scrollable reasons. **Turn All On** enables the imported
+mods as the page's own switches do; restart the game to finish loading them (server mods
+and content start with the world). **Done** returns to the list. A drop-in ZIP is deleted only after a successful
+import with at least one installed mod; failures leave it available to inspect or retry.
+
+Java modpacks cannot run in Horizon. There is a limit of 512 embedded `.hmod` entries,
+2 GiB of total uncompressed `.hmod` bytes and a maximum compression ratio of 1000:1.
+Archive paths never become installation paths. The control tool can also import without
+removing the source: `horizon-ctl modpack-import PATH [--enable]` replies with a JSON report.
+
 ## Making a content mod
 
 ```sh

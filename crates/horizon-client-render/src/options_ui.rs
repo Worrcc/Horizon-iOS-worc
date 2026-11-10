@@ -1254,6 +1254,7 @@ pub enum Page {
     Font,
     Packs,
     Mods,
+    Modpack,
     /// A native mod's settings page: its index in `mods.installed`.
     NativeMod(usize),
     /// Horizon's shader packs, either kind (`shader_pack_list`).
@@ -1340,6 +1341,9 @@ enum Act {
     NativeKey(usize, usize),
     NativeButton(usize, usize),
     OpenModFolder,
+    ImportModpack,
+    ImportArchive(usize),
+    EnableImported,
     /// Accessibility's "Accessibility Help" link
     /// (`AccessibilityOptionsScreen.addFooter`'s openLinkButton).
     AccessibilityHelp,
@@ -1476,6 +1480,9 @@ pub enum Event {
     /// Data Packs' Open Pack Folder: create the folder if needed and open it.
     OpenDataPackFolder(std::path::PathBuf),
     OpenModFolder,
+    ImportModpack,
+    ImportArchive(usize),
+    EnableImported,
     /// Accessibility's Help link: confirm and open
     /// `CommonLinks.ACCESSIBILITY_HELP` over the options screen.
     AccessibilityHelp,
@@ -1560,6 +1567,8 @@ fn slider_unsnapped(opt: Opt, held: bool, moved: Instant) -> bool {
     }
 }
 pub struct OptionsUi {
+    pub modpack: crate::mod_list::ImportView,
+    modpack_lines: Vec<Text>,
     pub stack: Vec<Page>,
     scroll: f32,
     pub(crate) dragging: Option<Opt>,
@@ -1663,6 +1672,8 @@ impl Default for OptionsUi {
         let mut settings_search = ui::EditBox::new(0.0, 0.0, 200.0, 15.0);
         settings_search.focused = false;
         Self {
+            modpack: Default::default(),
+            modpack_lines: Vec::new(),
             stack: vec![Page::Main],
             scroll: 0.0,
             dragging: None,
@@ -2394,6 +2405,7 @@ impl OptionsUi {
             Page::Font => "options.font.title",
             Page::Packs => "resourcePack.title",
             Page::Mods => "horizon.pages.mods",
+            Page::Modpack => "horizon.modpack.title",
             Page::NativeMod(_) => "Mod Settings",
             Page::Instances => "horizon.instances.title",
             Page::Launcher => "horizon.title",
@@ -2866,13 +2878,35 @@ impl OptionsUi {
             }
             Page::Font => pairs(&[Opt::ForceUnicode, Opt::JapaneseGlyphs]),
             Page::Mods => {
+                let mut imports: Vec<Row> = self
+                    .modpack
+                    .archives
+                    .iter()
+                    .enumerate()
+                    .map(|(i, path)| {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        Row::Buttons(
+                            button(
+                                0.0,
+                                0.0,
+                                310.0,
+                                Text::tr("horizon.modpack.import_file", &[&name]),
+                                Act::ImportArchive(i),
+                            ),
+                            None,
+                        )
+                    })
+                    .collect();
                 if s.mods.installed.is_empty() {
-                    return vec![Row::Header("horizon.mods.empty")];
+                    imports.push(Row::Header("horizon.mods.empty"));
+                    return imports;
                 }
                 // Content mods (blocks, items, mobs) are read once, when the game loads.
                 let note =
                     Row::Note("Mods adding blocks, items or mobs change at the next start".into());
-                std::iter::once(note)
+                imports
+                    .into_iter()
+                    .chain(std::iter::once(note))
                     .chain(s.mods.installed.iter().enumerate().map(|(i, installed)| {
                         let mut label = Text::option_name_value(
                             Text::literal(installed.title.clone()),
@@ -2920,6 +2954,27 @@ impl OptionsUi {
                         }
                     }))
                     .collect()
+            }
+            Page::Modpack => {
+                let v = &self.modpack;
+                let mut rows = Vec::new();
+                if v.running {
+                    rows.push(Row::Note(
+                        Text::tr("horizon.modpack.progress", &[&v.done, &v.total]).plain(),
+                    ));
+                }
+                if let Some((added, replaced, skipped)) = v.summary {
+                    rows.push(Row::Note(
+                        Text::tr("horizon.modpack.summary", &[&added, &replaced, &skipped]).plain(),
+                    ));
+                    rows.push(Row::Note(tr("horizon.modpack.restart").plain()));
+                }
+                rows.extend(
+                    self.modpack_lines
+                        .iter()
+                        .map(|line| Row::Note(line.plain())),
+                );
+                rows
             }
             Page::NativeMod(i) => self.native_rows(s, i),
             Page::Instances => instance_rows(s),
@@ -3446,7 +3501,48 @@ impl OptionsUi {
                     Page::Launcher => Some(("horizon.instances.new", Act::NewInstance)),
                     _ => None,
                 };
-                if let Some((label, act)) = folder {
+                if page == Page::Mods {
+                    out.push(button(
+                        cx - 155.0,
+                        h - 27.0,
+                        100.0,
+                        tr("horizon.mods.open_folder"),
+                        Act::OpenModFolder,
+                    ));
+                    out.push(button(
+                        cx - 50.0,
+                        h - 27.0,
+                        100.0,
+                        tr("horizon.modpack.import"),
+                        Act::ImportModpack,
+                    ));
+                    out.push(button(
+                        cx + 55.0,
+                        h - 27.0,
+                        100.0,
+                        tr("gui.done"),
+                        Act::Done,
+                    ));
+                } else if page == Page::Modpack {
+                    let enable = button(
+                        cx - 154.0,
+                        h - 27.0,
+                        150.0,
+                        tr("horizon.modpack.enable"),
+                        Act::EnableImported,
+                    );
+                    out.push(if self.modpack.running || self.modpack.ids.is_empty() {
+                        inactive(enable)
+                    } else {
+                        enable
+                    });
+                    let done = button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done);
+                    out.push(if self.modpack.running {
+                        inactive(done)
+                    } else {
+                        done
+                    });
+                } else if let Some((label, act)) = folder {
                     out.push(button(cx - 154.0, h - 27.0, 150.0, tr(label), act));
                     out.push(button(cx + 4.0, h - 27.0, 150.0, tr("gui.done"), Act::Done));
                 } else {
@@ -3649,6 +3745,26 @@ impl OptionsUi {
             packs.bind_icons(&mut draws, atlas, &mut batch.patches);
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
+        }
+        if self.page() == Page::Modpack {
+            let mut details = Vec::new();
+            if let Some(error) = &self.modpack.error {
+                details.push(Text::tr("horizon.modpack.error", &[error]));
+            }
+            details.extend(
+                self.modpack
+                    .skipped
+                    .iter()
+                    .map(|(name, reason)| Text::tr("horizon.modpack.skipped", &[name, reason])),
+            );
+            self.modpack_lines = details
+                .iter()
+                .flat_map(|text| {
+                    atlas
+                        .font
+                        .wrap_components(text, (w - 24.0).clamp(1.0, 310.0) as i32)
+                })
+                .collect();
         }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
         self.size = (w, h);
@@ -4330,6 +4446,9 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::ImportModpack => events.push(Event::ImportModpack),
+                        Act::ImportArchive(i) => events.push(Event::ImportArchive(i)),
+                        Act::EnableImported => events.push(Event::EnableImported),
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);
@@ -4755,6 +4874,9 @@ impl OptionsUi {
             .map(|c| c.picture(h))
     }
     pub fn back(&mut self, s: &mut Settings) -> Vec<Event> {
+        if self.page() == Page::Modpack && self.modpack.running {
+            return Vec::new();
+        }
         let mut events = Vec::new();
         // A pack's screen goes back to the one that opened it.
         if self.page() == Page::ShaderOptions
@@ -5303,6 +5425,9 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::ImportModpack => events.push(Event::ImportModpack),
+                        Act::ImportArchive(i) => events.push(Event::ImportArchive(i)),
+                        Act::EnableImported => events.push(Event::EnableImported),
                         Act::PvpPreset => {
                             crate::pvp::apply_preset(s);
                             events.push(Event::Changed);

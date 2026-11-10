@@ -212,6 +212,7 @@ mod mod_players;
 mod mod_render;
 #[cfg(feature = "mods")]
 mod mod_target;
+mod modpack_import;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -19331,6 +19332,7 @@ impl Game<'_> {
         }
     }
     pub(super) fn idle(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.poll_modpack();
         // A splitscreen player's game has nothing to save: P1's shuts the process down.
         if horizon_threads::stop_requests() > 0
             && !self.options.split_guest
@@ -22085,6 +22087,7 @@ impl Loading {
             let events = self.touch.update(size);
             self.menu_events(event_loop, events);
         }
+        self.poll_menu_modpack();
         self.poll_startup_pad(event_loop);
         self.poll_menu_realms(event_loop);
         if let Some(w) = &self.window {

@@ -225,3 +225,28 @@ mod tests {
         assert_eq!(list.serialize(), "mod.c:true\n");
     }
 }
+
+/// Transient state shared by the startup and in-game Mods pages.
+#[derive(Default)]
+pub struct ImportView {
+    pub archives: Vec<std::path::PathBuf>,
+    pub running: bool,
+    pub done: usize,
+    pub total: usize,
+    pub summary: Option<(usize, usize, usize)>,
+    pub skipped: Vec<(String, String)>,
+    pub error: Option<String>,
+    pub ids: Vec<String>,
+}
+impl ImportView {
+    pub fn scan(&mut self, dir: &Path) {
+        self.archives = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")))
+            .collect();
+        self.archives.sort();
+    }
+}
