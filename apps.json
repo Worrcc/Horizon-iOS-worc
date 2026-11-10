@@ -1,0 +1,41 @@
+{
+  "name": "Horizon iOS (fork builds)",
+  "identifier": "io.github.worrcc.horizon.source",
+  "sourceURL": "https://raw.githubusercontent.com/Worrcc/Horizon-iOS-worc/ios-source/apps.json",
+  "website": "https://github.com/Worrcc/Horizon-iOS-worc",
+  "iconURL": "https://raw.githubusercontent.com/Worrcc/Horizon-iOS-worc/ios-source/icon.png",
+  "apps": [
+    {
+      "name": "Horizon",
+      "bundleIdentifier": "io.github.worrcc.horizon",
+      "developerName": "Worrcc",
+      "subtitle": "Rust Minecraft 26.3 for iOS",
+      "localizedDescription": "Horizon, a Rust rewrite of Minecraft: Java Edition, for iPhone and iPad (unofficial fork builds). It holds no game files: you add your own. Each build is listed with its branch.",
+      "iconURL": "https://raw.githubusercontent.com/Worrcc/Horizon-iOS-worc/ios-source/icon.png",
+      "tintColor": "3C8527",
+      "category": "games",
+      "screenshots": [],
+      "versions": [
+        {
+          "version": "0.2.0.54",
+          "buildVersion": "0.2.0.54",
+          "date": "2026-11-10T16:24:28Z",
+          "localizedDescription": "Branch claude/liteminer-api, commit b7dcccb0f.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-54/Horizon.ipa",
+          "size": 34132526,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      },
+      "version": "0.2.0.54",
+      "versionDate": "2026-11-10T16:24:28Z",
+      "versionDescription": "Branch claude/liteminer-api, commit b7dcccb0f.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-54/Horizon.ipa",
+      "size": 34132526
+    }
+  ],
+  "news": []
+}
