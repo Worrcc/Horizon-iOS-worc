@@ -608,6 +608,9 @@ pub struct Entry {
     pub status: Status,
     /// The mod's average time per call of its busiest hook.
     pub cost: Duration,
+    /// Fuel the last call used (all of it when it ran out): a diagnostic
+    /// for benches (`Mods::last_fuel_used`).
+    last_fuel: u64,
     run: Option<Running>,
     modified: Option<SystemTime>,
 }
@@ -957,6 +960,7 @@ impl Mods {
                 manifest: None,
                 status: Status::Off,
                 cost: Duration::ZERO,
+                last_fuel: 0,
                 run: None,
                 modified,
             };
@@ -1254,6 +1258,11 @@ impl Mods {
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
+    /// The fuel mod `index`'s last hook call used, all of it when it ran
+    /// out: a diagnostic for benches, not part of the mods' API.
+    pub fn last_fuel_used(&self, index: usize) -> Option<u64> {
+        self.entries.get(index).map(|e| e.last_fuel)
+    }
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
         self.snapshot = Arc::new(snapshot);
@@ -1336,6 +1345,7 @@ impl Mods {
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
         let took = started.elapsed();
+        entry.last_fuel = fuel.saturating_sub(run.store.get_fuel().unwrap_or(0));
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + took) / 64;
         if self.framing && result.is_ok() {
