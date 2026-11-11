@@ -441,6 +441,10 @@ struct ContainerTouch {
     fingers: Vec<(u64, (f32, f32))>,
     dragging: bool,
     pending: bool,
+    /// Where a two-finger scroll aims: the pair's midpoint when the second
+    /// finger landed. It stays put (as a trackpad's cursor does) so the
+    /// gesture keeps scrolling the slot it started on.
+    anchor: Option<(f32, f32)>,
 }
 #[cfg(feature = "mods")]
 enum ContainerTouchEvent {
@@ -475,6 +479,9 @@ impl ContainerTouch {
                     self.pending = false;
                 }
                 self.fingers.push((id, at));
+                if self.fingers.len() == 2 {
+                    self.anchor = self.midpoint();
+                }
             }
             TouchPhase::Moved => {
                 let old = self.midpoint();
@@ -491,9 +498,11 @@ impl ContainerTouch {
                 }
                 if self.dragging {
                     out.push(Out(Output::Pointer(at.0, at.1)));
-                } else if let (Some(old), Some(new)) = (old, self.midpoint()) {
+                } else if let (Some(old), Some(new), Some(aim)) =
+                    (old, self.midpoint(), self.anchor)
+                {
                     out.extend([
-                        Out(Output::Pointer(new.0, new.1)),
+                        Out(Output::Pointer(aim.0, aim.1)),
                         Out(Output::Scroll((new.1 - old.1) / 12.0)),
                     ]);
                 }
@@ -503,6 +512,9 @@ impl ContainerTouch {
                     return out;
                 };
                 self.fingers.remove(i);
+                if self.fingers.len() < 2 {
+                    self.anchor = None;
+                }
                 if std::mem::take(&mut self.dragging) {
                     if phase == TouchPhase::Cancelled {
                         out.push(Take);
@@ -607,7 +619,7 @@ mod container_screen_tests {
         assert!(matches!(
             t.event(2, TouchPhase::Moved, (60.0, 44.0)).as_slice(),
             [
-                ContainerTouchEvent::Output(Output::Pointer(50.0, 32.0)),
+                ContainerTouchEvent::Output(Output::Pointer(50.0, 20.0)),
                 ContainerTouchEvent::Output(Output::Scroll(1.0))
             ]
         ));
