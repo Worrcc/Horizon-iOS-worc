@@ -112,7 +112,10 @@ impl BlockInfo {
     }
 
     /// The box's lines for a block: the icon's item, then the text lines.
-    fn lines(&mut self, hit: &game::Hit) -> (Option<String>, Vec<(String, u32)>) {
+    fn lines(
+        &mut self,
+        hit: &game::Hit,
+    ) -> (Option<String>, Vec<(String, u32)>, Option<HarvestRow>) {
         let (source, coords, tool) = (self.source, self.coords, self.tool);
         let names = self.names();
         let item = item_for(&hit.block, names);
@@ -132,14 +135,15 @@ impl BlockInfo {
                 DETAIL,
             ));
         }
-        if tool && let Some(line) = client_world::harvest(&hit.block).and_then(|h| harvest_line(&h))
-        {
-            lines.push(line);
-        }
+        let harvest = if tool {
+            client_world::harvest(&hit.block).and_then(|h| harvest_row(&h))
+        } else {
+            None
+        };
         if source {
             lines.push((source_name(namespace), SOURCE));
         }
-        (item, lines)
+        (item, lines, harvest)
     }
 
     fn clear(&mut self) {
@@ -180,16 +184,24 @@ impl BlockInfo {
     fn draw(&mut self) {
         let distance = REACHES[self.reach].0;
         let target = game::raycast_entity(distance)
-            .map(|hit| (None, self.entity_lines(&hit)))
+            .map(|hit| (None, self.entity_lines(&hit), None))
             .or_else(|| game::raycast(distance).map(|hit| self.lines(&hit)));
-        let Some((item, lines)) = target else {
+        let Some((item, mut lines, harvest)) = target else {
             self.clear();
             return;
         };
+        // A text harvest row is a line under the name; icons get a row there.
+        let mut icons = None;
+        match harvest {
+            Some(HarvestRow::Text(t, c)) => lines.insert(1.min(lines.len()), (t, c)),
+            Some(HarvestRow::Icons(items, frame)) => icons = Some((items, frame)),
+            None => {}
+        }
         let key: Vec<String> = item
             .iter()
             .cloned()
             .chain(lines.iter().map(|(t, c)| format!("{c:06X}{t}")))
+            .chain(icons.iter().map(|(i, f)| format!("{f:?}{}", i.join(","))))
             .collect();
         if self.shown.as_ref() == Some(&(key.clone(), self.place)) {
             return;
@@ -199,12 +211,16 @@ impl BlockInfo {
         } else {
             PAD
         };
+        let icons_w = icons
+            .as_ref()
+            .map_or(0.0, |(i, _)| i.len() as f32 * ICON_STEP);
+        let icons_h = if icons.is_some() { ICON_STEP } else { 0.0 };
         let widest = lines
             .iter()
             .map(|(t, _)| render::text_width(t))
-            .fold(0.0, f32::max);
+            .fold(icons_w, f32::max);
         let w = text_x + widest + PAD;
-        let h = (PAD * 2.0 + lines.len() as f32 * LINE).max(PAD * 2.0 + ICON);
+        let h = (PAD * 2.0 + lines.len() as f32 * LINE + icons_h).max(PAD * 2.0 + ICON);
         let mut shapes = vec![
             Shape::Fill(FillShape {
                 rect: Rect {
@@ -235,18 +251,53 @@ impl BlockInfo {
                 scale: 1.0,
             }));
         }
-        let top = (h - lines.len() as f32 * LINE) / 2.0 + 1.0;
+        let mut y = (h - lines.len() as f32 * LINE - icons_h) / 2.0 + 1.0;
         for (i, (text, color)) in lines.into_iter().enumerate() {
             shapes.push(Shape::Text(TextShape {
                 text,
-                at: Point {
-                    x: text_x,
-                    y: top + i as f32 * LINE,
-                },
+                at: Point { x: text_x, y },
                 color,
                 centered: false,
                 shadow: true,
             }));
+            y += LINE;
+            // The tool icons sit right under the name.
+            if i == 0
+                && let Some((items, frame)) = icons.take()
+            {
+                for (k, item) in items.into_iter().enumerate() {
+                    let x = text_x + k as f32 * ICON_STEP;
+                    if let Some(color) = frame {
+                        shapes.push(Shape::Fill(FillShape {
+                            rect: Rect {
+                                x,
+                                y,
+                                w: ICON + 2.0,
+                                h: ICON + 2.0,
+                            },
+                            color: 0xFF00_0000 | color,
+                        }));
+                        shapes.push(Shape::Fill(FillShape {
+                            rect: Rect {
+                                x: x + 1.0,
+                                y: y + 1.0,
+                                w: ICON,
+                                h: ICON,
+                            },
+                            color: BACKGROUND,
+                        }));
+                    }
+                    shapes.push(Shape::Item(ItemShape {
+                        item,
+                        at: Point {
+                            x: x + 1.0,
+                            y: y + 1.0,
+                        },
+                        scale: 1.0,
+                    }));
+                }
+                y += ICON_STEP;
+            }
         }
         match PLACES[self.place].0 {
             Place::Corner(corner) => {
@@ -303,18 +354,21 @@ impl BlockInfo {
     }
 }
 
-/// "Needs: Diamond Pickaxe" (green when the held item drops the block, red
-/// when not), "Tool: Axe" for a block a tool only mines faster, "Unbreakable";
+/// What a block needs, under its name.
+#[derive(Clone, Debug, PartialEq)]
+enum HarvestRow {
+    /// Tool icons; framed green or red (the held item drops the block or not)
+    /// when the tool is needed, unframed when it only mines faster.
+    Icons(Vec<String>, Option<u32>),
+    Text(String, u32),
+}
+
+/// The tool a block needs as its icon (`minecraft:diamond_pickaxe`), the
+/// tools that only mine it faster (their wooden ones), or "Unbreakable";
 /// none for a block a hand breaks as well as anything.
-fn harvest_line(h: &client_world::HarvestInfo) -> Option<(String, u32)> {
-    let word = |w: &str| {
-        let mut c = w.chars();
-        c.next()
-            .map(|f| f.to_uppercase().chain(c).collect::<String>())
-            .unwrap_or_default()
-    };
+fn harvest_row(h: &client_world::HarvestInfo) -> Option<HarvestRow> {
     if h.hardness < 0.0 {
-        return Some(("Unbreakable".to_owned(), DETAIL));
+        return Some(HarvestRow::Text("Unbreakable".to_owned(), DETAIL));
     }
     if h.needs_tool {
         let color = if h.held_drops {
@@ -322,18 +376,27 @@ fn harvest_line(h: &client_world::HarvestInfo) -> Option<(String, u32)> {
         } else {
             CANNOT_HARVEST
         };
-        let what = match (&h.tier, &h.tier_tool) {
-            (Some(tier), Some(tool)) => format!("{} {}", word(tier), word(tool)),
-            _ => "the right tool".to_owned(),
-        };
-        return Some((format!("Needs: {what}"), color));
+        return Some(match (&h.tier, &h.tier_tool) {
+            (Some(tier), Some(tool)) => {
+                HarvestRow::Icons(vec![format!("minecraft:{tier}_{tool}")], Some(color))
+            }
+            _ => HarvestRow::Text("Needs the right tool".to_owned(), color),
+        });
     }
     if h.tools.is_empty() {
         return None;
     }
-    let tools: Vec<String> = h.tools.iter().map(|t| word(t)).collect();
-    Some((format!("Tool: {}", tools.join(" or ")), DETAIL))
+    Some(HarvestRow::Icons(
+        h.tools
+            .iter()
+            .map(|t| format!("minecraft:wooden_{t}"))
+            .collect(),
+        None,
+    ))
 }
+
+/// One step of an icon row: the icon and a 1 px frame each side, and a gap.
+const ICON_STEP: f32 = ICON + 4.0;
 
 fn offset(shape: &mut Shape, dx: f32, dy: f32) {
     match shape {
@@ -431,25 +494,37 @@ mod tests {
     }
 
     #[test]
-    fn harvest_lines_name_the_tier_and_colour_the_held_item() {
+    fn harvest_rows_show_the_needed_tool_framed_for_the_held_item() {
         let obsidian = harvest(&["pickaxe"], Some(("diamond", "pickaxe")), true, false);
         assert_eq!(
-            harvest_line(&obsidian),
-            Some(("Needs: Diamond Pickaxe".to_owned(), CANNOT_HARVEST))
+            harvest_row(&obsidian),
+            Some(HarvestRow::Icons(
+                vec!["minecraft:diamond_pickaxe".to_owned()],
+                Some(CANNOT_HARVEST)
+            ))
         );
         let iron = harvest(&["pickaxe"], Some(("stone", "pickaxe")), true, true);
         assert_eq!(
-            harvest_line(&iron),
-            Some(("Needs: Stone Pickaxe".to_owned(), CAN_HARVEST))
+            harvest_row(&iron),
+            Some(HarvestRow::Icons(
+                vec!["minecraft:stone_pickaxe".to_owned()],
+                Some(CAN_HARVEST)
+            ))
         );
         let log = harvest(&["axe"], None, false, true);
-        assert_eq!(harvest_line(&log), Some(("Tool: Axe".to_owned(), DETAIL)));
-        assert_eq!(harvest_line(&harvest(&[], None, false, true)), None);
+        assert_eq!(
+            harvest_row(&log),
+            Some(HarvestRow::Icons(
+                vec!["minecraft:wooden_axe".to_owned()],
+                None
+            ))
+        );
+        assert_eq!(harvest_row(&harvest(&[], None, false, true)), None);
         let mut bedrock = harvest(&[], None, false, true);
         bedrock.hardness = -1.0;
         assert_eq!(
-            harvest_line(&bedrock),
-            Some(("Unbreakable".to_owned(), DETAIL))
+            harvest_row(&bedrock),
+            Some(HarvestRow::Text("Unbreakable".to_owned(), DETAIL))
         );
     }
 
