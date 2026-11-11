@@ -306,6 +306,7 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             } => {
                 format!("set {} block(s) in {dimension}", blocks.len())
             }
+            Output::OpenChat { text, .. } => format!("opened chat with: {text}"),
             Output::BreakBlocksAs { player, blocks, .. } => {
                 format!("broke {} block(s) as {player}", blocks.len())
             }
