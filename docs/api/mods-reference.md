@@ -697,7 +697,7 @@ What a canvas corner box holds.
 | `set-canvas-screen` | `func(shapes: list<shape>)` | Replaces the open canvas screen's shapes; ignored without a screen. |
 | `close-canvas-screen` | `func()` | Closes the mod's canvas screen without a closed event. |
 | `clear-corner` | `func()` | Removes the mod's canvas box. |
-| `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500. Returns what was granted (the Mods page shows it). The mod has no clock: `work-left` says how much of it is left. |
+| `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500, or 4000 while this mod's canvas screen is open. Remembers the request: closing the screen immediately restores the 500 maximum; reopening reapplies a larger request. Thermal pressure may limit screens to 500 too. Returns what is granted now (the Mods page shows it). The frame hook's hard fuel cap always wins, with headroom to return. The mod has no clock: `work-left` says how much of the soft budget is left. |
 | `work-left` | `func() -> u64` | How much of this hook call's budget is left, about 1000000 at its start and 0 once it is spent: a mod that works `while work-left() > reserve` keeps to its budget. In `frame` calls the budget is the granted one, measured on this device as the mod runs (host calls included); in other hooks it is the hook's own fuel. Spending past it is allowed up to the hook's fuel, past which the mod is stopped. |
 
 ## `client-world`

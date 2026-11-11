@@ -181,8 +181,8 @@ mod canvas_host;
 mod client_world_host;
 pub use canvas_host::{
     CANVAS_PAGE, CanvasImageShape, CanvasPanel, CanvasScreen, CanvasShape, CanvasUpload,
-    FRAME_BUDGET, FRAME_BUDGET_MAX, IMAGE_SIDE, IMAGE_TEXELS, ImageRect, SCREEN_SHAPES,
-    UPLOAD_BYTES,
+    FRAME_BUDGET, FRAME_BUDGET_MAX, IMAGE_SIDE, IMAGE_TEXELS, ImageRect, SCREEN_BUDGET_MAX,
+    SCREEN_SHAPES, UPLOAD_BYTES,
 };
 pub use client_world_host::{
     BlockFace, BlockTable, CHANGES_MAX, CHANGES_RADIUS, COLUMN_CHUNKS, COLUMN_DEPTH, ChunkColumns,
@@ -901,6 +901,8 @@ pub struct Mods {
     page: canvas_host::PageSlot,
     /// The calls under way are `frame` calls: the budget controller runs.
     framing: bool,
+    /// The host's thermal limit also applies to mods started later.
+    canvas_screen_budget_limited: bool,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -1223,6 +1225,8 @@ impl Mods {
         let page = self.page.clone();
         let container_bridge = self.container_bridge.clone();
         let container_shift = self.container_shift.clone();
+        let mut canvas = canvas_host::CanvasState::new(page);
+        canvas.limit_screen_budget(self.canvas_screen_budget_limited);
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -1282,7 +1286,7 @@ impl Mods {
                 .build(),
             world,
             inventories,
-            canvas: canvas_host::CanvasState::new(page),
+            canvas,
             client_world,
         };
         let mut store = Store::new(engine, state);
@@ -2035,7 +2039,7 @@ impl Mods {
     /// The player left mod `i`'s screen (Esc or Done).
     pub fn ui_closed(&mut self, i: usize) {
         if let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) {
-            run.store.data_mut().canvas.screen = None;
+            run.store.data_mut().canvas.set_screen(None);
         }
         self.ui_event(i, |ui| ui.closed, ());
     }
@@ -3853,14 +3857,14 @@ impl ui::Host for State {
     fn open_screen(&mut self, mut screen: ui::Screen) {
         screen.title = clip(screen.title);
         screen.widgets = clip_widgets(screen.widgets);
-        self.canvas.screen = None;
+        self.canvas.set_screen(None);
         self.ui.screen = Some(screen);
         self.ui.open = true;
         self.ui.close = false;
     }
     fn close_screen(&mut self) {
         self.ui.screen = None;
-        self.canvas.screen = None;
+        self.canvas.set_screen(None);
         self.ui.close = true;
         self.ui.open = false;
     }
@@ -3929,7 +3933,7 @@ fn storage_key_ok(key: &str) -> bool {
 mod entity_tests {
     use super::*;
 
-    fn state() -> State {
+    pub(super) fn state() -> State {
         State {
             name: "Mob Orders".into(),
             id: "mob_orders".into(),

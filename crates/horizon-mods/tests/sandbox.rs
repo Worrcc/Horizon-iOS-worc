@@ -2108,6 +2108,52 @@ fn the_frame_budget_converges() {
     assert_eq!(game.status(), &Status::Running);
 }
 
+#[test]
+fn canvas_screen_budget_tracks_close_reopen_and_thermal_pressure() {
+    let mut mods = Mods::default();
+    mods.limit_canvas_screen_budget(true);
+    mods.load_into(
+        Runs::Both,
+        &[mods_dir().join("horizon_mods_test_canvas_guest.hmod")],
+        |_| true,
+        |_| false,
+    );
+    assert!(mods.command("budget 9999"));
+    assert!(mods.drain().iter().any(|o| matches!(o,
+        Output::Feedback { text, error: false } if text == "granted 500"
+    )));
+    assert!(mods.command("screen 1"));
+    assert_eq!(mods.frame_budget(0), Some(500));
+    mods.limit_canvas_screen_budget(false);
+    assert_eq!(mods.frame_budget(0), Some(4000));
+    assert!(mods.command("budget 9999"));
+    assert!(mods.drain().iter().any(|o| matches!(o,
+        Output::Feedback { text, error: false } if text == "granted 4000"
+    )));
+    assert!(mods.command("work on"));
+    // Exercise cooperative work at the larger grant, including rate updates.
+    for _ in 0..64 {
+        mods.frame(1.0 / 60.0);
+    }
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("screen_close"));
+    assert_eq!(mods.frame_budget(0), Some(500));
+    assert!(mods.command("screen 1"));
+    assert_eq!(mods.frame_budget(0), Some(4000));
+    mods.ui_closed(0); // The game uses this for both Esc and Done.
+    assert_eq!(mods.frame_budget(0), Some(500));
+    assert!(mods.command("screen 1"));
+    assert_eq!(mods.frame_budget(0), Some(4000));
+    mods.limit_canvas_screen_budget(true);
+    assert_eq!(mods.frame_budget(0), Some(500));
+    mods.limit_canvas_screen_budget(false);
+    assert_eq!(mods.frame_budget(0), Some(4000));
+    assert!(mods.command("budget 300"));
+    assert!(mods.command("screen_close"));
+    assert!(mods.command("screen 1"));
+    assert_eq!(mods.frame_budget(0), Some(300));
+}
+
 /// Placed boxes replace corner boxes, retain offsets through a resize and
 /// clamp independently of the overlay stack, including non-finite inputs.
 #[test]

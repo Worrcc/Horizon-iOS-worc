@@ -677,8 +677,13 @@ interface canvas {
     /// Removes the mod's canvas box.
     clear-corner: func();
     /// Asks for a CPU budget for each `frame` call, in microseconds: 100 by
-    /// default, at most 500. Returns what was granted (the Mods page shows
-    /// it). The mod has no clock: `work-left` says how much of it is left.
+    /// default, at most 500, or 4000 while this mod's canvas screen is open.
+    /// Remembers the request: closing the screen immediately restores the
+    /// 500 maximum; reopening reapplies a larger request. Thermal pressure
+    /// may limit screens to 500 too. Returns what is granted now (the Mods
+    /// page shows it). The frame hook's hard fuel cap always wins, with
+    /// headroom to return. The mod has no clock: `work-left` says how much
+    /// of the soft budget is left.
     request-frame-budget: func(micros: u32) -> u32;
     /// How much of this hook call's budget is left, about 1000000 at its
     /// start and 0 once it is spent: a mod that works `while work-left() >

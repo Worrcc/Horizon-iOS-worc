@@ -38,12 +38,17 @@ pub const IMAGE_SIDE: u32 = 1024;
 pub const IMAGE_TEXELS: u64 = 1024 * 1024;
 /// RGBA bytes a mod may upload with `update-image` between two frames.
 pub const UPLOAD_BYTES: usize = 1024 << 10;
-/// The frame budget a mod has until it asks, and the most it may have, in µs.
+/// The default frame budget, in µs.
 pub const FRAME_BUDGET: u32 = 100;
+/// The largest frame budget without the mod's own canvas screen open, in µs.
 pub const FRAME_BUDGET_MAX: u32 = 500;
-/// The soft budget never falls below this much fuel, nor rises past the
-/// frame hook's hard cap.
+/// The largest frame budget with the mod's own canvas screen open, in µs.
+pub const SCREEN_BUDGET_MAX: u32 = 4000;
+/// The soft budget's floor (the hook's hard cap always wins).
 const SOFT_MIN: u64 = 50_000;
+/// Leave fuel to finish the last work batch and return from the hook after
+/// `work-left` reaches zero, even when a fast device reaches the hard cap.
+const SOFT_RESERVE: u64 = 50_000;
 /// `work-left` at the start of a call.
 pub(super) const WORK_SCALE: u64 = 1_000_000;
 /// Fuel per microsecond assumed before a mod's first measured frame: low, so
@@ -194,6 +199,8 @@ pub const SCREEN_SHAPES: usize = 4096;
 /// The granted frame budget and how fast the mod burns fuel here.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Budget {
+    /// The mod's request, retained across screen and thermal changes.
+    requested: u32,
     /// Microseconds per `frame` call.
     pub(super) granted: u32,
     /// Fuel per microsecond, measured over the mod's frame calls.
@@ -202,6 +209,7 @@ pub(super) struct Budget {
 impl Default for Budget {
     fn default() -> Self {
         Self {
+            requested: FRAME_BUDGET,
             granted: FRAME_BUDGET,
             rate: None,
         }
@@ -211,7 +219,9 @@ impl Budget {
     /// The soft budget of the next frame call, in fuel.
     pub(super) fn allowance(&self, cap: u64) -> u64 {
         let fuel = self.rate.unwrap_or(FIRST_RATE) * f64::from(self.granted);
-        (fuel as u64).clamp(SOFT_MIN, cap.max(SOFT_MIN))
+        (fuel as u64)
+            .max(SOFT_MIN)
+            .min(cap.saturating_sub(SOFT_RESERVE))
     }
     /// The fuel `took` of host time counts for at the measured rate.
     pub(super) fn fuel_for(&self, took: Duration) -> u64 {
@@ -315,6 +325,7 @@ pub(super) struct CanvasState {
     pub(super) panel: Option<CanvasPanel>,
     pub(super) box_key: Option<String>,
     pub(super) screen: Option<CanvasScreen>,
+    screen_budget_limited: bool,
     pub(super) budget: Budget,
     pub(super) work: Work,
     pub(super) times: FrameTimes,
@@ -322,6 +333,22 @@ pub(super) struct CanvasState {
     pub(super) other_times: FrameTimes,
 }
 impl CanvasState {
+    pub(super) fn set_screen(&mut self, screen: Option<CanvasScreen>) {
+        self.screen = screen;
+        self.refresh_budget();
+    }
+    fn refresh_budget(&mut self) {
+        let max = if self.screen.is_some() && !self.screen_budget_limited {
+            SCREEN_BUDGET_MAX
+        } else {
+            FRAME_BUDGET_MAX
+        };
+        self.budget.granted = self.budget.requested.clamp(1, max);
+    }
+    pub(super) fn limit_screen_budget(&mut self, limited: bool) {
+        self.screen_budget_limited = limited;
+        self.refresh_budget();
+    }
     /// Counts the host's time since `started` against the call's budget.
     pub(super) fn charge(&mut self, started: Instant) {
         let took = started.elapsed();
@@ -338,6 +365,7 @@ impl CanvasState {
             panel: None,
             box_key: None,
             screen: None,
+            screen_budget_limited: false,
             budget: Budget::default(),
             work: Work::default(),
             times: FrameTimes::default(),
@@ -525,10 +553,10 @@ impl canvas::Host for State {
     }
     fn open_canvas_screen(&mut self, title: String, shapes: Vec<CanvasShape>) {
         self.ui.screen = None;
-        self.canvas.screen = Some(CanvasScreen {
+        self.canvas.set_screen(Some(CanvasScreen {
             title: clip(title),
             shapes: clip_canvas(shapes, SCREEN_SHAPES),
-        });
+        }));
         self.ui.open = true;
         self.ui.close = false;
     }
@@ -538,7 +566,8 @@ impl canvas::Host for State {
         }
     }
     fn close_canvas_screen(&mut self) {
-        if self.canvas.screen.take().is_some() {
+        if self.canvas.screen.is_some() {
+            self.canvas.set_screen(None);
             self.ui.close = true;
             self.ui.open = false;
         }
@@ -547,9 +576,9 @@ impl canvas::Host for State {
         self.canvas.panel = None;
     }
     fn request_frame_budget(&mut self, micros: u32) -> u32 {
-        let granted = micros.clamp(1, FRAME_BUDGET_MAX);
-        self.canvas.budget.granted = granted;
-        granted
+        self.canvas.budget.requested = micros;
+        self.canvas.refresh_budget();
+        self.canvas.budget.granted
     }
     fn work_left(&mut self) -> u64 {
         // The linker's own `work-left` reads the store's fuel
@@ -604,6 +633,15 @@ impl State {
 }
 
 impl Mods {
+    /// Limit open canvas screens to the normal 500 µs maximum under thermal
+    /// pressure (for example iOS Serious/Critical). Requests are retained;
+    /// clearing the limit restores them. Applies to current and future mods.
+    pub fn limit_canvas_screen_budget(&mut self, limited: bool) {
+        self.canvas_screen_budget_limited = limited;
+        for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            run.store.data_mut().canvas.limit_screen_budget(limited);
+        }
+    }
     /// The registered key activated by touching this running mod's HUD box.
     pub fn canvas_box_key(&self, owner: usize) -> Option<&str> {
         self.entries
@@ -666,6 +704,81 @@ impl Mods {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use canvas::Host;
+
+    #[test]
+    fn larger_requests_follow_only_the_owners_canvas_screen() {
+        let mut s = super::super::entity_tests::state();
+        let mut other = super::super::entity_tests::state();
+        assert_eq!(s.request_frame_budget(0), 1);
+        assert_eq!(s.request_frame_budget(3500), 500);
+        assert_eq!(other.request_frame_budget(3500), 500);
+        s.open_canvas_screen("Map".into(), vec![]);
+        assert_eq!(s.canvas.budget.granted, 3500);
+        assert_eq!(other.canvas.budget.granted, 500);
+        assert_eq!(s.request_frame_budget(u32::MAX), 4000);
+        s.close_canvas_screen();
+        assert_eq!(s.canvas.budget.granted, 500);
+        s.open_canvas_screen("Map".into(), vec![]);
+        assert_eq!(s.canvas.budget.granted, 4000);
+        // The same path Esc/Done uses, before notifying the guest.
+        s.canvas.set_screen(None);
+        assert_eq!(s.canvas.budget.granted, 500);
+        s.open_canvas_screen("Map".into(), vec![]);
+        super::super::ui::Host::close_screen(&mut s);
+        assert_eq!(s.canvas.budget.granted, 500);
+        s.open_canvas_screen("Map".into(), vec![]);
+        super::super::ui::Host::open_screen(
+            &mut s,
+            super::super::ui::Screen {
+                title: "Widgets".into(),
+                widgets: vec![],
+            },
+        );
+        assert_eq!(s.canvas.budget.granted, 500);
+        s.open_canvas_screen("Map".into(), vec![]);
+        assert_eq!(s.request_frame_budget(300), 300);
+        s.close_canvas_screen();
+        s.open_canvas_screen("Map".into(), vec![]);
+        assert_eq!(s.canvas.budget.granted, 300);
+    }
+
+    #[test]
+    fn thermal_limit_retains_the_screen_request() {
+        let mut s = super::super::entity_tests::state();
+        s.canvas.limit_screen_budget(true);
+        s.open_canvas_screen("Map".into(), vec![]);
+        assert_eq!(s.request_frame_budget(4000), 500);
+        s.canvas.limit_screen_budget(false);
+        assert_eq!(s.canvas.budget.granted, 4000);
+        s.canvas.limit_screen_budget(true);
+        assert_eq!(s.canvas.budget.granted, 500);
+        s.close_canvas_screen();
+        s.canvas.limit_screen_budget(false);
+        assert_eq!(s.canvas.budget.granted, 500);
+        s.open_canvas_screen("Map".into(), vec![]);
+        assert_eq!(s.canvas.budget.granted, 4000);
+    }
+
+    #[test]
+    fn screen_work_leaves_fuel_to_return_before_the_hard_cap() {
+        let mut s = super::super::entity_tests::state();
+        s.open_canvas_screen("Map".into(), vec![]);
+        s.request_frame_budget(4000);
+        // 5000 fuel/µs would buy 20M fuel, beyond the frame hook's 10M.
+        s.canvas.budget.observe(500_000, Duration::from_micros(100));
+        let cap = super::super::FUEL_FRAME;
+        let soft = s.canvas.budget.allowance(cap);
+        assert_eq!(soft, 9_950_000);
+        let work = Work {
+            start: cap,
+            soft,
+            ..Work::default()
+        };
+        assert_eq!(work_left(work, 50_000), 0);
+        // Even a hard cap below the floor must win.
+        assert!(s.canvas.budget.allowance(1000) <= 1000);
+    }
 
     #[test]
     fn the_page_hands_out_free_cells_and_takes_them_back() {
@@ -747,10 +860,11 @@ mod tests {
         // Never past the hook's own fuel, nor under the floor.
         b.granted = 500;
         b.observe(u64::MAX / 4, Duration::from_micros(1));
-        assert_eq!(b.allowance(cap), cap);
+        assert_eq!(b.allowance(cap), cap - SOFT_RESERVE);
         let slow = Budget {
             granted: 1,
             rate: Some(1.0),
+            ..Budget::default()
         };
         assert_eq!(slow.allowance(cap), SOFT_MIN);
     }
