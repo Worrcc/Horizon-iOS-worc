@@ -401,8 +401,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest exercises the API 22 container calls.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 22);
+    // The UI guest exercises API 25 touch contexts as well as the container calls.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 25);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -3099,4 +3099,72 @@ fn container_scroll_stops_at_first_consumer_and_requires_capability() {
         matches!(&mods.entries()[0].status, Status::Failed(why) if why.contains("capability container"))
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
+    let package = Package::read(&mods_dir().join("horizon_mods_test_ui_guest.hmod")).unwrap();
+    let functions = horizon_mods::api_level::imports(package.wasm.as_ref().unwrap()).unwrap();
+    assert!(
+        functions
+            .iter()
+            .any(|f| f == "input.set-touch-button-context")
+    );
+    assert_eq!(
+        horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
+        25
+    );
+    let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
+    assert!(
+        manifest
+            .check_code_imports(
+                ["horizon:mods/input@0.1.0"],
+                &["input.set-touch-button-context".into()]
+            )
+            .is_err()
+    );
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.command("touch_context mine iceandfire:*,minecraft:horse minecraft:carrot"));
+    let key = || {
+        mods.keys_of(0)
+            .iter()
+            .find(|k| k.name == "mine")
+            .unwrap()
+            .touch_context
+            .clone()
+    };
+    let context = key().unwrap();
+    assert!(context.matches(Some("iceandfire:fire_dragon"), Some("minecraft:carrot")));
+    assert!(!context.matches(Some("minecraft:pig"), Some("minecraft:carrot")));
+    assert!(!context.matches(Some("minecraft:horse"), None));
+    mods.drain();
+    for command in [
+        "touch_context missing * -",
+        "touch_context mine minecraft:../pig -",
+    ] {
+        assert!(mods.command(command));
+        assert!(
+            mods.drain()
+                .iter()
+                .any(|o| matches!(o, Output::Feedback { error: true, .. }))
+        );
+        assert_eq!(
+            mods.keys_of(0)
+                .iter()
+                .find(|k| k.name == "mine")
+                .unwrap()
+                .touch_context
+                .as_ref(),
+            Some(&context)
+        );
+    }
+    assert!(mods.command("touch_context clear"));
+    assert!(
+        mods.keys_of(0)
+            .iter()
+            .find(|k| k.name == "mine")
+            .unwrap()
+            .touch_context
+            .is_none()
+    );
 }

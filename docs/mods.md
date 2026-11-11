@@ -1170,18 +1170,21 @@ it with `horizon-ctl options touch-layout`; `ui`, `click-at`, and
 pause/blur behaviour and draws the game controls, joystick, explicit mod buttons,
 and automatic keys. Tap to select (gold frame and full action name); drag to
 move, clamped inside the viewport and snapped to two GUI pixels. Hide/Show,
-Reset (selected), Reset All, and Done are centred below the title, with the selected
-name on the next line. The toolbar takes touch priority; moved controls clamp below
-it so they remain reachable. Pause cannot be hidden. Hidden controls remain faint and editable here. A moved joystick starts
+Reset (selected), Reset All, Done, and Show are centred below the title, with the selected
+name on the next line. Buttons can be dragged anywhere on screen, including y=0.
+The title, toolbar and name disappear during dragging; when the selection overlaps
+the top band they move to the bottom, with the same touch priority (including gaps).
+Pause cannot be hidden. Hidden controls remain faint and editable here. A moved joystick starts
 from its saved centre; resetting it restores the original floating joystick.
 
 Overrides live beside that player's `options.txt` in the instance, in
 `horizon-touch.txt`. Each line has a JSON-quoted stable id, x fraction, y fraction,
-and `true`/`false` hidden value, separated by **literal tabs**. For example:
+a `true`/`false` hidden value, and an optional Show field
+(`default|always|riding|never`), separated by **literal tabs**. For example:
 
 ```text
-"game.jump"	0.75	0.6	false
-"mod.example.show_recipes"	0.5	0.2	true
+"game.jump"	0.75	0.6	false	always
+"mod.example.show_recipes"	0.5	0.2	true	never
 ```
 
 Fractions measure the button's top left against the full GUI width/height; sizes
@@ -1192,7 +1195,8 @@ are ignored. Player overrides win over a mod's anchor/offset, and remain fixed
 as other keys arrive or disappear. Untouched automatic buttons re-flow. Reset
 removes an override and returns to the current default. Changes save on release,
 Done, Escape or focus loss; switching instances reloads that instance's file.
-No new WIT functions or API level bump is needed for these controls.
+Old four-field lines still load; `hidden=true` always means Never. The `-1	-1`
+coordinates mean only visibility changed: keep the default position and automatic flow.
 
 **API level 21: touch on canvas boxes.** After `input.register-key`, call
 `canvas.set-box-key(some(name))` to make a finger on the mod's HUD box hold that
@@ -1459,3 +1463,46 @@ runtime,pack,force-pulley --test sandbox column_lifting_cost -- --ignored --noca
   or "Tool: Axe".
 - `input.set-auto-button-shown(name, shown) -> result<_, string>`: whether a
   registered key's automatic touch button starts shown (default: hidden).
+
+
+## API level 25: contextual touch buttons and mount labels
+
+The editor's **Show** setting cycles **Default → Always → While riding → Never**
+(the toolbar abbreviates While riding to Riding). Hide/Show maps to Never/Default.
+Default follows each control's rule: game controls always show, except **Sprint**
+and **Attack**, which show while riding any entity. Sprint holds the sprint mapping;
+Attack presses and holds the crosshair's left mouse action, including block breaking.
+Their default positions are left of the Use/Jump cluster. Context-hidden controls
+neither receive touches nor occupy automatic-button space. The editor draws them
+faintly and shows their condition in the selected name line.
+
+A registered mod key defaults to its context, or always if none is set. Automatic
+buttons still start hidden unless the mod uses `set-auto-button-shown` or the player
+shows them. With capability `input` (including its experimental opt-in), call
+`input.set-touch-button-context(name, some(context))` for either an explicit or an
+automatic button. The `touch-context` record contains `riding` and `holding` lists:
+
+- `riding`: ride one of these entity ids, such as `iceandfire:fire_dragon`.
+- `holding`: hold one of these item ids in the main hand.
+- `*` matches any mount/nonempty main hand; `ns:*` matches any id in that namespace.
+- Each list accepts up to 32 validated resource ids or these wildcards. An empty
+  list imposes no condition; if both are nonempty, both must match.
+
+`none` clears the context. Errors (including an unregistered key) preserve the old
+context. Show: Always/Riding/Never overrides the mod context. Visibility follows
+player state every frame; a held button releases when its condition stops matching.
+
+Content mods and resource packs can label the built-in Sprint/Attack controls per
+mount in `assets/<namespace>/horizon/mount_controls.json`:
+
+```json
+{"mounts": [{"entities": ["iceandfire:fire_dragon", "iceandfire:ice_dragon", "iceandfire:lightning_dragon"], "sprint": "Fire", "attack": "Bite"}]}
+```
+
+The client reads all namespaces in the merged resource root at initial resource
+load and pack reload, including enabled content mods' assets. Higher packs replace
+lower files at the same resource path. Multiple namespaces are read in sorted
+order; the last entry for an entity wins. Labels are clipped to six Unicode
+characters. Malformed/unknown file formats are ignored with a log warning;
+unlisted mounts use the translated Sprint/Attack labels. These files require no
+code mod or input capability.

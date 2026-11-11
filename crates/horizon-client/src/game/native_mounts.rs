@@ -37,6 +37,28 @@ impl Game<'_> {
         }
     }
 
+    /// The namespaced type of the vehicle with entity id `id`, for the touch
+    /// controls' riding contexts and mount labels: a server's tracked entity
+    /// first, then the local ones; a content mob keeps its own namespace.
+    pub(super) fn vehicle_kind(&self, id: u32) -> String {
+        if let Some((kind, _)) = self
+            .remote
+            .as_ref()
+            .and_then(|r| r.tracked_entity(id as i32))
+        {
+            return kind.into();
+        }
+        if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            let kind = &m.kind.id;
+            return if kind.contains(':') {
+                kind.clone()
+            } else {
+                format!("minecraft:{kind}")
+            };
+        }
+        self.native_vehicle_kind(id)
+    }
+
     /// `native_entity_mount` for `rider` (the acting player when `None`) and `vehicle`: whether
     /// the mounting or dismounting goes ahead.
     fn native_mount_allowed(&mut self, rider: Option<u32>, vehicle: u32, mounting: bool) -> bool {

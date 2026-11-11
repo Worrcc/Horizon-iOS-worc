@@ -114,6 +114,7 @@ impl Mod for Guest {
             "render_hud",
             "world_lines",
             "touch_button",
+            "touch_context",
             "render_clear",
             "render_shake",
             "input_claim",
@@ -219,6 +220,27 @@ impl Mod for Guest {
                     0xFF112233,
                     0x80112233,
                 );
+            }
+            "touch_context" => {
+                input::register_key("mine", "Mine", "key.keyboard.r")?;
+                if args == "clear" {
+                    input::set_touch_button_context("mine", None)?;
+                } else {
+                    let mut parts = args.split_whitespace();
+                    let name = parts.next().unwrap_or("mine");
+                    let ids = |s: &str| {
+                        if s == "-" {
+                            Vec::new()
+                        } else {
+                            s.split(',').map(str::to_owned).collect()
+                        }
+                    };
+                    let context = input::TouchContext {
+                        riding: ids(parts.next().unwrap_or("-")),
+                        holding: ids(parts.next().unwrap_or("-")),
+                    };
+                    input::set_touch_button_context(name, Some(&context))?;
+                }
             }
             "touch_button" => {
                 input::register_key("mine", "Mine", "key.keyboard.r")?;

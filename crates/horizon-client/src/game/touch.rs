@@ -3,7 +3,7 @@
 //! the buttons over the HUD. Enabled on iOS, or with HORIZON_TOUCH=1 for desktop testing.
 mod editor;
 use super::{Game, Screen, event_loop::EventLoopCtl};
-use horizon_client::touch_layout::{self, Entry, Overrides, Rect};
+use horizon_client::touch_layout::{self, Entry, Overrides, Rect, Show};
 use horizon_client::{
     hud::{HudAtlas, HudBatch},
     lang,
@@ -369,10 +369,14 @@ impl TouchInput {
         self.overrides
             .set_hidden(&format!("mod.{mod_id}.{key}"), !shown);
     }
-    /// The touch controls hold this mapping (`key.sneak`: the Sneak toggle, or a
-    /// finger on it), so a keyboard's modifier state says nothing about it.
+    /// Touch Sneak (toggle) and Sprint (button or joystick) hold their mappings
+    /// independently of the keyboard's modifier state.
     pub(super) fn holds_mapping(&self, mapping: &str) -> bool {
-        mapping == "key.sneak" && self.controls.pressed(Button::Sneak)
+        match mapping {
+            "key.sneak" => self.controls.pressed(Button::Sneak),
+            "key.sprint" => self.controls.holds_sprint(),
+            _ => false,
+        }
     }
     pub(super) fn editor_closed_by_options(&mut self) {
         self.editor = None;
@@ -393,6 +397,9 @@ struct TouchItem {
     label: String,
     rect: Option<Rect>,
     hidden: bool,
+    /// The effective default condition, for the editor and live visibility.
+    default_visible: bool,
+    condition: String,
     kind: TouchKind,
 }
 enum TouchKind {
@@ -421,14 +428,31 @@ const HOTBAR_KEYS: [KeyCode; 9] = [
 
 impl Game<'_> {
     fn touch_items(&self, layout: &Layout) -> Vec<TouchItem> {
+        let riding = self.riding.map(|id| self.vehicle_kind(id));
+        let mount_labels = riding
+            .as_ref()
+            .and_then(|id| self.pack.mount_controls.0.get(id));
         let mut items: Vec<_> = Button::ALL
             .into_iter()
             .map(|b| TouchItem {
                 id: b.id().into(),
                 name: lang::get(b.name_key()),
-                label: lang::get(b.label_key()),
+                label: mount_labels.map_or_else(
+                    || lang::get(b.label_key()),
+                    |(sprint, attack)| match b {
+                        Button::Sprint => sprint.clone(),
+                        Button::Attack => attack.clone(),
+                        _ => lang::get(b.label_key()),
+                    },
+                ),
                 rect: Some(layout.button(b)),
                 hidden: false,
+                default_visible: !b.riding_default() || riding.is_some(),
+                condition: if b.riding_default() {
+                    lang::get("horizon.touch.condition.riding")
+                } else {
+                    String::new()
+                },
                 kind: TouchKind::Game(b),
             })
             .collect();
@@ -440,6 +464,8 @@ impl Game<'_> {
             label: String::new(),
             rect: Some([x - r, y - r, 2.0 * r, 2.0 * r]),
             hidden: false,
+            default_visible: true,
+            condition: String::new(),
             kind: TouchKind::Stick,
         });
         #[cfg(feature = "mods")]
@@ -502,6 +528,23 @@ impl Game<'_> {
                     // Until the layout resolves: whether it starts hidden. An
                     // automatic button does, unless its mod asked otherwise.
                     hidden: button.is_none() && !key.auto_shown,
+                    default_visible: key.touch_context.as_ref().is_none_or(|c| {
+                        c.matches(
+                            riding.as_deref(),
+                            self.inventory
+                                .get(self.selected)
+                                .and_then(|s| s.as_ref())
+                                .map(|s| s.item.as_ref()),
+                        )
+                    }),
+                    condition: key.touch_context.as_ref().map_or_else(String::new, |c| {
+                        match (!c.riding.is_empty(), !c.holding.is_empty()) {
+                            (true, true) => lang::get("horizon.touch.condition.riding_holding"),
+                            (true, false) => lang::get("horizon.touch.condition.riding"),
+                            (false, true) => lang::get("horizon.touch.condition.holding"),
+                            _ => String::new(),
+                        }
+                    }),
                     kind: TouchKind::Mod {
                         owner,
                         key: key.name.clone(),
@@ -517,6 +560,11 @@ impl Game<'_> {
                 id: item.id.clone(),
                 default: item.rect,
                 hidden_by_default: item.hidden,
+                visible_now: self
+                    .touch
+                    .overrides
+                    .show(&item.id)
+                    .visible(item.default_visible, riding.is_some()),
             })
             .collect();
         for (item, placed) in items.iter_mut().zip(touch_layout::resolve(
@@ -526,6 +574,20 @@ impl Game<'_> {
         )) {
             item.rect = placed.rect;
             item.hidden = placed.hidden;
+            let show = self.touch.overrides.show(&item.id);
+            let condition = match show {
+                Show::Default => item.condition.clone(),
+                Show::Always => lang::get("horizon.touch.condition.always"),
+                Show::Riding => lang::get("horizon.touch.condition.riding"),
+                Show::Never => lang::get("horizon.touch.condition.never"),
+            };
+            if !condition.is_empty() {
+                item.name = horizon_client::text::Text::tr(
+                    "horizon.touch.condition_name",
+                    &[&item.name, &condition],
+                )
+                .plain();
+            }
         }
         items
     }
@@ -597,7 +659,9 @@ impl Game<'_> {
             return;
         }
         let items = self.touch_items(&layout);
-        self.touch.controls.configure(self.touch_geometry(&items));
+        for output in self.touch.controls.configure(self.touch_geometry(&items)) {
+            self.apply_touch(event_loop, output, scale);
+        }
         let playing = self.touch_playing();
         if self.touch.menu_fingers.contains(&touch.id) {
             if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
@@ -672,9 +736,19 @@ impl Game<'_> {
         if !enabled() || !self.touch.controls.used {
             return;
         }
-        let Some((_, scale)) = self.touch_layout() else {
+        let Some((layout, scale)) = self.touch_layout() else {
             return;
         };
+        let items = self.touch_items(&layout);
+        for output in self.touch.controls.configure(self.touch_geometry(&items)) {
+            self.apply_touch(event_loop, output, scale);
+        }
+        #[cfg(feature = "mods")]
+        for (owner, key) in self.touch.mod_fingers.values() {
+            if items.iter().any(|i| i.hidden && matches!(&i.kind, TouchKind::Mod { owner: o, key: k, .. } if o == owner && k == key)) {
+                self.mods.mods.registered_touch_key(*owner, key, false);
+            }
+        }
         for output in self.touch.controls.update(Instant::now()) {
             self.apply_touch(event_loop, output, scale);
         }
@@ -1141,5 +1215,32 @@ mod mod_button_tests {
             assert!(x >= 3.0 && y >= 3.0);
             assert!(x + w + 3.0 <= layout.width && y + h + 3.0 <= layout.height);
         }
+    }
+}
+
+#[cfg(test)]
+mod hold_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn touch_sprint_reports_its_mapping_held_until_lift() {
+        let mut input = TouchInput::default();
+        let layout = Layout {
+            width: 633.0,
+            height: 292.0,
+            main_hand_left: false,
+        };
+        let r = layout.button(Button::Sprint);
+        let at = (r[0] + 10.0, r[1] + 10.0);
+        let now = Instant::now();
+        input
+            .controls
+            .touch(1, TouchPhase::Started, at, &layout, true, now);
+        assert!(input.holds_mapping("key.sprint"));
+        assert!(!input.holds_mapping("key.sneak"));
+        input
+            .controls
+            .touch(1, TouchPhase::Ended, at, &layout, true, now);
+        assert!(!input.holds_mapping("key.sprint"));
     }
 }

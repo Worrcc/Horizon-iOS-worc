@@ -131,12 +131,13 @@ mod render_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "render-host",
+        additional_derives: [PartialEq],
     });
 }
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
 pub use render_bindings::horizon::mods::input::{
-    Event as InputEvent, HeldItem, ItemUse, TouchButton,
+    Event as InputEvent, HeldItem, ItemUse, TouchButton, TouchContext,
 };
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
@@ -3453,6 +3454,35 @@ pub struct ModKey {
     /// API 24: its automatic touch button starts shown (`set-auto-button-shown`);
     /// automatic buttons start hidden otherwise.
     pub auto_shown: bool,
+    /// API 25: default visibility of either touch button.
+    pub touch_context: Option<TouchContext>,
+}
+
+fn touch_context_id(id: &str) -> bool {
+    id == "*"
+        || resource_id(id)
+        || id
+            .strip_suffix(":*")
+            .is_some_and(|ns| resource_id(&format!("{ns}:x")))
+}
+
+impl TouchContext {
+    /// Both lists constrain the default; an empty list imposes no condition.
+    pub fn matches(&self, riding: Option<&str>, holding: Option<&str>) -> bool {
+        fn matches(ids: &[String], actual: Option<&str>) -> bool {
+            ids.is_empty()
+                || actual.is_some_and(|actual| {
+                    ids.iter().any(|id| {
+                        id == "*"
+                            || id == actual
+                            || id
+                                .strip_suffix('*')
+                                .is_some_and(|ns| actual.starts_with(ns))
+                    })
+                })
+        }
+        matches(&self.riding, riding) && matches(&self.holding, holding)
+    }
 }
 
 /// What capability `input` holds for one mod.
@@ -3572,6 +3602,26 @@ impl input::Host for State {
     fn touch_active(&mut self) -> bool {
         self.snapshot.touch_active
     }
+    fn set_touch_button_context(
+        &mut self,
+        name: String,
+        context: Option<TouchContext>,
+    ) -> Result<(), String> {
+        let Some(key) = self.input.keys.iter_mut().find(|k| k.name == name) else {
+            return Err(format!("no registered key {name}"));
+        };
+        if let Some(context) = &context {
+            for ids in [&context.riding, &context.holding] {
+                if ids.len() > 32 || ids.iter().any(|id| !touch_context_id(id)) {
+                    return Err(
+                        "touch context needs at most 32 resource ids per list (or * / ns:*)".into(),
+                    );
+                }
+            }
+        }
+        key.touch_context = context;
+        Ok(())
+    }
     fn set_auto_button_shown(&mut self, name: String, shown: bool) -> Result<(), String> {
         let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) else {
             return Err(format!("no registered key {name}"));
@@ -3646,6 +3696,7 @@ impl input::Host for State {
             key,
             default_key,
             auto_shown: false,
+            touch_context: None,
         });
         Ok(())
     }
@@ -4317,6 +4368,102 @@ mod entity_tests {
         render::Host::set_world_lines(&mut s, vec![line], 1, 2);
         render::Host::set_world_lines(&mut s, vec![], 3, 4);
         assert!(s.world_lines.lines.is_empty());
+    }
+
+    #[test]
+    fn api25_context_validation_is_atomic_and_matches_both_conditions() {
+        let mut s = state();
+        assert!(input::Host::set_touch_button_context(&mut s, "missing".into(), None).is_err());
+        input::Host::register_key(
+            &mut s,
+            "mount".into(),
+            "Mount".into(),
+            "key.keyboard.r".into(),
+        )
+        .unwrap();
+        let context = TouchContext {
+            riding: vec!["iceandfire:*".into(), "minecraft:horse".into()],
+            holding: vec!["minecraft:carrot".into()],
+        };
+        input::Host::set_touch_button_context(&mut s, "mount".into(), Some(context.clone()))
+            .unwrap();
+        assert!(context.matches(Some("iceandfire:fire_dragon"), Some("minecraft:carrot")));
+        assert!(context.matches(Some("minecraft:horse"), Some("minecraft:carrot")));
+        assert!(!context.matches(Some("minecraft:pig"), Some("minecraft:carrot")));
+        assert!(!context.matches(None, Some("minecraft:carrot")));
+        assert!(!context.matches(Some("minecraft:horse"), Some("minecraft:stick")));
+        for bad in [
+            "minecraft:",
+            "bad",
+            "Minecraft:horse",
+            "mine*:horse",
+            "minecraft:foo*",
+            "minecraft:../horse",
+            ":*",
+            "..:*",
+        ] {
+            for holding in [false, true] {
+                let mut invalid = context.clone();
+                if holding {
+                    invalid.holding = vec![bad.into()];
+                } else {
+                    invalid.riding = vec![bad.into()];
+                }
+                assert!(
+                    input::Host::set_touch_button_context(&mut s, "mount".into(), Some(invalid))
+                        .is_err(),
+                    "{bad}"
+                );
+                assert_eq!(s.input.keys[0].touch_context.as_ref(), Some(&context));
+            }
+        }
+        for holding in [false, true] {
+            let mut boundary = context.clone();
+            if holding {
+                boundary.holding = vec!["*".into(); 32];
+            } else {
+                boundary.riding = vec!["*".into(); 32];
+            }
+            input::Host::set_touch_button_context(&mut s, "mount".into(), Some(boundary.clone()))
+                .unwrap();
+            if holding {
+                boundary.holding.push("*".into());
+            } else {
+                boundary.riding.push("*".into());
+            }
+            assert!(
+                input::Host::set_touch_button_context(&mut s, "mount".into(), Some(boundary))
+                    .is_err()
+            );
+        }
+        let any = TouchContext {
+            riding: vec!["*".into()],
+            holding: vec!["*".into()],
+        };
+        assert!(any.matches(Some("minecraft:boat"), Some("anything:item")));
+        assert!(!any.matches(Some("minecraft:boat"), None));
+        let empty = TouchContext {
+            riding: vec![],
+            holding: vec![],
+        };
+        assert!(empty.matches(None, None));
+        input::Host::set_touch_button_context(&mut s, "mount".into(), Some(context.clone()))
+            .unwrap();
+        input::Host::register_key(
+            &mut s,
+            "mount".into(),
+            "Renamed".into(),
+            "key.keyboard.t".into(),
+        )
+        .unwrap();
+        assert_eq!(s.input.keys[0].touch_context, Some(context));
+        input::Host::set_touch_button_context(&mut s, "mount".into(), None).unwrap();
+        assert!(s.input.keys[0].touch_context.is_none());
+    }
+
+    #[test]
+    fn pre_level_25_components_still_link() {
+        older_components_still_link(25);
     }
 
     #[test]

@@ -2207,6 +2207,7 @@ impl UiResources {
 /// cloning shares the loaded data.
 #[derive(Clone)]
 pub struct PackResources {
+    mount_controls: Arc<horizon_client::mount_controls::MountControls>,
     assets: Arc<Assets>,
     render: Arc<RenderAssets>,
     context: Arc<WorkerContext>,
@@ -2291,6 +2292,7 @@ impl PackResources {
             render,
             item_renderer: Arc::new(item_renderer),
             names: Arc::new(Names::load(root)),
+            mount_controls: Arc::new(horizon_client::mount_controls::MountControls::load(root)),
             clouds: Arc::new(load_clouds(root)),
             forcefield: Arc::new(load_forcefield(root)),
         }
@@ -8204,7 +8206,7 @@ impl Game<'_> {
             // A controller's stick click acts as the key without setting the modifier: it is held
             // while the pad holds it (or its release waits for a tick), not when the keyboard says.
             let pad = self.pad.holds_action(&self.settings.controller, mapping);
-            // The touch Sneak toggle sends the key without a keyboard modifier.
+            // Touch Sneak and Sprint send keys without a keyboard modifier.
             let touch = self.touch.holds_mapping(mapping);
             if !held && !pad && !touch {
                 self.toggles.0[slot].set_down(false, needs_toggle);

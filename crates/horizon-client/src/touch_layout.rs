@@ -2,6 +2,50 @@
 use std::collections::{BTreeMap, BTreeSet};
 pub type Rect = [f32; 4];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Show {
+    #[default]
+    Default,
+    Always,
+    Riding,
+    Never,
+}
+impl Show {
+    pub fn visible(self, default: bool, riding: bool) -> bool {
+        match self {
+            Self::Default => default,
+            Self::Always => true,
+            Self::Riding => riding,
+            Self::Never => false,
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Always,
+            Self::Always => Self::Riding,
+            Self::Riding => Self::Never,
+            Self::Never => Self::Default,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Always => "always",
+            Self::Riding => "riding",
+            Self::Never => "never",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "default" => Self::Default,
+            "always" => Self::Always,
+            "riding" => Self::Riding,
+            "never" => Self::Never,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub id: String,
@@ -10,6 +54,8 @@ pub struct Entry {
     /// Hidden until the player shows it (automatic mod-key buttons, unless the
     /// mod asked for them shown).
     pub hidden_by_default: bool,
+    /// Current context, including the player's Show choice; independent of initial hiding.
+    pub visible_now: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Override {
@@ -17,6 +63,7 @@ pub struct Override {
     pub x: f32,
     pub y: f32,
     pub hidden: bool,
+    pub show: Show,
     /// The player placed it: `x` and `y` hold. False for a button only shown or
     /// hidden, which keeps its default place (an automatic one keeps flowing).
     pub moved: bool,
@@ -56,6 +103,7 @@ pub fn fractions(rect: Rect, size: (f32, f32), hidden: bool) -> Override {
         x: r[0] / size.0.max(1.0),
         y: r[1] / size.1.max(1.0),
         hidden,
+        show: if hidden { Show::Never } else { Show::Default },
         moved: true,
     }
 }
@@ -73,32 +121,53 @@ impl Overrides {
     pub fn reset_all(&mut self) {
         self.0.clear();
     }
-    /// Shows or hides a button where it is, without placing it.
+    pub fn show(&self, id: &str) -> Show {
+        self.0.get(id).map_or(Show::Default, |v| v.show)
+    }
+    /// Changes visibility without pinning an automatic button to its current position.
+    pub fn set_show(&mut self, id: &str, show: Show) {
+        let show = if id == "game.pause" {
+            Show::Default
+        } else {
+            show
+        };
+        let value = self.0.entry(id.into()).or_insert(Override {
+            x: -1.0,
+            y: -1.0,
+            hidden: false,
+            show: Show::Default,
+            moved: false,
+        });
+        value.show = show;
+        value.hidden = show == Show::Never;
+    }
+    /// The legacy Hide/Show action maps to Never/Default.
     pub fn set_hidden(&mut self, id: &str, hidden: bool) {
-        let hidden = hidden && id != "game.pause";
-        self.0
-            .entry(id.into())
-            .and_modify(|v| v.hidden = hidden)
-            .or_insert(Override {
-                x: -1.0,
-                y: -1.0,
-                hidden,
-                moved: false,
-            });
+        self.set_show(id, if hidden { Show::Never } else { Show::Default });
     }
     pub fn set(&mut self, id: &str, rect: Rect, size: (f32, f32), hidden: bool) {
-        self.0.insert(
-            id.into(),
-            fractions(rect, size, hidden && id != "game.pause"),
-        );
+        let mut value = fractions(rect, size, hidden && id != "game.pause");
+        if let Some(old) = self.0.get(id).filter(|v| v.hidden == value.hidden) {
+            value.show = old.show;
+        }
+        self.0.insert(id.into(), value);
     }
-    /// A JSON-quoted id, x fraction, y fraction and boolean, separated by tabs.
+    /// JSON-quoted id, x/y fractions, hidden boolean, optional Show value, separated by tabs.
     /// Ignore malformed lines; preserve unknown ids for temporarily disabled mods.
     pub fn parse(text: &str) -> Self {
         let mut values = Self::default();
         for line in text.lines() {
             let fields: Vec<_> = line.split('\t').collect();
-            if let [id, x, y, hidden] = fields.as_slice()
+            if !(4..=5).contains(&fields.len()) {
+                continue;
+            }
+            let Some(mut show) = fields
+                .get(4)
+                .map_or(Some(Show::Default), |s| Show::parse(s))
+            else {
+                continue;
+            };
+            if let [id, x, y, hidden, ..] = fields.as_slice()
                 && let (Ok(id), Ok(x), Ok(y), Ok(hidden)) = (
                     serde_json::from_str::<String>(id),
                     x.parse::<f32>(),
@@ -114,13 +183,20 @@ impl Overrides {
                 if !moved && (x, y) != (-1.0, -1.0) {
                     continue;
                 }
-                let hidden = hidden && id != "game.pause";
+                if hidden {
+                    show = Show::Never;
+                }
+                if id == "game.pause" {
+                    show = Show::Default;
+                }
+                let hidden = show == Show::Never;
                 values.0.insert(
                     id,
                     Override {
                         x,
                         y,
                         hidden,
+                        show,
                         moved,
                     },
                 );
@@ -134,11 +210,12 @@ impl Overrides {
             .map(|(id, v)| {
                 let (x, y) = if v.moved { (v.x, v.y) } else { (-1.0, -1.0) };
                 format!(
-                    "{}\t{}\t{}\t{}\n",
+                    "{}\t{}\t{}\t{}\t{}\n",
                     serde_json::to_string(id).expect("string"),
                     x,
                     y,
-                    v.hidden && id != "game.pause"
+                    v.hidden && id != "game.pause",
+                    v.show.as_str()
                 )
             })
             .collect()
@@ -210,7 +287,8 @@ pub fn resolve(size: (f32, f32), entries: &[Entry], overrides: &Overrides) -> Ve
                 id: e.id.clone(),
                 rect: default
                     .map(|r| placed.map_or_else(|| clamp(r, size, false), |v| apply(r, size, *v))),
-                hidden: e.id != "game.pause" && value.map_or(e.hidden_by_default, |v| v.hidden),
+                hidden: e.id != "game.pause"
+                    && (value.map_or(e.hidden_by_default, |v| v.hidden) || !e.visible_now),
             }
         })
         .collect();
@@ -228,7 +306,12 @@ pub fn resolve(size: (f32, f32), entries: &[Entry], overrides: &Overrides) -> Ve
                 if !p.hidden
                     && matches!(
                         p.id.as_str(),
-                        "game.drop" | "game.use" | "game.jump" | "game.sneak"
+                        "game.drop"
+                            | "game.use"
+                            | "game.jump"
+                            | "game.sneak"
+                            | "game.sprint"
+                            | "game.attack"
                     )
                     && let Some(r) = p.rect
                     && x < r[0] + r[2] + 2.0
@@ -262,8 +345,80 @@ mod tests {
             id: id.into(),
             default,
             hidden_by_default: false,
+            visible_now: true,
         }
     }
+    #[test]
+    fn show_settings_round_trip_with_legacy_lines_and_unmoved_marker() {
+        let legacy =
+            Overrides::parse("\"game.jump\"\t0.25\t0.5\tfalse\n\"mod.old.key\"\t-1\t-1\ttrue\n");
+        assert_eq!(legacy.show("game.jump"), Show::Default);
+        assert_eq!(legacy.show("mod.old.key"), Show::Never);
+        assert!(!legacy.0["mod.old.key"].moved);
+        let mut choices = legacy;
+        for (id, show) in [
+            ("game.jump", Show::Always),
+            ("game.sprint", Show::Riding),
+            ("mod.a.key", Show::Never),
+            ("mod.b.key", Show::Default),
+        ] {
+            choices.set_show(id, show);
+        }
+        assert_eq!(Overrides::parse(&choices.encode()), choices);
+        choices.set(
+            "game.sprint",
+            [101.0, 0.0, 32.0, 24.0],
+            (320.0, 180.0),
+            false,
+        );
+        assert_eq!(choices.show("game.sprint"), Show::Riding);
+        choices.set_hidden("game.sprint", true);
+        assert_eq!(choices.show("game.sprint"), Show::Never);
+        choices.set_hidden("game.sprint", false);
+        assert_eq!(choices.show("game.sprint"), Show::Default);
+        assert!(choices.0["game.sprint"].moved);
+        assert_eq!(
+            Overrides::parse("\"game.jump\"\t-1\t-1\ttrue\talways").show("game.jump"),
+            Show::Never
+        );
+        assert!(Overrides::parse("\"x\"\t-1\t-1\tfalse\tbogus").0.is_empty());
+    }
+
+    #[test]
+    fn context_hidden_buttons_leave_automatic_space_and_player_show_wins() {
+        let mut contextual = entry("mod.dragon.fire", Some([616.0, 76.0, 20.0, 20.0]));
+        let auto = entry("mod.other.key", None);
+        for (show, riding, visible) in [
+            (Show::Default, false, false),
+            (Show::Default, true, true),
+            (Show::Always, false, true),
+            (Show::Riding, false, false),
+            (Show::Riding, true, true),
+            (Show::Never, true, false),
+        ] {
+            contextual.visible_now = show.visible(riding, riding);
+            let mut overrides = Overrides::default();
+            overrides.set_show(&contextual.id, show);
+            let p = resolve(
+                (640.0, 360.0),
+                &[contextual.clone(), auto.clone()],
+                &overrides,
+            );
+            assert_eq!(!p[0].hidden, visible);
+            assert_eq!(
+                p[1].rect,
+                Some(if visible {
+                    [616.0, 98.0, 20.0, 20.0]
+                } else {
+                    [616.0, 76.0, 20.0, 20.0]
+                })
+            );
+        }
+        // Always/Riding ignore a failed holding condition as well.
+        assert!(Show::Always.visible(false, false));
+        assert!(Show::Riding.visible(false, true));
+    }
+
     #[test]
     fn columns_wrap_before_lower_cluster_and_skip_all_obstacles() {
         let mut entries = vec![
@@ -321,7 +476,7 @@ mod tests {
                     entries.push(entry(&format!("mod.auto.{n}"), None));
                 }
                 let p = resolve((width, height), &entries, &Overrides::default());
-                for (i, a) in p.iter().enumerate().skip(10) {
+                for (i, a) in p.iter().enumerate().skip(Button::ALL.len() + 2) {
                     let rect = a.rect.expect("phone has space for sixteen auto keys");
                     for b in &p[..i] {
                         assert!(
@@ -388,6 +543,7 @@ mod tests {
                     x: 0.99,
                     y: 0.99,
                     hidden: false,
+                    show: Show::Default,
                     moved: true,
                 }
             ),

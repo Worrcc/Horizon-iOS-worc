@@ -573,6 +573,15 @@ API level 20: a square button above the game's touch controls.
 | `size` | `f32` | Side in GUI pixels, clamped to 16..64. |
 | `lit` | `bool` |  |
 
+### record `touch-context`
+
+API level 25: when a registered key's own or automatic touch button shows by default.
+
+| Field | Type | |
+| --- | --- | --- |
+| `riding` | `list<string>` | Ride one of these entity ids: "*" any mount, "ns:*" any in a namespace. Empty means no riding condition. At most 32 validated resource ids or wildcards. |
+| `holding` | `list<string>` | Hold one of these item ids in the main hand: "*" anything, "ns:*" a namespace. Empty means no holding condition. At most 32 validated resource ids or wildcards. |
+
 ### record `held-item`
 
 The main hand's stack.
@@ -613,6 +622,7 @@ A mapping as the player has bound it.
 | --- | --- | --- |
 | `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. Player touch-layout overrides win over the anchor/offset. Removing an explicit button restores the key's automatic button. |
 | `set-auto-button-shown` | `func(name: string, shown: bool) -> result<_, string>` | API level 24: whether a registered key's automatic touch button (one for a key with no `set-touch-button`) starts shown. Automatic buttons start hidden unless the mod asks; the player's own choice (the mod's settings page or Edit Touch Layout) always wins. |
+| `set-touch-button-context` | `func(name: string, context: option<touch-context>) -> result<_, string>` | API level 25: set/clear the registered key's default touch visibility context. Both nonempty lists must match; none clears it. The player's Show choice (Always/Riding/Never) wins. Automatic buttons still start hidden unless opted in with set-auto-button-shown. Errors leave the previous context intact. |
 | `touch-active` | `func() -> bool` | API level 20: whether the player is using the touch screen (the game's touch controls show while playing). It stays true on screens, so a mod can offer touch buttons on its own. |
 | `claim-items` | `func(ids: list<string>)` | The items whose use the mod handles instead of the game, by id (at most 64). Replaces the previous list. |
 | `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. While touch controls are shown, keys without set-touch-button get automatic 20px slot buttons, in registration order down the right side. The player can move or hide them in Edit Touch Layout. Controller Settings > Bindings lists every registered key, unbound by default. A player-chosen button or two-button combination sends the same key-down/key-up events while playing, independently of the keyboard and touch bindings. |

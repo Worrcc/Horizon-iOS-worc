@@ -131,6 +131,7 @@ pub mod screen_narrator;
 pub mod social_screen;
 pub use horizon_server_files as server;
 pub mod controller_notice;
+pub mod mount_controls;
 pub mod server_packs;
 pub mod shadows;
 pub mod spear;

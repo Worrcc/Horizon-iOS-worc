@@ -373,6 +373,20 @@ interface input {
     /// `set-touch-button`) starts shown. Automatic buttons start hidden unless the mod asks;
     /// the player's own choice (the mod's settings page or Edit Touch Layout) always wins.
     set-auto-button-shown: func(name: string, shown: bool) -> result<_, string>;
+    /// API level 25: when a registered key's own or automatic touch button shows by default.
+    record touch-context {
+        /// Ride one of these entity ids: "*" any mount, "ns:*" any in a namespace.
+        /// Empty means no riding condition. At most 32 validated resource ids or wildcards.
+        riding: list<string>,
+        /// Hold one of these item ids in the main hand: "*" anything, "ns:*" a namespace.
+        /// Empty means no holding condition. At most 32 validated resource ids or wildcards.
+        holding: list<string>,
+    }
+    /// API level 25: set/clear the registered key's default touch visibility context.
+    /// Both nonempty lists must match; none clears it. The player's Show choice
+    /// (Always/Riding/Never) wins. Automatic buttons still start hidden unless opted in
+    /// with set-auto-button-shown. Errors leave the previous context intact.
+    set-touch-button-context: func(name: string, context: option<touch-context>) -> result<_, string>;
     /// API level 20: whether the player is using the touch screen (the game's touch controls show
     /// while playing). It stays true on screens, so a mod can offer touch buttons on its own.
     touch-active: func() -> bool;

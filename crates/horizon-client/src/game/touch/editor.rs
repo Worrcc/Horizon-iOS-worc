@@ -16,23 +16,45 @@ struct Drag {
     moved: bool,
 }
 const NAME_Y: f32 = 44.0;
-const CONTROLS_TOP: f32 = 56.0;
+const BAND_HEIGHT: f32 = NAME_Y + 12.0;
 
-fn toolbar(size: (f32, f32)) -> [Rect; 4] {
-    let w = ((size.0 - 10.0) / 4.0).clamp(0.0, 58.0);
-    let left = (size.0 - (4.0 * w + 6.0)) / 2.0;
-    std::array::from_fn(|i| [left + i as f32 * (w + 2.0), 20.0, w, 20.0])
+fn band_offset(size: (f32, f32), bottom: bool) -> f32 {
+    if bottom {
+        (size.1 - BAND_HEIGHT).max(0.0)
+    } else {
+        0.0
+    }
+}
+fn toolbar(size: (f32, f32), bottom: bool) -> [Rect; 5] {
+    let show_width = 86.0_f32.min((size.0 - 12.0).max(0.0));
+    let w = ((size.0 - 12.0 - show_width) / 4.0).clamp(0.0, 58.0);
+    let left = (size.0 - (4.0 * w + show_width + 8.0)) / 2.0;
+    std::array::from_fn(|i| {
+        [
+            left + i as f32 * (w + 2.0),
+            20.0 + band_offset(size, bottom),
+            if i == 4 { show_width } else { w },
+            20.0,
+        ]
+    })
 }
 impl Editor {
+    fn bottom(&self, items: &[TouchItem]) -> bool {
+        items
+            .iter()
+            .find(|i| self.selected.as_deref() == Some(&i.id))
+            .and_then(|i| i.rect)
+            .is_some_and(|r| r[1] < BAND_HEIGHT)
+    }
     fn press(&mut self, items: &[TouchItem], size: (f32, f32), at: (f32, f32)) {
-        let bar = toolbar(size);
+        let bar = toolbar(size, self.bottom(items));
         let action = bar.iter().position(|&r| touch_layout::contains(r, at));
         // The gaps belong to the bar too. A press on it never captures a control below it.
         let on_bar = touch_layout::contains(
             [
                 bar[0][0],
                 bar[0][1],
-                bar[3][0] + bar[3][2] - bar[0][0],
+                bar[4][0] + bar[4][2] - bar[0][0],
                 bar[0][3],
             ],
             at,
@@ -70,10 +92,6 @@ impl Drag {
         let mut rect = self.origin;
         rect[0] += dx;
         rect[1] += dy;
-        rect = touch_layout::clamp(rect, size, true);
-        // Keep moved controls below the title, toolbar and selected name. On short viewports,
-        // use all available height so a large control still has a reachable exposed part.
-        rect[1] = rect[1].max(CONTROLS_TOP.min(size.1 - rect[3]));
         Some(touch_layout::clamp(rect, size, true))
     }
 }
@@ -162,12 +180,21 @@ impl Game<'_> {
             );
             widgets::record(&item.name, rect, true);
         }
+        if editor
+            .pointer
+            .as_ref()
+            .is_some_and(|p| p.item.is_some() && p.moved)
+        {
+            return;
+        }
+        let size = (batch.width, batch.height);
+        let offset = band_offset(size, editor.bottom(&items));
         let title = lang::get("horizon.touch.edit_title");
         batch.text(
             atlas,
             &title,
             (batch.width - HudBatch::text_width(atlas, &title)) / 2.0,
-            6.0,
+            6.0 + offset,
             0xFFFFFFFF,
             true,
         );
@@ -179,7 +206,7 @@ impl Game<'_> {
             atlas,
             &name,
             (batch.width - HudBatch::text_width(atlas, &name)) / 2.0,
-            NAME_Y,
+            NAME_Y + offset,
             0xFFFFFFFF,
             true,
         );
@@ -192,10 +219,19 @@ impl Game<'_> {
             "controls.reset",
             "horizon.touch.reset_all",
             "gui.done",
+            match selected
+                .map(|i| self.touch.overrides.show(&i.id))
+                .unwrap_or_default()
+            {
+                Show::Default => "horizon.touch.show.default",
+                Show::Always => "horizon.touch.show.always",
+                Show::Riding => "horizon.touch.show.riding",
+                Show::Never => "horizon.touch.show.never",
+            },
         ];
-        for (i, [x, y, w, h]) in toolbar((batch.width, batch.height)).into_iter().enumerate() {
+        for (i, [x, y, w, h]) in toolbar(size, editor.bottom(&items)).into_iter().enumerate() {
             let active = match i {
-                0 => selected.is_some_and(|i| i.id != "game.pause"),
+                0 | 4 => selected.is_some_and(|i| i.id != "game.pause"),
                 1 => selected.is_some(),
                 _ => true,
             };
@@ -232,7 +268,7 @@ impl Game<'_> {
         if !pointer.moved
             && let Some(action) = pointer
                 .action
-                .filter(|&i| touch_layout::contains(toolbar(size)[i], at))
+                .filter(|&i| touch_layout::contains(toolbar(size, editor.bottom(&items))[i], at))
         {
             let selected = items
                 .iter()
@@ -241,9 +277,8 @@ impl Game<'_> {
                 0 => {
                     if let Some(item) = selected
                         && item.id != "game.pause"
-                        && let Some(rect) = item.rect
                     {
-                        self.touch.overrides.set(&item.id, rect, size, !item.hidden);
+                        self.touch.overrides.set_hidden(&item.id, !item.hidden);
                     }
                 }
                 1 => {
@@ -255,6 +290,12 @@ impl Game<'_> {
                 3 => {
                     self.close_touch_editor();
                     return;
+                }
+                4 => {
+                    if let Some(item) = selected.filter(|i| i.id != "game.pause") {
+                        let show = self.touch.overrides.show(&item.id).next();
+                        self.touch.overrides.set_show(&item.id, show);
+                    }
                 }
                 _ => {}
             }
@@ -322,6 +363,8 @@ mod tests {
             label: String::new(),
             rect: Some(rect),
             hidden: false,
+            default_visible: true,
+            condition: String::new(),
             kind: TouchKind::Stick,
         }
     }
@@ -329,8 +372,8 @@ mod tests {
     #[test]
     fn toolbar_is_centred_below_title_with_name_underneath_at_phone_sizes() {
         for size in [(320.0, 180.0), (854.0, 480.0), (200.0, 600.0)] {
-            let bar = toolbar(size);
-            assert_eq!(bar[0][0], size.0 - bar[3][0] - bar[3][2]);
+            let bar = toolbar(size, false);
+            assert_eq!(bar[0][0], size.0 - bar[4][0] - bar[4][2]);
             for (i, rect) in bar.iter().enumerate() {
                 assert_eq!(rect[1], 20.0);
                 assert_eq!(rect[3], 20.0);
@@ -381,7 +424,7 @@ mod tests {
     #[test]
     fn toolbar_and_its_gaps_never_drag_the_control_beneath_them() {
         let size = (640.0, 360.0);
-        let bar = toolbar(size);
+        let bar = toolbar(size, false);
         let mut editor = Editor {
             selected: Some("game.jump".into()),
             ..Editor::default()
@@ -409,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn dragged_controls_save_below_toolbar_and_can_be_grabbed_again() {
+    fn a_control_can_be_dragged_to_y_zero_and_grabbed_again() {
         let size = (320.0, 180.0);
         let mut editor = Editor::default();
         let control = item("game.jump", [100.0, 100.0, 20.0, 20.0]);
@@ -420,7 +463,7 @@ mod tests {
             .unwrap()
             .rect((211.0, 1.0), size)
             .unwrap();
-        assert_eq!(rect, [202.0, 56.0, 20.0, 20.0]);
+        assert_eq!(rect, [202.0, 0.0, 20.0, 20.0]);
         let mut overrides = Overrides::default();
         overrides.set("game.jump", rect, size, false);
         let saved = touch_layout::apply(control.rect.unwrap(), size, overrides.0["game.jump"]);
@@ -433,9 +476,12 @@ mod tests {
             editor.pointer.as_ref().unwrap().item.as_deref(),
             Some("game.jump")
         );
+    }
 
-        // A large stick on a short screen still fits and exposes a part below the bar.
+    #[test]
+    fn large_controls_still_fit_and_can_be_grabbed_on_short_screens() {
         let size = (320.0, 80.0);
+        let mut editor = Editor::default();
         editor.press(
             &[item("game.stick", [0.0, 16.0, 64.0, 64.0])],
             size,
@@ -447,11 +493,52 @@ mod tests {
             .unwrap()
             .rect((10.0, -100.0), size)
             .unwrap();
-        assert_eq!(rect, [0.0, 16.0, 64.0, 64.0]);
-        editor.press(&[item("game.stick", rect)], size, (50.0, 60.0));
+        assert_eq!(rect, [0.0, 0.0, 64.0, 64.0]);
+        editor.press(&[item("game.stick", rect)], size, (50.0, 10.0));
         assert_eq!(
             editor.pointer.as_ref().unwrap().item.as_deref(),
             Some("game.stick")
+        );
+    }
+
+    #[test]
+    fn bar_flips_to_bottom_when_selection_is_at_top_and_routes_presses() {
+        let size = (320.0, 180.0);
+        let top = item("game.jump", [100.0, 0.0, 32.0, 24.0]);
+        let mut editor = Editor {
+            selected: Some(top.id.clone()),
+            ..Editor::default()
+        };
+        assert!(editor.bottom(std::slice::from_ref(&top)));
+        let bar = toolbar(size, true);
+        assert!(bar[0][1] > size.1 - BAND_HEIGHT);
+        assert_eq!(NAME_Y + band_offset(size, true), size.1 - 12.0);
+        for (action, rect) in bar.into_iter().enumerate() {
+            let underneath = item("game.stick", rect);
+            editor.press(
+                &[item("game.jump", top.rect.unwrap()), underneath],
+                size,
+                (rect[0] + 1.0, rect[1] + 1.0),
+            );
+            let pointer = editor.pointer.as_ref().unwrap();
+            assert_eq!(pointer.action, Some(action));
+            assert!(pointer.item.is_none());
+            assert_eq!(editor.selected.as_deref(), Some("game.jump"));
+        }
+        let gap = (bar[0][0] + bar[0][2] + 1.0, bar[0][1] + 1.0);
+        editor.press(
+            &[
+                item("game.jump", top.rect.unwrap()),
+                item("game.stick", [gap.0 - 2.0, gap.1 - 2.0, 10.0, 10.0]),
+            ],
+            size,
+            gap,
+        );
+        assert!(editor.pointer.as_ref().unwrap().item.is_none());
+        editor.press(&[top], size, (110.0, 10.0));
+        assert_eq!(
+            editor.pointer.as_ref().unwrap().item.as_deref(),
+            Some("game.jump")
         );
     }
 }
