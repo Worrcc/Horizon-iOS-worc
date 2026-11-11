@@ -211,9 +211,9 @@ impl BlockInfo {
         } else {
             PAD
         };
-        let icons_w = icons
-            .as_ref()
-            .map_or(0.0, |(i, _)| i.len() as f32 * ICON_STEP);
+        let icons_w = icons.as_ref().map_or(0.0, |(i, f)| {
+            i.len() as f32 * ICON_STEP + if f.is_some() { MARK_W } else { 0.0 }
+        });
         let icons_h = if icons.is_some() { ICON_STEP } else { 0.0 };
         let widest = lines
             .iter()
@@ -265,36 +265,20 @@ impl BlockInfo {
             if i == 0
                 && let Some((items, frame)) = icons.take()
             {
+                let n = items.len();
                 for (k, item) in items.into_iter().enumerate() {
-                    let x = text_x + k as f32 * ICON_STEP;
-                    if let Some(color) = frame {
-                        shapes.push(Shape::Fill(FillShape {
-                            rect: Rect {
-                                x,
-                                y,
-                                w: ICON + 2.0,
-                                h: ICON + 2.0,
-                            },
-                            color: 0xFF00_0000 | color,
-                        }));
-                        shapes.push(Shape::Fill(FillShape {
-                            rect: Rect {
-                                x: x + 1.0,
-                                y: y + 1.0,
-                                w: ICON,
-                                h: ICON,
-                            },
-                            color: BACKGROUND,
-                        }));
-                    }
                     shapes.push(Shape::Item(ItemShape {
                         item,
                         at: Point {
-                            x: x + 1.0,
-                            y: y + 1.0,
+                            x: text_x + k as f32 * ICON_STEP,
+                            y,
                         },
                         scale: 1.0,
                     }));
+                }
+                if let Some(color) = frame {
+                    let x = text_x + n as f32 * ICON_STEP;
+                    mark(&mut shapes, x, y + (ICON - 6.0) / 2.0, color == CAN_HARVEST);
                 }
                 y += ICON_STEP;
             }
@@ -395,8 +379,44 @@ fn harvest_row(h: &client_world::HarvestInfo) -> Option<HarvestRow> {
     ))
 }
 
-/// One step of an icon row: the icon and a 1 px frame each side, and a gap.
-const ICON_STEP: f32 = ICON + 4.0;
+/// One step of an icon row: the icon and a gap.
+const ICON_STEP: f32 = ICON + 2.0;
+/// The mark after a needed tool: a check when the held item drops the block,
+/// an X when not, as pixel art (7 x 6), with a dark shadow.
+const CHECK: [&str; 6] = [
+    "......#", ".....##", "#...##.", "##.##..", ".###...", "..#....",
+];
+const CROSS: [&str; 6] = [
+    "#....#.", ".#..#..", "..##...", "..##...", ".#..#..", "#....#.",
+];
+const MARK_W: f32 = 9.0;
+const SHADOW: u32 = 0xFF20_2020;
+
+/// The check or X at `(x, y)`: a pixel each, shadow first.
+fn mark(shapes: &mut Vec<Shape>, x: f32, y: f32, ok: bool) {
+    let (rows, color) = if ok {
+        (CHECK, 0xFF00_0000 | CAN_HARVEST)
+    } else {
+        (CROSS, 0xFF00_0000 | CANNOT_HARVEST)
+    };
+    for (shadow, color) in [(1.0, SHADOW), (0.0, color)] {
+        for (j, row) in rows.iter().enumerate() {
+            for (i, c) in row.chars().enumerate() {
+                if c == '#' {
+                    shapes.push(Shape::Fill(FillShape {
+                        rect: Rect {
+                            x: x + i as f32 + shadow,
+                            y: y + j as f32 + shadow,
+                            w: 1.0,
+                            h: 1.0,
+                        },
+                        color,
+                    }));
+                }
+            }
+        }
+    }
+}
 
 fn offset(shape: &mut Shape, dx: f32, dy: f32) {
     match shape {
