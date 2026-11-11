@@ -110,7 +110,7 @@ impl Game<'_> {
         self.touch.editor = Some(Editor::default());
         Ok(())
     }
-    fn save_touch_layout(&self) {
+    pub(in crate::game) fn save_touch_layout(&self) {
         let path = Self::options_path().with_file_name("horizon-touch.txt");
         let tmp = path.with_extension("txt.tmp");
         if let Err(error) = std::fs::write(&tmp, self.touch.overrides.encode())

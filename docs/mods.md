@@ -1148,7 +1148,13 @@ shapes in drawing order).
 
 **Automatic touch keys and the touch layout editor.** While playing with touch
 controls shown, every registered key without an explicit `input.set-touch-button`
-gets a 20 × 20 slot button. Defaults follow mod load order and key registration
+has a 20 × 20 slot button. From API level 24 these automatic buttons **start
+hidden**: the player turns each on from the mod's settings page (on the touch
+screen a key row reads "Key: Button On/Off" and a tap toggles it; a long press
+resets the key to the mod's default; Reset Keys and Edit Touch Layout... sit
+under the key rows), or in Edit Touch Layout. A mod can have a key's automatic
+button start shown with `input.set-auto-button-shown(name, true)`; the player's
+choice always wins. Defaults follow mod load order and key registration
 order, down the right side under F5 / T / pause, wrapping to columns on the left
 before the lower action cluster. They avoid game controls and mod-authored
 buttons. One-word labels use their first four characters; several words use up to
@@ -1439,3 +1445,17 @@ fuel for the small and largest skipped-state payload shows there is no guest
 per-state unpacking loop; the native scan and bulk copying still take wall time.
 Reproduce with `cargo test --release --offline -p horizon-mods --features
 runtime,pack,force-pulley --test sandbox column_lifting_cost -- --ignored --nocapture`.
+
+
+## API level 24: harvest facts and automatic touch buttons
+
+- `client-world.harvest(block) -> option<harvest-info>` (capability `world-read`):
+  `tools` that mine the block faster than a hand ("pickaxe", "axe", "shovel",
+  "hoe"), the lowest `tier` ("wooden", "stone", "iron", "diamond", "netherite")
+  and `tier-tool` whose tool drops it when `needs-tool`, `held-drops` (the main
+  hand's item would drop it), and `hardness` (negative: unbreakable). The game's
+  own tool rules decide, so content mods' blocks, tags and tools count. Block
+  Info 1.1 shows it as "Needs: Diamond Pickaxe" (green or red for the held item)
+  or "Tool: Axe".
+- `input.set-auto-button-shown(name, shown) -> result<_, string>`: whether a
+  registered key's automatic touch button starts shown (default: hidden).

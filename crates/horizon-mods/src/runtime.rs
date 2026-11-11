@@ -186,8 +186,8 @@ pub use canvas_host::{
 };
 pub use client_world_host::{
     BlockFace, BlockTable, CHANGES_MAX, CHANGES_RADIUS, COLUMN_CHUNKS, COLUMN_DEPTH, ChunkColumns,
-    ClientDimension, ClientTexture, ClientWorldView, ColumnLayer, FaceTint, NO_SPRITE, NO_TOP,
-    state_flags,
+    ClientDimension, ClientTexture, ClientWorldView, ColumnLayer, FaceTint, Harvest, NO_SPRITE,
+    NO_TOP, state_flags,
 };
 
 /// A mod's linear memory cap.
@@ -1888,6 +1888,25 @@ impl Mods {
         input.rebind(name, key.to_owned());
         true
     }
+    /// Puts a key back on the key its mod registered it with; false for an
+    /// unknown mod or key.
+    pub fn reset_key(&mut self, i: usize, name: &str) -> bool {
+        let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) else {
+            return false;
+        };
+        let input = &mut run.store.data_mut().input;
+        let Some(default) = input
+            .keys
+            .iter()
+            .find(|k| k.name == name)
+            .map(|k| k.default_key.clone())
+        else {
+            return false;
+        };
+        input.bindings.retain(|(n, _)| n != name);
+        input.rebind(name, default);
+        true
+    }
     /// The use button went down with `item`: `use-start` to each mod that
     /// claimed it.
     pub fn use_start(&mut self, item: &HeldItem) {
@@ -3429,6 +3448,11 @@ pub struct ModKey {
     pub label: String,
     /// `key.keyboard.r`.
     pub key: String,
+    /// The key the mod registered it with, before the player's choice.
+    pub default_key: String,
+    /// API 24: its automatic touch button starts shown (`set-auto-button-shown`);
+    /// automatic buttons start hidden otherwise.
+    pub auto_shown: bool,
 }
 
 /// What capability `input` holds for one mod.
@@ -3548,6 +3572,13 @@ impl input::Host for State {
     fn touch_active(&mut self) -> bool {
         self.snapshot.touch_active
     }
+    fn set_auto_button_shown(&mut self, name: String, shown: bool) -> Result<(), String> {
+        let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) else {
+            return Err(format!("no registered key {name}"));
+        };
+        k.auto_shown = shown;
+        Ok(())
+    }
     fn set_touch_button(
         &mut self,
         name: String,
@@ -3597,18 +3628,25 @@ impl input::Host for State {
             ));
         }
         let (name, label) = (clip(name), clip(label));
+        let default_key = key.clone();
         let key = match self.input.bindings.iter().find(|(n, _)| *n == name) {
             Some((_, chosen)) => chosen.clone(),
             None => key,
         };
         if let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) {
-            (k.label, k.key) = (label, key);
+            (k.label, k.key, k.default_key) = (label, key, default_key);
             return Ok(());
         }
         if self.input.keys.len() == KEYS {
             return Err(format!("a mod may register {KEYS} keys"));
         }
-        self.input.keys.push(ModKey { name, label, key });
+        self.input.keys.push(ModKey {
+            name,
+            label,
+            key,
+            default_key,
+            auto_shown: false,
+        });
         Ok(())
     }
     fn held(&mut self) -> Option<HeldItem> {

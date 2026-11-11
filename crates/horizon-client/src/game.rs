@@ -8204,7 +8204,9 @@ impl Game<'_> {
             // A controller's stick click acts as the key without setting the modifier: it is held
             // while the pad holds it (or its release waits for a tick), not when the keyboard says.
             let pad = self.pad.holds_action(&self.settings.controller, mapping);
-            if !held && !pad {
+            // The touch Sneak toggle sends the key without a keyboard modifier.
+            let touch = self.touch.holds_mapping(mapping);
+            if !held && !pad && !touch {
                 self.toggles.0[slot].set_down(false, needs_toggle);
                 self.sync_toggle(slot);
             }

@@ -7,6 +7,9 @@ pub struct Entry {
     pub id: String,
     /// None means an automatic 20px button, in the input's stable registration order.
     pub default: Option<Rect>,
+    /// Hidden until the player shows it (automatic mod-key buttons, unless the
+    /// mod asked for them shown).
+    pub hidden_by_default: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Override {
@@ -14,6 +17,9 @@ pub struct Override {
     pub x: f32,
     pub y: f32,
     pub hidden: bool,
+    /// The player placed it: `x` and `y` hold. False for a button only shown or
+    /// hidden, which keeps its default place (an automatic one keeps flowing).
+    pub moved: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overrides(pub BTreeMap<String, Override>);
@@ -50,6 +56,7 @@ pub fn fractions(rect: Rect, size: (f32, f32), hidden: bool) -> Override {
         x: r[0] / size.0.max(1.0),
         y: r[1] / size.1.max(1.0),
         hidden,
+        moved: true,
     }
 }
 pub fn apply(default: Rect, size: (f32, f32), value: Override) -> Rect {
@@ -65,6 +72,19 @@ impl Overrides {
     }
     pub fn reset_all(&mut self) {
         self.0.clear();
+    }
+    /// Shows or hides a button where it is, without placing it.
+    pub fn set_hidden(&mut self, id: &str, hidden: bool) {
+        let hidden = hidden && id != "game.pause";
+        self.0
+            .entry(id.into())
+            .and_modify(|v| v.hidden = hidden)
+            .or_insert(Override {
+                x: -1.0,
+                y: -1.0,
+                hidden,
+                moved: false,
+            });
     }
     pub fn set(&mut self, id: &str, rect: Rect, size: (f32, f32), hidden: bool) {
         self.0.insert(
@@ -88,11 +108,22 @@ impl Overrides {
                 && !id.is_empty()
                 && x.is_finite()
                 && y.is_finite()
-                && (0.0..=1.0).contains(&x)
-                && (0.0..=1.0).contains(&y)
             {
+                // -1 -1: shown or hidden where it is, not placed.
+                let moved = (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y);
+                if !moved && (x, y) != (-1.0, -1.0) {
+                    continue;
+                }
                 let hidden = hidden && id != "game.pause";
-                values.0.insert(id, Override { x, y, hidden });
+                values.0.insert(
+                    id,
+                    Override {
+                        x,
+                        y,
+                        hidden,
+                        moved,
+                    },
+                );
             }
         }
         values
@@ -101,11 +132,12 @@ impl Overrides {
         self.0
             .iter()
             .map(|(id, v)| {
+                let (x, y) = if v.moved { (v.x, v.y) } else { (-1.0, -1.0) };
                 format!(
                     "{}\t{}\t{}\t{}\n",
                     serde_json::to_string(id).expect("string"),
-                    v.x,
-                    v.y,
+                    x,
+                    y,
                     v.hidden && id != "game.pause"
                 )
             })
@@ -172,12 +204,13 @@ pub fn resolve(size: (f32, f32), entries: &[Entry], overrides: &Overrides) -> Ve
         .iter()
         .map(|e| {
             let value = overrides.0.get(&e.id);
-            let default = e.default.or_else(|| value.map(|_| [0.0, 0.0, 20.0, 20.0]));
+            let placed = value.filter(|v| v.moved);
+            let default = e.default.or_else(|| placed.map(|_| [0.0, 0.0, 20.0, 20.0]));
             Placed {
                 id: e.id.clone(),
                 rect: default
-                    .map(|r| value.map_or_else(|| clamp(r, size, false), |v| apply(r, size, *v))),
-                hidden: e.id != "game.pause" && value.is_some_and(|v| v.hidden),
+                    .map(|r| placed.map_or_else(|| clamp(r, size, false), |v| apply(r, size, *v))),
+                hidden: e.id != "game.pause" && value.map_or(e.hidden_by_default, |v| v.hidden),
             }
         })
         .collect();
@@ -228,6 +261,7 @@ mod tests {
         Entry {
             id: id.into(),
             default,
+            hidden_by_default: false,
         }
     }
     #[test]
@@ -353,12 +387,54 @@ mod tests {
                 Override {
                     x: 0.99,
                     y: 0.99,
-                    hidden: false
+                    hidden: false,
+                    moved: true,
                 }
             ),
             [50.0, 30.0, 50.0, 50.0]
         );
     }
+    #[test]
+    fn automatic_buttons_can_start_hidden_and_be_shown_without_being_pinned() {
+        let mut quiet = entry("mod.a.map", None);
+        quiet.hidden_by_default = true;
+        let e = [quiet, entry("mod.a.zoom", None)];
+        let mut o = Overrides::default();
+        let p = resolve((640.0, 360.0), &e, &o);
+        assert!(p[0].hidden);
+        assert!(!p[1].hidden);
+        // Shown where it is: it keeps flowing with the automatic buttons.
+        o.set_hidden("mod.a.map", false);
+        let p = resolve((640.0, 360.0), &e, &o);
+        assert!(!p[0].hidden);
+        assert!(!o.0["mod.a.map"].moved);
+        let flowed = p[0].rect.unwrap();
+        assert_eq!(flowed[2], 20.0);
+        // Hiding a visible-by-default one is remembered, and survives the file.
+        o.set_hidden("mod.a.zoom", true);
+        let again = Overrides::parse(&o.encode());
+        assert_eq!(again, o);
+        let p = resolve((640.0, 360.0), &e, &again);
+        assert!(!p[0].hidden && p[1].hidden);
+        assert_eq!(p[0].rect, Some(flowed));
+        // A moved button stays where the player put it when hidden and shown.
+        o.set(
+            "mod.a.zoom",
+            [100.0, 100.0, 20.0, 20.0],
+            (640.0, 360.0),
+            false,
+        );
+        o.set_hidden("mod.a.zoom", true);
+        o.set_hidden("mod.a.zoom", false);
+        assert!(o.0["mod.a.zoom"].moved);
+        assert_eq!(
+            resolve((640.0, 360.0), &e, &o)[1].rect,
+            Some([100.0, 100.0, 20.0, 20.0])
+        );
+        // Lines out of range other than the -1 -1 marker are still ignored.
+        assert!(Overrides::parse("\"x\"\t-0.5\t0.2\tfalse").0.is_empty());
+    }
+
     #[test]
     fn hidden_buttons_leave_auto_space_pause_cannot_hide_and_reset_restores_defaults() {
         let e = [

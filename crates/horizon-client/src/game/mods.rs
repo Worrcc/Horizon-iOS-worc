@@ -1442,6 +1442,15 @@ impl Game<'_> {
             Some((s.title.as_str(), s.widgets.as_slice()))
         }
     }
+    /// Rows under a settings page's key rows: Reset Keys, then Edit Touch
+    /// Layout where the touch controls can show.
+    fn mod_page_extra(keys: usize) -> usize {
+        if keys == 0 {
+            0
+        } else {
+            1 + usize::from(super::touch::enabled())
+        }
+    }
     /// The keys a settings page lists first: the mod's own (`input`).
     fn mod_page_keys<'a>(mods: &'a Mods, ms: &ModScreen) -> &'a [ModKey] {
         if ms.settings {
@@ -1459,6 +1468,37 @@ impl Game<'_> {
         } else {
             Text::literal(value)
         }
+    }
+    /// A running mod's id, by its index.
+    fn mod_id(&self, owner: usize) -> Option<String> {
+        self.mods
+            .mods
+            .entries()
+            .get(owner)
+            .and_then(|e| e.manifest.as_ref())
+            .map(|m| m.id.clone())
+    }
+    /// Puts one of a mod's keys (or all of them) back on the key the mod
+    /// registered, and forgets the player's choice (`horizon-mods.txt`).
+    fn reset_mod_keys(&mut self, owner: usize, only: Option<&str>) {
+        let Some(id) = self.mod_id(owner) else {
+            return;
+        };
+        let names: Vec<String> = self
+            .mods
+            .mods
+            .keys_of(owner)
+            .iter()
+            .map(|k| k.name.clone())
+            .filter(|n| only.is_none_or(|o| o == n))
+            .collect();
+        for name in &names {
+            self.mods.mods.reset_key(owner, name);
+            if let Some(chosen) = self.settings.mods.keys.get_mut(&id) {
+                chosen.remove(name);
+            }
+        }
+        self.settings.save(&Self::options_path());
     }
     /// The player bound the key row that waited to `key`: the mod's key
     /// follows it now and at the next start (`horizon-mods.txt`).
@@ -1590,6 +1630,7 @@ impl Game<'_> {
         if self.draw_mod_canvas_screen(batch) {
             return;
         }
+        let touch = self.mod_touch_active();
         let Some(ms) = self.mods.screen.as_mut() else {
             // The screen was dropped while it was up: back to the world,
             // mouse held again like any return to Playing.
@@ -1624,16 +1665,57 @@ impl Game<'_> {
         let x = cx - MOD_UI_COLUMN / 2.0;
         // A settings page starts with the mod's keys, as Key Binds rows.
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
-        let page = ModPageLayout::new(batch.height, keys.len(), widgets, &mut ms.scroll);
+        let page = ModPageLayout::new(
+            batch.height,
+            keys.len() + Self::mod_page_extra(keys.len()),
+            widgets,
+            &mut ms.scroll,
+        );
         let cursor = page.cursor(self.cursor);
         let start = batch.vertices.len();
         let widgets_mark = horizon_client::widgets::widgets_mark();
         let targets_mark = horizon_client::widgets::targets_mark();
+        let owner = ms.owner;
+        let mod_id = self
+            .mods
+            .mods
+            .entries()
+            .get(owner)
+            .and_then(|e| e.manifest.as_ref())
+            .map_or(String::new(), |m| m.id.clone());
         for (i, k) in keys.iter().enumerate() {
             let wy = page.key_y(i);
             let hover = ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0);
             let waiting = ms.binding.as_deref() == Some(k.name.as_str());
-            let label = Self::mod_key_label(k, waiting);
+            // On the touch screen a row shows and hides the key's on-screen
+            // button (a tap would only bind the left mouse button).
+            let label = if touch {
+                let shown = self.touch.mod_key_shown(&self.mods.mods, owner, &mod_id, k);
+                let key = if shown {
+                    "horizon.touch.key_button_on"
+                } else {
+                    "horizon.touch.key_button_off"
+                };
+                Text::tr(key, &[&k.label])
+            } else {
+                Self::mod_key_label(k, waiting)
+            };
+            ui::button(
+                batch,
+                atlas,
+                x,
+                wy,
+                MOD_UI_COLUMN,
+                20.0,
+                &label,
+                true,
+                hover,
+            );
+        }
+        for j in 0..Self::mod_page_extra(keys.len()) {
+            let wy = page.key_y(keys.len() + j);
+            let hover = ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0);
+            let label = Text::tr(["horizon.mods.reset_keys", "horizon.touch.edit"][j], &[]);
             ui::button(
                 batch,
                 atlas,
@@ -1774,6 +1856,7 @@ impl Game<'_> {
     /// A click on the mod screen: Done leaves it, a `list` row is the mod's
     /// `ui-events::select`.
     pub(super) fn mod_screen_click(&mut self, button: MouseButton) {
+        let touch = self.mod_touch_active();
         // Key Binds: a mouse button pressed while waiting binds it.
         if self
             .mods
@@ -1784,12 +1867,15 @@ impl Game<'_> {
             self.bind_mod_key(keybinds::mouse_name(button));
             return;
         }
-        if button != MouseButton::Left {
+        // On the touch screen a long press arrives as the right button: it
+        // resets the key row under it.
+        if button != MouseButton::Left && !(touch && button == MouseButton::Right) {
             return;
         }
+        let long_press = button == MouseButton::Right;
         let (w, h) = self.gui_size();
         let cursor = self.cursor;
-        if ui::hovered(cursor, (w / 2.0).floor() - 100.0, h - 27.0, 200.0, 20.0) {
+        if !long_press && ui::hovered(cursor, (w / 2.0).floor() - 100.0, h - 27.0, 200.0, 20.0) {
             self.audio.play_button_click();
             self.close_wasm_mod_screen(true);
             return;
@@ -1804,7 +1890,12 @@ impl Game<'_> {
         let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
         // A key row waits for the key to bind.
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
-        let page = ModPageLayout::new(h, keys.len(), widgets, &mut ms.scroll);
+        let page = ModPageLayout::new(
+            h,
+            keys.len() + Self::mod_page_extra(keys.len()),
+            widgets,
+            &mut ms.scroll,
+        );
         if !page.contains(cursor) {
             return;
         }
@@ -1817,16 +1908,40 @@ impl Game<'_> {
         ) {
             return;
         }
-        let picked = (0..keys.len()).find(|&i| {
+        let rows = keys.len() + Self::mod_page_extra(keys.len());
+        let picked = (0..rows).find(|&i| {
             let wy = page.key_y(i);
             ui::hovered(cursor, x, wy, MOD_UI_COLUMN, 20.0)
         });
         if let Some(i) = picked {
-            let name = keys[i].name.clone();
+            let key = keys.get(i).cloned();
+            let count = keys.len();
             self.audio.play_button_click();
-            if let Some(ms) = self.mods.screen.as_mut() {
-                ms.binding = Some(name);
+            match (key, i - count.min(i)) {
+                (Some(k), _) if long_press => self.reset_mod_keys(owner, Some(&k.name)),
+                (Some(k), _) if touch => {
+                    let Some(id) = self.mod_id(owner) else { return };
+                    let shown = self.touch.mod_key_shown(&self.mods.mods, owner, &id, &k);
+                    self.touch.set_mod_key_shown(&id, &k.name, !shown);
+                    self.save_touch_layout();
+                }
+                (Some(k), _) => {
+                    if let Some(ms) = self.mods.screen.as_mut() {
+                        ms.binding = Some(k.name);
+                    }
+                }
+                (None, 0) if !long_press => self.reset_mod_keys(owner, None),
+                (None, 1) if !long_press => {
+                    self.close_wasm_mod_screen(true);
+                    if let Err(e) = self.open_touch_editor() {
+                        log::warn!("Horizon: {e}");
+                    }
+                }
+                _ => {}
             }
+            return;
+        }
+        if long_press {
             return;
         }
         let mut list_i = 0usize;
@@ -1877,7 +1992,12 @@ impl Game<'_> {
         };
         let x = (w / 2.0).floor() - MOD_UI_COLUMN / 2.0;
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
-        let page = ModPageLayout::new(h, keys.len(), widgets, &mut ms.scroll);
+        let page = ModPageLayout::new(
+            h,
+            keys.len() + Self::mod_page_extra(keys.len()),
+            widgets,
+            &mut ms.scroll,
+        );
         page.wheel(ms, widgets, cursor, x, delta);
     }
 
@@ -1890,7 +2010,12 @@ impl Game<'_> {
             return;
         };
         let keys = Self::mod_page_keys(&self.mods.mods, ms);
-        let page = ModPageLayout::new(h, keys.len(), widgets, &mut ms.scroll);
+        let page = ModPageLayout::new(
+            h,
+            keys.len() + Self::mod_page_extra(keys.len()),
+            widgets,
+            &mut ms.scroll,
+        );
         ms.scroll
             .drag(self.cursor.1, MOD_UI_TOP, page.bottom, page.content);
     }

@@ -6,7 +6,8 @@
 use super::{Mods, State, world_read_bindings::horizon::mods::client_world};
 pub use client_world::{
     BlockStates as BlockTable, ChunkColumns, DimensionInfo as ClientDimension, Face as BlockFace,
-    Layer as ColumnLayer, TexturePixels as ClientTexture, TintSource as FaceTint,
+    HarvestInfo as Harvest, Layer as ColumnLayer, TexturePixels as ClientTexture,
+    TintSource as FaceTint,
 };
 use std::sync::{Arc, Mutex};
 
@@ -66,6 +67,11 @@ pub trait ClientWorldView: std::any::Any + Send {
     fn light(&self, x: i32, y: i32, z: i32) -> Option<u8>;
     /// The biome at a block; none where nothing is loaded.
     fn biome(&self, x: i32, y: i32, z: i32) -> Option<String>;
+    /// API 24: what mines a block id or state, for the held item; none for an
+    /// unknown block.
+    fn harvest(&self, _block: &str) -> Option<Harvest> {
+        None
+    }
 }
 
 /// The view lent for the current calls, shared by every mod's store.
@@ -188,6 +194,17 @@ impl client_world::Host for State {
     }
     fn biome(&mut self, x: i32, y: i32, z: i32) -> Option<String> {
         self.with_view(|v| v.biome(x, y, z)).flatten()
+    }
+    fn harvest(&mut self, block: String) -> Option<Harvest> {
+        if block.len() > 256 {
+            return None;
+        }
+        let started = std::time::Instant::now();
+        let out = self
+            .with_view(|v| v.dimension().and_then(|_| v.harvest(&block)))
+            .flatten();
+        self.canvas.charge(started);
+        out
     }
 }
 

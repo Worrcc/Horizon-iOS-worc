@@ -369,6 +369,10 @@ interface input {
     /// Player touch-layout overrides win over the anchor/offset. Removing an
     /// explicit button restores the key's automatic button.
     set-touch-button: func(name: string, button: option<touch-button>) -> result<_, string>;
+    /// API level 24: whether a registered key's automatic touch button (one for a key with no
+    /// `set-touch-button`) starts shown. Automatic buttons start hidden unless the mod asks;
+    /// the player's own choice (the mod's settings page or Edit Touch Layout) always wins.
+    set-auto-button-shown: func(name: string, shown: bool) -> result<_, string>;
     /// API level 20: whether the player is using the touch screen (the game's touch controls show
     /// while playing). It stays true on screens, so a mod can offer touch buttons on its own.
     touch-active: func() -> bool;
@@ -840,6 +844,26 @@ interface client-world {
     /// k == 0 or no solid found leaves the column unchanged (skip zero).
     /// Fixed-size data stays in flat primitive lists for cheap guest lifting.
     prepared-columns: func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<prepared-chunk>>, string>;
+    /// API level 24: what mines a block, from its loaded tags (content mods' included).
+    record harvest-info {
+        /// Tools that mine it faster than a hand: any of "pickaxe", "axe", "shovel", "hoe"
+        /// (in that order), as the game's own tool rules (content mods' included) decide.
+        tools: list<string>,
+        /// The lowest material whose tool drops it: "wooden", "stone", "iron", "diamond" or
+        /// "netherite"; none when it needs no tool (or no such tool drops it).
+        tier: option<string>,
+        /// The tool of `tier` that drops it ("pickaxe"...), when there is one.
+        tier-tool: option<string>,
+        /// It drops nothing unless broken with the right tool.
+        needs-tool: bool,
+        /// The item in the player's main hand would drop it (true when it needs no tool).
+        held-drops: bool,
+        /// Its destroy time (hardness); negative for unbreakable.
+        hardness: f32,
+    }
+    /// API level 24: a block id or state's harvest facts, for the player's held item; none
+    /// for an unknown block or on the title screen.
+    harvest: func(block: string) -> option<harvest-info>;
     /// The chunks within `radius` chunks of the player (at most 64) whose
     /// change counter moved past `since`: changed, loaded or unloaded since
     /// (an unloaded one now reads none), nearest first, at most 4096. Returns

@@ -152,7 +152,15 @@ struct LentClientWorld {
     pixels: Option<(u64, Arc<Vec<u8>>, Instant)>,
     /// `state-flags`, for the column scan.
     flags: Option<Arc<Vec<u16>>>,
+    /// The main hand's stack, for `harvest`'s `held-drops`.
+    held: Option<horizon_items::items::ItemStack>,
 }
+
+/// The tools and materials `harvest` tries, in the order it reports them.
+#[cfg(feature = "mods")]
+const HARVEST_TOOLS: [&str; 4] = ["pickaxe", "axe", "shovel", "hoe"];
+#[cfg(feature = "mods")]
+const HARVEST_TIERS: [&str; 5] = ["wooden", "stone", "iron", "diamond", "netherite"];
 
 /// `face.tint` and `constant-tint` from a face's tint source.
 #[cfg(feature = "mods")]
@@ -304,6 +312,43 @@ impl LentClientWorld {
 
 #[cfg(feature = "mods")]
 impl ClientWorldView for LentClientWorld {
+    fn harvest(&self, block: &str) -> Option<horizon_mods::Harvest> {
+        let name = block.split('[').next().unwrap_or(block);
+        let state = self.context.assets.registry.default_state(name)?;
+        let facts = self.res.facts().get(state);
+        let items = self.res.items();
+        let block = &*facts.name;
+        let tool = |tier: &str, kind: &str| {
+            horizon_items::items::ItemStack::new(&format!("minecraft:{tier}_{kind}"), 1)
+        };
+        // The game's own tool rules decide, so a content mod's blocks and
+        // tags count as the vanilla ones do.
+        let hand = items.mining_speed(None, block);
+        let tools: Vec<String> = HARVEST_TOOLS
+            .iter()
+            .filter(|kind| items.mining_speed(Some(&tool("wooden", kind)), block) > hand)
+            .map(|kind| (*kind).to_owned())
+            .collect();
+        let (mut tier, mut tier_tool) = (None, None);
+        if facts.requires_tool {
+            'tiers: for t in HARVEST_TIERS {
+                for kind in HARVEST_TOOLS {
+                    if items.correct_for_drops(Some(&tool(t, kind)), block) {
+                        (tier, tier_tool) = (Some(t.to_owned()), Some(kind.to_owned()));
+                        break 'tiers;
+                    }
+                }
+            }
+        }
+        Some(horizon_mods::Harvest {
+            tools,
+            tier,
+            tier_tool,
+            needs_tool: facts.requires_tool,
+            held_drops: !facts.requires_tool || items.correct_for_drops(self.held.as_ref(), block),
+            hardness: facts.hardness,
+        })
+    }
     fn block_at(&self, x: i32, y: i32, z: i32) -> Option<String> {
         self.dimension.as_ref()?;
         let chunk = self.chunks.get(&(x >> 4, z >> 4))?;
@@ -502,6 +547,7 @@ impl Game<'_> {
             table: host.table.take(),
             pixels: host.pixels.take(),
             flags: None,
+            held: self.held().cloned(),
         };
         self.mods.mods.lend_client_world(Box::new(lent));
     }

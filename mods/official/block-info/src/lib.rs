@@ -4,7 +4,7 @@
 //! game or mod it comes from, in a box at the top of the screen. Living entities show their
 //! display name and current/maximum health through `game.raycast-entity`.
 use horizon_mod_sdk::{
-    Mod, Registration, game, recipes,
+    Mod, Registration, client_world, game, recipes,
     render::{self, Corner, FillShape, ItemShape, Point, Rect, Shape, TextShape},
     storage,
     ui::{self, ButtonWidget, Widget},
@@ -18,6 +18,9 @@ const NAME: u32 = 0xFF_FFFF;
 /// The source line: blue, as tooltips name a mod.
 const SOURCE: u32 = 0x55_55FF;
 const DETAIL: u32 = 0xAA_AAAA;
+/// The harvest line: the held item drops the block, or it does not.
+const CAN_HARVEST: u32 = 0x55_FF55;
+const CANNOT_HARVEST: u32 = 0xFF_5555;
 const PAD: f32 = 4.0;
 const ICON: f32 = 16.0;
 const LINE: f32 = 10.0;
@@ -40,12 +43,15 @@ const PLACE_BUTTON: u32 = 1;
 const REACH_BUTTON: u32 = 2;
 const SOURCE_BUTTON: u32 = 3;
 const COORDS_BUTTON: u32 = 4;
+const TOOL_BUTTON: u32 = 5;
 
 struct BlockInfo {
     place: usize,
     reach: usize,
     source: bool,
     coords: bool,
+    /// The tool (and tier) a block needs.
+    tool: bool,
     /// Item names by id, in the player's language: read once in a world.
     names: Option<HashMap<String, String>>,
     /// What the box shows now (and where), to redraw only on a change.
@@ -107,7 +113,7 @@ impl BlockInfo {
 
     /// The box's lines for a block: the icon's item, then the text lines.
     fn lines(&mut self, hit: &game::Hit) -> (Option<String>, Vec<(String, u32)>) {
-        let (source, coords) = (self.source, self.coords);
+        let (source, coords, tool) = (self.source, self.coords, self.tool);
         let names = self.names();
         let item = item_for(&hit.block, names);
         let (namespace, path) = hit
@@ -125,6 +131,10 @@ impl BlockInfo {
                 format!("{}, {}, {}", hit.block_x, hit.block_y, hit.block_z),
                 DETAIL,
             ));
+        }
+        if tool && let Some(line) = client_world::harvest(&hit.block).and_then(|h| harvest_line(&h))
+        {
+            lines.push(line);
         }
         if source {
             lines.push((source_name(namespace), SOURCE));
@@ -179,7 +189,7 @@ impl BlockInfo {
         let key: Vec<String> = item
             .iter()
             .cloned()
-            .chain(lines.iter().map(|(t, _)| t.clone()))
+            .chain(lines.iter().map(|(t, c)| format!("{c:06X}{t}")))
             .collect();
         if self.shown.as_ref() == Some(&(key.clone(), self.place)) {
             return;
@@ -276,6 +286,10 @@ impl BlockInfo {
                 id: COORDS_BUTTON,
                 label: format!("Coordinates: {}", on(self.coords)),
             }),
+            Widget::Button(ButtonWidget {
+                id: TOOL_BUTTON,
+                label: format!("Tool needed: {}", on(self.tool)),
+            }),
         ]);
     }
 
@@ -285,7 +299,40 @@ impl BlockInfo {
         let _ = storage::set("distance", REACHES[self.reach].0.to_string().as_bytes());
         let _ = storage::set("source", flag(self.source).as_bytes());
         let _ = storage::set("coords", flag(self.coords).as_bytes());
+        let _ = storage::set("tool", flag(self.tool).as_bytes());
     }
+}
+
+/// "Needs: Diamond Pickaxe" (green when the held item drops the block, red
+/// when not), "Tool: Axe" for a block a tool only mines faster, "Unbreakable";
+/// none for a block a hand breaks as well as anything.
+fn harvest_line(h: &client_world::HarvestInfo) -> Option<(String, u32)> {
+    let word = |w: &str| {
+        let mut c = w.chars();
+        c.next()
+            .map(|f| f.to_uppercase().chain(c).collect::<String>())
+            .unwrap_or_default()
+    };
+    if h.hardness < 0.0 {
+        return Some(("Unbreakable".to_owned(), DETAIL));
+    }
+    if h.needs_tool {
+        let color = if h.held_drops {
+            CAN_HARVEST
+        } else {
+            CANNOT_HARVEST
+        };
+        let what = match (&h.tier, &h.tier_tool) {
+            (Some(tier), Some(tool)) => format!("{} {}", word(tier), word(tool)),
+            _ => "the right tool".to_owned(),
+        };
+        return Some((format!("Needs: {what}"), color));
+    }
+    if h.tools.is_empty() {
+        return None;
+    }
+    let tools: Vec<String> = h.tools.iter().map(|t| word(t)).collect();
+    Some((format!("Tool: {}", tools.join(" or ")), DETAIL))
 }
 
 fn offset(shape: &mut Shape, dx: f32, dy: f32) {
@@ -326,6 +373,7 @@ impl Mod for BlockInfo {
             reach,
             source: stored("source").is_none_or(|v| v == "true"),
             coords: stored("coords").is_some_and(|v| v == "true"),
+            tool: stored("tool").is_none_or(|v| v == "true"),
             names: None,
             shown: None,
         };
@@ -347,6 +395,7 @@ impl Mod for BlockInfo {
             REACH_BUTTON => self.reach = (self.reach + 1) % REACHES.len(),
             SOURCE_BUTTON => self.source = !self.source,
             COORDS_BUTTON => self.coords = !self.coords,
+            TOOL_BUTTON => self.tool = !self.tool,
             _ => return,
         }
         self.save();
@@ -365,6 +414,45 @@ horizon_mod_sdk::export_mod!(BlockInfo);
 mod tests {
     use super::*;
 
+    fn harvest(
+        tools: &[&str],
+        tier: Option<(&str, &str)>,
+        needs: bool,
+        held: bool,
+    ) -> client_world::HarvestInfo {
+        client_world::HarvestInfo {
+            tools: tools.iter().map(|t| (*t).to_owned()).collect(),
+            tier: tier.map(|t| t.0.to_owned()),
+            tier_tool: tier.map(|t| t.1.to_owned()),
+            needs_tool: needs,
+            held_drops: held,
+            hardness: 1.0,
+        }
+    }
+
+    #[test]
+    fn harvest_lines_name_the_tier_and_colour_the_held_item() {
+        let obsidian = harvest(&["pickaxe"], Some(("diamond", "pickaxe")), true, false);
+        assert_eq!(
+            harvest_line(&obsidian),
+            Some(("Needs: Diamond Pickaxe".to_owned(), CANNOT_HARVEST))
+        );
+        let iron = harvest(&["pickaxe"], Some(("stone", "pickaxe")), true, true);
+        assert_eq!(
+            harvest_line(&iron),
+            Some(("Needs: Stone Pickaxe".to_owned(), CAN_HARVEST))
+        );
+        let log = harvest(&["axe"], None, false, true);
+        assert_eq!(harvest_line(&log), Some(("Tool: Axe".to_owned(), DETAIL)));
+        assert_eq!(harvest_line(&harvest(&[], None, false, true)), None);
+        let mut bedrock = harvest(&[], None, false, true);
+        bedrock.hardness = -1.0;
+        assert_eq!(
+            harvest_line(&bedrock),
+            Some(("Unbreakable".to_owned(), DETAIL))
+        );
+    }
+
     #[test]
     fn entity_lines_show_live_health_and_settings() {
         let mut info = BlockInfo {
@@ -372,6 +460,7 @@ mod tests {
             reach: 0,
             source: true,
             coords: false,
+            tool: true,
             names: None,
             shown: None,
         };

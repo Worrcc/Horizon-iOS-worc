@@ -612,6 +612,7 @@ A mapping as the player has bound it.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. Player touch-layout overrides win over the anchor/offset. Removing an explicit button restores the key's automatic button. |
+| `set-auto-button-shown` | `func(name: string, shown: bool) -> result<_, string>` | API level 24: whether a registered key's automatic touch button (one for a key with no `set-touch-button`) starts shown. Automatic buttons start hidden unless the mod asks; the player's own choice (the mod's settings page or Edit Touch Layout) always wins. |
 | `touch-active` | `func() -> bool` | API level 20: whether the player is using the touch screen (the game's touch controls show while playing). It stays true on screens, so a mod can offer touch buttons on its own. |
 | `claim-items` | `func(ids: list<string>)` | The items whose use the mod handles instead of the game, by id (at most 64). Replaces the previous list. |
 | `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. While touch controls are shown, keys without set-touch-button get automatic 20px slot buttons, in registration order down the right side. The player can move or hide them in Edit Touch Layout. Controller Settings > Bindings lists every registered key, unbound by default. A player-chosen button or two-button combination sends the same key-down/key-up events while playing, independently of the keyboard and touch bindings. |
@@ -797,6 +798,19 @@ API level 23: columns after skipping their leading see-through states.
 | `skips` | `list<u8>` | 256 counts, x fastest. Zero for an empty column, a solid first state, or no solid within depth. Otherwise the first solid's index k. |
 | `skipped-states` | `list<u32>` | Original leading k states for each nonzero skip, top down, in column order, concatenated without padding. The skips are their lengths: no per-column lists or allocations. Use these states with the mod's albedos to compute plant/glass overlay colours. |
 
+### record `harvest-info`
+
+API level 24: what mines a block, from its loaded tags (content mods' included).
+
+| Field | Type | |
+| --- | --- | --- |
+| `tools` | `list<string>` | Tools that mine it faster than a hand: any of "pickaxe", "axe", "shovel", "hoe" (in that order), as the game's own tool rules (content mods' included) decide. |
+| `tier` | `option<string>` | The lowest material whose tool drops it: "wooden", "stone", "iron", "diamond" or "netherite"; none when it needs no tool (or no such tool drops it). |
+| `tier-tool` | `option<string>` | The tool of `tier` that drops it ("pickaxe"...), when there is one. |
+| `needs-tool` | `bool` | It drops nothing unless broken with the right tool. |
+| `held-drops` | `bool` | The item in the player's main hand would drop it (true when it needs no tool). |
+| `hardness` | `f32` | Its destroy time (hardness); negative for unbreakable. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `block-at` | `func(x: s32, y: s32, z: s32) -> option<string>` | API level 20: the client-loaded block state, e.g. minecraft:oak_log[axis=y]. None for unloaded chunks and on the title screen. |
@@ -807,6 +821,7 @@ API level 23: columns after skipping their leading see-through states.
 | `columns` | `func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<chunk-columns>>, string>` | The chunks at these chunk coordinates (block x >> 4, z >> 4), each column's `depth` blocks (1 to 16) from the top in `layer`; none for a chunk the game hasn't loaded. At most 16 chunks a call: more, or a depth out of range, is an error. |
 | `set-see-through` | `func(states: list<u32>) -> result<_, string>` | API level 23: replaces this mod's see-through state set (at most 65536 ids; duplicates allowed). Empty initially; unlisted ids are solid. Register again after a block-table/looks rebuild. Other mods' sets are independent. An error leaves the previous set intact. |
 | `prepared-columns` | `func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<prepared-chunk>>, string>` | API level 23: the same order, missing chunks and limits as `columns`. For each nonempty column, find the first state not in this mod's see-through set within depth. If its index k > 0, lower the top by k, shift states up by k and pad with the original deepest state. k == 0 or no solid found leaves the column unchanged (skip zero). Fixed-size data stays in flat primitive lists for cheap guest lifting. |
+| `harvest` | `func(block: string) -> option<harvest-info>` | API level 24: a block id or state's harvest facts, for the player's held item; none for an unknown block or on the title screen. |
 | `changes` | `func(since: u64, radius: u32) -> tuple<u64, list<tuple<s32, s32>>>` | The chunks within `radius` chunks of the player (at most 64) whose change counter moved past `since`: changed, loaded or unloaded since (an unloaded one now reads none), nearest first, at most 4096. Returns the counter now, for the next call; 0 asks for every loaded chunk. |
 | `light` | `func(x: s32, y: s32, z: s32) -> option<u8>` | Light at a block, sky light << 4 \| block light; none where no chunk is loaded. |
 | `biome` | `func(x: s32, y: s32, z: s32) -> option<string>` | The biome at a block (`minecraft:plains`), as the chunk stores it (one per 4 × 4 × 4 cell); none where no chunk is loaded. |

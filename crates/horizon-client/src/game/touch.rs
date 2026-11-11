@@ -341,6 +341,39 @@ pub(super) struct TouchInput {
 }
 
 impl TouchInput {
+    /// Whether a mod key's on-screen button shows: the player's choice, else
+    /// its default (a mod's own button shows; an automatic one is hidden
+    /// unless the mod asked for it shown).
+    #[cfg(feature = "mods")]
+    pub(super) fn mod_key_shown(
+        &self,
+        mods: &horizon_mods::Mods,
+        owner: usize,
+        mod_id: &str,
+        key: &horizon_mods::ModKey,
+    ) -> bool {
+        let own = mods
+            .touch_buttons()
+            .any(|(i, name, _, _)| i == owner && name == key.name);
+        let hidden_by_default = !own && !key.auto_shown;
+        let id = format!("mod.{mod_id}.{}", key.name);
+        !self
+            .overrides
+            .0
+            .get(&id)
+            .map_or(hidden_by_default, |v| v.hidden)
+    }
+    /// Shows or hides a mod key's on-screen button where it is.
+    #[cfg(feature = "mods")]
+    pub(super) fn set_mod_key_shown(&mut self, mod_id: &str, key: &str, shown: bool) {
+        self.overrides
+            .set_hidden(&format!("mod.{mod_id}.{key}"), !shown);
+    }
+    /// The touch controls hold this mapping (`key.sneak`: the Sneak toggle, or a
+    /// finger on it), so a keyboard's modifier state says nothing about it.
+    pub(super) fn holds_mapping(&self, mapping: &str) -> bool {
+        mapping == "key.sneak" && self.controls.pressed(Button::Sneak)
+    }
     pub(super) fn editor_closed_by_options(&mut self) {
         self.editor = None;
     }
@@ -466,7 +499,9 @@ impl Game<'_> {
                     .plain(),
                     label,
                     rect,
-                    hidden: false,
+                    // Until the layout resolves: whether it starts hidden. An
+                    // automatic button does, unless its mod asked otherwise.
+                    hidden: button.is_none() && !key.auto_shown,
                     kind: TouchKind::Mod {
                         owner,
                         key: key.name.clone(),
@@ -481,6 +516,7 @@ impl Game<'_> {
             .map(|item| Entry {
                 id: item.id.clone(),
                 default: item.rect,
+                hidden_by_default: item.hidden,
             })
             .collect();
         for (item, placed) in items.iter_mut().zip(touch_layout::resolve(

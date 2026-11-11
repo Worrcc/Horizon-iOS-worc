@@ -37,6 +37,8 @@
 //! [`client_world::block_table`] and [`client_world::texture`] the packs.
 //! Level 23 adds [`client_world::set_see_through`] and
 //! [`client_world::prepared_columns`] to prepare columns natively.
+//! Level 24 adds [`client_world::harvest`] (the tool and tier a block needs)
+//! and [`input::set_auto_button_shown`]: automatic touch buttons start hidden.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
