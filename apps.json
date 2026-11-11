@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.61",
+          "buildVersion": "0.2.0.61",
+          "date": "2026-11-11T10:22:29Z",
+          "localizedDescription": "Branch claude/mousetweaks-api, commit 2144749f0.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-61/Horizon.ipa",
+          "size": 34389233,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.60",
           "buildVersion": "0.2.0.60",
           "date": "2026-11-11T09:05:23Z",
@@ -75,11 +84,11 @@
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.60",
-      "versionDate": "2026-11-11T09:05:23Z",
-      "versionDescription": "Branch claude/mousetweaks-api, commit d65df7aca.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-60/Horizon.ipa",
-      "size": 34377085
+      "version": "0.2.0.61",
+      "versionDate": "2026-11-11T10:22:29Z",
+      "versionDescription": "Branch claude/mousetweaks-api, commit 2144749f0.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-61/Horizon.ipa",
+      "size": 34389233
     }
   ],
   "news": []
