@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.58",
+          "buildVersion": "0.2.0.58",
+          "date": "2026-11-11T01:07:51Z",
+          "localizedDescription": "Branch claude/liteminer-api, commit 57aa1dd07.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-58/Horizon.ipa",
+          "size": 34265077,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.56",
           "buildVersion": "0.2.0.56",
           "date": "2026-11-10T22:00:31Z",
@@ -48,11 +57,11 @@
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.56",
-      "versionDate": "2026-11-10T22:00:31Z",
-      "versionDescription": "Branch claude/liteminer-api, commit 38263bdb7.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-56/Horizon.ipa",
-      "size": 34216947
+      "version": "0.2.0.58",
+      "versionDate": "2026-11-11T01:07:51Z",
+      "versionDescription": "Branch claude/liteminer-api, commit 57aa1dd07.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-58/Horizon.ipa",
+      "size": 34265077
     }
   ],
   "news": []
