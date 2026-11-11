@@ -47,6 +47,7 @@ impl Report {
             "api": self.facts.api,
             "side": self.facts.side,
             "capabilities": self.facts.capabilities,
+            "storage_mb": self.facts.storage_mb,
             "api_level": self.facts.api_level,
             "game": self.facts.game,
             "requires": requires,
@@ -92,7 +93,7 @@ impl Report {
             out += &format!("  needs mod API level {level} or newer\n");
         }
         for c in &f.capabilities {
-            out += &format!("  may {}\n", c.describe());
+            out += &format!("  may {}\n", c.describe_with_storage(f.storage_mb));
         }
         for r in &f.requires {
             out += &format!("  needs {} {} ({})\n", r.id, r.version, &r.sha256[..12]);
@@ -420,5 +421,14 @@ mod tests {
         let e = check(&pack, Kind::Shader, None, None).err().unwrap();
         assert!(e.contains("horizon-shaders.toml"), "{e}");
         assert!(check(&pack, Kind::Mod, None, None).is_err());
+    }
+
+    #[test]
+    fn reports_the_declared_disk_permission() {
+        let mut report = check(&fixture("cozy-1.0.0.hpack"), Kind::Modpack, None, None).unwrap();
+        report.facts.capabilities = vec![horizon_mods::Capability::Storage];
+        report.facts.storage_mb = Some(1024);
+        assert!(report.text().contains("may save up to 1024 MB to disk"));
+        assert_eq!(report.json()["storage_mb"], 1024);
     }
 }

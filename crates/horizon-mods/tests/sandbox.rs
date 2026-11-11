@@ -580,6 +580,62 @@ fn storage_key_count_is_bounded() {
 }
 
 #[test]
+fn declared_storage_quota_tracks_replacements_deletes_and_reload() {
+    let dir = mods_dir().join("declared_storage");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("guest.hmod");
+    let package = Package::read(&mods_dir().join("horizon_mods_test_guest.hmod")).unwrap();
+    std::fs::write(
+        &path,
+        Package::write(
+            &format!("{GUEST_MANIFEST}storage-mb = 5\n"),
+            package.wasm.as_ref().unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
+    let saved = Output::Feedback {
+        text: "saved".into(),
+        error: false,
+    };
+    let refused = Output::Feedback {
+        text: "would use over 5 MiB of storage".into(),
+        error: true,
+    };
+    let mib = "x".repeat(1 << 20);
+    for i in 0..5 {
+        assert!(mods.command(&format!("save_key k{i} {mib}")));
+        assert_eq!(mods.drain(), std::slice::from_ref(&saved));
+    }
+    assert!(mods.command("save_key extra x"));
+    assert_eq!(mods.drain(), std::slice::from_ref(&refused));
+    drop(mods);
+    let mut mods = Mods::load(std::slice::from_ref(&path), |_| true, |_| false);
+    assert!(mods.command("save_key extra x"));
+    assert_eq!(mods.drain(), [refused]);
+    assert!(mods.command("save_key k0 x"));
+    assert_eq!(mods.drain(), std::slice::from_ref(&saved));
+    // Replacing a full MiB by one byte frees exactly MiB - 1.
+    assert!(mods.command(&format!("save_key extra {}", "x".repeat((1 << 20) - 1))));
+    assert_eq!(mods.drain(), std::slice::from_ref(&saved));
+    assert!(mods.command("delete_key k1"));
+    assert_eq!(
+        mods.drain(),
+        [Output::Feedback {
+            text: "deleted".into(),
+            error: false
+        }]
+    );
+    assert!(mods.command(&format!("save_key next {mib}")));
+    assert_eq!(mods.drain(), [saved]);
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    drop(mods);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn duplicate_mod_ids_are_refused() {
     let dir = mods_dir().join("duplicate_ids");
     std::fs::create_dir_all(&dir).unwrap();
@@ -2073,6 +2129,184 @@ fn client_world_reads_are_checked() {
         Ok("now 3: [(1, 0)]")
     );
     assert_eq!(answer(&mut game, "changes 3 4").as_deref(), Ok("now 3: []"));
+}
+
+#[test]
+fn native_prepared_columns_match_a_guest_reference() {
+    let mut game = canvas_guest();
+    // Plant, glass, air, stone: all three leading states must be returned.
+    game.set_block(0, 64, 0, "minecraft:poppy");
+    game.set_block(0, 63, 0, "minecraft:glass");
+    game.set_block(0, 61, 0, "minecraft:stone");
+    // All see-through within depth: unchanged. Solid first: unchanged.
+    game.set_block(1, 64, 0, "minecraft:glass");
+    game.set_block(2, 64, 0, "minecraft:stone");
+    // A water stop preserves the original water/light/biome data.
+    game.set_block(3, 64, 0, "minecraft:glass");
+    game.set_block(3, 63, 0, "minecraft:water");
+    // Also carry a nonzero water depth through preparation unchanged.
+    game.set_block(5, 64, 0, "minecraft:water");
+    game.set_block(5, 63, 0, "minecraft:water");
+    game.set_block(5, 62, 0, "minecraft:stone");
+    assert_eq!(
+        answer(&mut game, "prepared 2 4").as_deref(),
+        Ok("0 changed, 0 skipped")
+    );
+    assert_eq!(answer(&mut game, "see_through").as_deref(), Ok("set"));
+    assert_eq!(
+        answer(&mut game, "prepared 2 4").as_deref(),
+        Ok("2 changed, 4 skipped")
+    );
+    assert_eq!(
+        answer(&mut game, "prepared 1 1").as_deref(),
+        Ok("0 changed, 0 skipped")
+    );
+    assert_eq!(
+        answer(&mut game, "prepared 1 4 63").as_deref(),
+        Ok("1 changed, 2 skipped")
+    );
+    assert_eq!(
+        answer(&mut game, "prepared 16 16").as_deref(),
+        Ok("2 changed, 4 skipped")
+    );
+    assert!(
+        answer(&mut game, "prepared 17 4")
+            .unwrap_err()
+            .contains("at most 16 chunks")
+    );
+    for d in [0, 17] {
+        assert!(
+            answer(&mut game, &format!("prepared 1 {d}"))
+                .unwrap_err()
+                .contains("depth is 1 to 16")
+        );
+    }
+    assert!(
+        answer(&mut game, "see_through over")
+            .unwrap_err()
+            .contains("65536")
+    );
+    assert_eq!(
+        answer(&mut game, "prepared 1 4").as_deref(),
+        Ok("2 changed, 4 skipped")
+    );
+    // A fresh mod has its own empty classification; replacement clears it.
+    let mut other = canvas_guest();
+    other.set_block(0, 64, 0, "minecraft:glass");
+    other.set_block(0, 63, 0, "minecraft:stone");
+    assert_eq!(
+        answer(&mut other, "prepared 1 4").as_deref(),
+        Ok("0 changed, 0 skipped")
+    );
+    answer(&mut game, "see_through clear").unwrap();
+    assert_eq!(
+        answer(&mut game, "prepared 1 4").as_deref(),
+        Ok("0 changed, 0 skipped")
+    );
+    for y in 50..=64 {
+        game.set_block(4, y, 0, "minecraft:glass");
+    }
+    game.set_block(4, 49, 0, "minecraft:stone");
+    answer(&mut game, "see_through").unwrap();
+    assert_eq!(
+        answer(&mut game, "prepared 1 16").as_deref(),
+        Ok("3 changed, 19 skipped")
+    );
+}
+
+/// Uses a cheap native view to expose ABI/lifting cost rather than world
+/// traversal. Guest WASM is release-built; run this alone with force-pulley.
+#[test]
+#[ignore = "timing benchmark: run alone with force-pulley and --nocapture"]
+fn column_lifting_cost() {
+    use horizon_mods::{
+        BlockTable, ChunkColumns, ClientDimension, ClientTexture, ClientWorldView, ColumnLayer,
+    };
+    struct View {
+        skip: usize,
+    }
+    impl ClientWorldView for View {
+        fn dimension(&self) -> Option<ClientDimension> {
+            None
+        }
+        fn block_table(&mut self) -> BlockTable {
+            BlockTable {
+                version: 1,
+                blocks: vec!["minecraft:glass".into(), "minecraft:stone".into()],
+                sprites: vec![],
+                state_block: vec![0, 1],
+                state_flags: vec![],
+                state_top: vec![],
+                state_side: vec![],
+                constant_tint: vec![],
+                map_color: vec![],
+            }
+        }
+        fn texture(&mut self, _: &str) -> Option<ClientTexture> {
+            None
+        }
+        fn columns(&mut self, _: (i32, i32), _: ColumnLayer, depth: u8) -> Option<ChunkColumns> {
+            let row: Vec<u32> = (0..usize::from(depth))
+                .map(|k| u32::from(k >= self.skip))
+                .collect();
+            Some(ChunkColumns {
+                revision: 1,
+                tops: vec![100; 256],
+                states: row.repeat(256),
+                water: vec![0; 256],
+                light: vec![0xf0; 256],
+                tints: vec![0xffffff; 768],
+            })
+        }
+        fn changes(&mut self, _: u64) -> (u64, Vec<(i32, i32)>) {
+            (1, vec![])
+        }
+        fn light(&self, _: i32, _: i32, _: i32) -> Option<u8> {
+            None
+        }
+        fn biome(&self, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+    }
+    let mut mods = Mods::load(
+        &[mods_dir().join("horizon_mods_test_canvas_guest.hmod")],
+        |_| true,
+        |_| false,
+    );
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.lend_client_world(Box::new(View { skip: 0 }));
+    assert!(mods.command("see_through"));
+    mods.drain();
+    println!(
+        "Pulley={}, timings include native view, host preparation and ABI round trip",
+        cfg!(feature = "force-pulley")
+    );
+    for skip in [0, 1, 15] {
+        mods.lend_client_world(Box::new(View { skip }));
+        for chunks in [1, 16] {
+            for name in ["columns", "prepared_read"] {
+                let line = format!("{name} {chunks} 16");
+                let mut times = Vec::new();
+                let mut fuel = 0;
+                for i in 0..220 {
+                    let start = Instant::now();
+                    assert!(mods.command(&line));
+                    let elapsed = start.elapsed().as_secs_f64() * 1e6;
+                    let out = mods.drain();
+                    assert_eq!(mods.entries()[0].status, Status::Running, "{out:?}");
+                    fuel = mods.last_fuel_used(0).unwrap();
+                    if i >= 20 {
+                        times.push(elapsed);
+                    }
+                }
+                times.sort_by(f64::total_cmp);
+                println!(
+                    "skip={skip}, chunks={chunks}, {name}: median {:.2} us, fuel {fuel}",
+                    times[100]
+                );
+            }
+        }
+    }
 }
 
 /// The frame budget: asked for and clamped, and `work-left` keeps a busy

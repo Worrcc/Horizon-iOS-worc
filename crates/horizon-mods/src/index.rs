@@ -171,6 +171,9 @@ pub struct Version {
     pub side: Option<Side>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<Capability>,
+    /// Declared per-mod disk quota in MiB, absent for legacy limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_mb: Option<u16>,
     /// The mod API level a mod's code needs ([`crate::api_level`]), read
     /// from its file; none for content and other kinds, and in indexes
     /// built before levels.
@@ -535,6 +538,7 @@ pub struct Facts {
     pub side: Option<Side>,
     /// In the manifest's order.
     pub capabilities: Vec<Capability>,
+    pub storage_mb: Option<u16>,
     /// The mod API level a mod's code needs, from the functions it imports.
     pub api_level: Option<u32>,
     /// The Minecraft version, when the file names one (a modpack does).
@@ -552,6 +556,7 @@ impl Facts {
             || self.version.as_ref().is_some_and(|v| *v != version.version)
             || self.api != version.api
             || self.side != version.side
+            || self.storage_mb != version.storage_mb
             || caps != listed
             || version.api_level.is_some() && self.api_level != version.api_level
             || self.game.as_ref().is_some_and(|g| *g != version.game)
@@ -615,6 +620,7 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
             Ok(Facts {
                 api_level,
                 capabilities: m.capabilities,
+                storage_mb: m.storage_mb,
                 id: Some(m.id),
                 version: Some(m.version),
                 api: m.api,

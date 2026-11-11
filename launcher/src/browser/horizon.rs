@@ -4,8 +4,9 @@
 //! (`horizon_mods::index::check_file`: size, SHA-256, the author's signature, the file's own
 //! manifest), and files the index says were taken down are refused and turned off.
 use super::{
+    FileRef, GAME, Kind, Project, Query, Source, SourceId, Version,
     details::{Details, Link},
-    download, installed, java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
+    download, installed, java,
 };
 use horizon_mods::index::{self, Index, Trust};
 use std::collections::HashMap;
@@ -286,7 +287,7 @@ pub fn trust_and_capabilities(id: &str) -> Vec<String> {
         lines.extend(
             v.capabilities
                 .iter()
-                .map(|c| format!("May {}", c.describe())),
+                .map(|c| format!("May {}", c.describe_with_storage(v.storage_mb))),
         );
         if v.capabilities.is_empty() {
             lines.push("Asks for nothing beyond its own log".into());
@@ -512,7 +513,10 @@ impl Source for Registry {
         if let Some(v) = newest.filter(|v| !v.capabilities.is_empty()) {
             body.push_str("\n\n## What it may do\n\n");
             for c in &v.capabilities {
-                body.push_str(&format!("- May {}\n", c.describe()));
+                body.push_str(&format!(
+                    "- May {}\n",
+                    c.describe_with_storage(v.storage_mb)
+                ));
             }
         }
         if let Some(v) = newest.filter(|v| !v.requires.is_empty()) {
@@ -524,7 +528,11 @@ impl Source for Registry {
                     .project(&r.id)
                     .and_then(|m| Some((m, m.versions.iter().find(|w| w.version == r.version)?)));
                 let Some((m, w)) = found else { continue };
-                let may: Vec<&str> = w.capabilities.iter().map(|c| c.describe()).collect();
+                let may: Vec<String> = w
+                    .capabilities
+                    .iter()
+                    .map(|c| c.describe_with_storage(w.storage_mb))
+                    .collect();
                 let may = match may.is_empty() {
                     true => String::new(),
                     false => format!(": may {}", may.join(", ")),

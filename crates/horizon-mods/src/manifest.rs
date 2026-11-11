@@ -46,6 +46,10 @@ pub struct Manifest {
     pub side: Side,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+    /// Opt-in disk quota in MiB (1..=1024), with up to 65536 keys.
+    /// Absent: the legacy 4 MiB / 64 keys. Older hosts reject this field.
+    #[serde(default, rename = "storage-mb")]
+    pub storage_mb: Option<u16>,
     /// Namespaces besides `id` that the mod's `assets/` and `data/` use, for
     /// a content mod whose files sit under other names than its id (Towns
     /// and Towers ships `kaisyn` and `towns_and_towers`). No two content mods
@@ -202,6 +206,14 @@ impl Capability {
             }
         }
     }
+    /// What the player reads, including a mod's declared disk quota.
+    pub fn describe_with_storage(self, storage_mb: Option<u16>) -> String {
+        if let (Self::Storage, Some(mb)) = (self, storage_mb) {
+            format!("save up to {mb} MB to disk")
+        } else {
+            self.describe().to_owned()
+        }
+    }
     /// The capability a component import needs, `Ok(None)` for one every
     /// mod has; `Err` for an import Horizon does not offer.
     pub fn of_import(name: &str) -> Result<Option<Capability>, String> {
@@ -254,8 +266,17 @@ impl fmt::Display for Capability {
 }
 
 impl Manifest {
+    /// The storage limits promised by this manifest: bytes and distinct keys.
+    pub fn storage_limits(&self) -> (u64, usize) {
+        self.storage_mb
+            .map_or((4 << 20, 64), |mb| (u64::from(mb) << 20, 65536))
+    }
+
     pub fn parse(text: &str) -> Result<Self, String> {
         let m: Manifest = toml::from_str(text).map_err(|e| format!("{MANIFEST}: {e}"))?;
+        if m.storage_mb.is_some_and(|mb| !(1..=1024).contains(&mb)) {
+            return Err(format!("{MANIFEST}: storage-mb must be 1..=1024 MB"));
+        }
         let id_ok = (1..=64).contains(&m.id.len())
             && m.id
                 .bytes()
@@ -612,6 +633,24 @@ experimental = ["ui", "recipes"]
         assert!(Manifest::parse(&bad_api).unwrap_err().contains("API 0.4"));
         let unknown = format!("{EXAMPLE}network = true\n");
         assert!(Manifest::parse(&unknown).is_err());
+    }
+
+    #[test]
+    fn storage_quota_is_opt_in_and_bounded() {
+        let absent = Manifest::parse(EXAMPLE).unwrap();
+        assert_eq!(absent.storage_limits(), (4 << 20, 64));
+        for mb in [1, 4, 1024] {
+            let m = Manifest::parse(&format!("{EXAMPLE}storage-mb = {mb}\n")).unwrap();
+            assert_eq!(m.storage_limits(), (mb << 20, 65536));
+            assert_eq!(
+                Capability::Storage.describe_with_storage(m.storage_mb),
+                format!("save up to {mb} MB to disk")
+            );
+        }
+        for invalid in ["0", "1025", "-1", "65536", "1.5", "\"1024\""] {
+            let e = Manifest::parse(&format!("{EXAMPLE}storage-mb = {invalid}\n")).unwrap_err();
+            assert!(e.contains("storage-mb"), "{e}");
+        }
     }
 
     #[test]

@@ -1106,7 +1106,7 @@ pub fn publish(
     let capabilities: Vec<String> = v
         .capabilities
         .iter()
-        .map(|c| format!("- may {}", c.describe()))
+        .map(|c| format!("- may {}", c.describe_with_storage(v.storage_mb)))
         .collect();
     let requires: Vec<String> = v
         .requires

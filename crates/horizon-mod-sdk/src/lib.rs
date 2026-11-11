@@ -35,6 +35,8 @@
 //! keep heavy `frame` work to a time budget. The loaded world (capability
 //! `world-read`, API level 17): [`client_world::columns`] reads whole chunks,
 //! [`client_world::block_table`] and [`client_world::texture`] the packs.
+//! Level 23 adds [`client_world::set_see_through`] and
+//! [`client_world::prepared_columns`] to prepare columns natively.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.

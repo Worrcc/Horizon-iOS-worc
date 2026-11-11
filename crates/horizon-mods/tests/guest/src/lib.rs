@@ -11,11 +11,20 @@ struct Guest {
 
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
-        let hooks = ["spin", "panic", "grow", "hello", "save", "load", "save_key"]
-            .into_iter()
-            .fold(Registration::new(), Registration::command)
-            .on_tick()
-            .on_frame();
+        let hooks = [
+            "spin",
+            "panic",
+            "grow",
+            "hello",
+            "save",
+            "load",
+            "save_key",
+            "delete_key",
+        ]
+        .into_iter()
+        .fold(Registration::new(), Registration::command)
+        .on_tick()
+        .on_frame();
         Ok((Guest { ticks: 0 }, hooks))
     }
     fn tick(&mut self, _tick: u64) {
@@ -44,6 +53,10 @@ impl Mod for Guest {
                     storage::get("note").map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
                 chat::show(text.as_deref().unwrap_or("(empty)"));
                 Ok(None)
+            }
+            "delete_key" => {
+                storage::delete(args);
+                Ok(Some("deleted".into()))
             }
             "save_key" => {
                 let (key, text) = args

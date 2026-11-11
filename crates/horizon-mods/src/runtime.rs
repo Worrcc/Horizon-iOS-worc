@@ -231,12 +231,6 @@ const QUIET_PER_CALL: usize = 256;
 pub const RAYCAST_MAX: f32 = 1024.0;
 const HUD_LINES: usize = 16;
 const LINE_CHARS: usize = 256;
-/// Total bytes a mod's `storage` may hold on disk, across all its keys.
-const STORAGE_QUOTA: u64 = 4 << 20;
-/// Distinct keys a mod's `storage` may hold: `STORAGE_QUOTA` alone doesn't
-/// bound a flood of zero- or near-zero-byte files (each still a file name,
-/// a directory entry and an inode).
-const STORAGE_MAX_KEYS: usize = 64;
 /// Bytes `storage::set` may write across one hook call: fuel bounds a
 /// mod's CPU time per call, not the time a synchronous disk write takes, so
 /// a cheap-in-fuel loop replacing one key with large payloads needs its own
@@ -871,6 +865,8 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    storage: StorageUsage,
+    see_through: std::collections::HashSet<u32>,
     /// Tick of the last item spawn, and successful requests in that tick.
     item_spawn_budget: (Option<u64>, u32),
     break_budget: (Option<u64>, usize),
@@ -1275,6 +1271,8 @@ impl Mods {
             input: InputState::default(),
             browser: BrowserState::default(),
             browser_ext: BrowserExtState::default(),
+            storage: StorageUsage::load(&data_dir, m.storage_limits())?,
+            see_through: Default::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
             item_spawn_budget: (None, 0),
@@ -3872,6 +3870,51 @@ impl ui::Host for State {
         self.ui.settings = clip_widgets(widgets);
     }
 }
+/// Seed once per load, then update only after successful writes/deletes.
+/// The map also supplies the key count and replaced value's size in O(1).
+struct StorageUsage {
+    quota: u64,
+    max_keys: usize,
+    bytes: u64,
+    keys: HashMap<std::ffi::OsString, u64>,
+}
+impl Default for StorageUsage {
+    fn default() -> Self {
+        Self {
+            quota: 4 << 20,
+            max_keys: 64,
+            bytes: 0,
+            keys: HashMap::new(),
+        }
+    }
+}
+impl StorageUsage {
+    fn load(dir: &Path, (quota, max_keys): (u64, usize)) -> Result<Self, String> {
+        let mut usage = Self {
+            quota,
+            max_keys,
+            ..Self::default()
+        };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(usage),
+            Err(e) => return Err(format!("storage: {e}")),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("storage: {e}"))?;
+            // A write interrupted before rename is not a stored key.
+            if entry.file_name() == "$pending" {
+                std::fs::remove_file(entry.path()).map_err(|e| format!("storage: {e}"))?;
+                continue;
+            }
+            let len = entry.metadata().map_err(|e| format!("storage: {e}"))?.len();
+            usage.bytes = usage.bytes.saturating_add(len);
+            usage.keys.insert(entry.file_name(), len);
+        }
+        Ok(usage)
+    }
+}
+
 impl storage::Host for State {
     fn get(&mut self, key: String) -> Option<Vec<u8>> {
         storage_key_ok(&key)
@@ -3886,35 +3929,48 @@ impl storage::Host for State {
         if len > self.storage_budget {
             return Err("too much storage traffic in one call".into());
         }
-        // Everything already on disk but the file this call replaces.
-        let existing: Vec<std::fs::DirEntry> = std::fs::read_dir(&self.data_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy() != key)
-            .collect();
-        if existing.len() >= STORAGE_MAX_KEYS {
-            return Err(format!("would hold over {STORAGE_MAX_KEYS} keys"));
+        let old = self
+            .storage
+            .keys
+            .get(std::ffi::OsStr::new(&key))
+            .copied()
+            .unwrap_or(0);
+        if self.storage.keys.len()
+            + usize::from(!self.storage.keys.contains_key(std::ffi::OsStr::new(&key)))
+            > self.storage.max_keys
+        {
+            return Err(format!("would hold over {} keys", self.storage.max_keys));
         }
-        let used: u64 = existing
-            .iter()
-            .filter_map(|e| e.metadata().ok())
-            .map(|m| m.len())
-            .sum();
-        if used + len > STORAGE_QUOTA {
+        let used = (self.storage.bytes - old).saturating_add(len);
+        if used > self.storage.quota {
             return Err(format!(
                 "would use over {} MiB of storage",
-                STORAGE_QUOTA >> 20
+                self.storage.quota >> 20
             ));
         }
         std::fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
-        std::fs::write(self.data_dir.join(&key), value).map_err(|e| e.to_string())?;
+        // Replace atomically, so a failed/partial write cannot desynchronise
+        // the running total from the previous value. '$' is not a valid key.
+        let pending = self.data_dir.join("$pending");
+        if let Err(e) = std::fs::write(&pending, value)
+            .and_then(|()| std::fs::rename(&pending, self.data_dir.join(&key)))
+        {
+            let _ = std::fs::remove_file(pending);
+            return Err(e.to_string());
+        }
+        self.storage.bytes = used;
+        self.storage.keys.insert(key.into(), len);
         self.storage_budget -= len;
         Ok(())
     }
     fn delete(&mut self, key: String) {
         if storage_key_ok(&key) {
-            let _ = std::fs::remove_file(self.data_dir.join(&key));
+            let deleted = std::fs::remove_file(self.data_dir.join(&key));
+            if (deleted.is_ok() || deleted.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+                && let Some(len) = self.storage.keys.remove(std::ffi::OsStr::new(&key))
+            {
+                self.storage.bytes -= len;
+            }
         }
     }
 }
@@ -3927,6 +3983,65 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn declared_key_limit_allows_replacing_and_deleting_at_capacity() {
+        let mut s = super::entity_tests::state();
+        let dir = std::env::temp_dir().join(format!("horizon-storage-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.data_dir = dir.clone();
+        let manifest =
+            Manifest::parse("id='s'\nname='S'\nversion='1'\napi='0.1'\nstorage-mb=1\n").unwrap();
+        s.storage = StorageUsage::load(&dir, manifest.storage_limits()).unwrap();
+        for i in 0..65536 {
+            storage::Host::set(&mut s, format!("k{i}"), Vec::new()).unwrap();
+        }
+        // Real zero-byte files still consume keys, including after a reload.
+        s.storage = StorageUsage::load(&dir, manifest.storage_limits()).unwrap();
+        assert!(
+            storage::Host::set(&mut s, "overflow".into(), Vec::new())
+                .unwrap_err()
+                .contains("65536 keys")
+        );
+        storage::Host::set(&mut s, "k0".into(), b"replaced".to_vec()).unwrap();
+        assert_eq!(
+            storage::Host::get(&mut s, "k0".into()).as_deref(),
+            Some(b"replaced".as_slice())
+        );
+        storage::Host::delete(&mut s, "k1".into());
+        storage::Host::delete(&mut s, "k1".into());
+        storage::Host::set(&mut s, "overflow".into(), Vec::new()).unwrap();
+        assert!(dir.join("overflow").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_storage_write_keeps_the_old_value_and_accounting() {
+        let mut s = super::entity_tests::state();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-storage-failure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.data_dir = dir.clone();
+        s.storage.quota = 3;
+        storage::Host::set(&mut s, "key".into(), b"old".to_vec()).unwrap();
+        // A directory at the staging path forces a real write failure.
+        std::fs::create_dir(dir.join("$pending")).unwrap();
+        assert!(storage::Host::set(&mut s, "key".into(), b"x".to_vec()).is_err());
+        std::fs::remove_dir(dir.join("$pending")).unwrap();
+        assert_eq!(
+            storage::Host::get(&mut s, "key".into()).as_deref(),
+            Some(b"old".as_slice())
+        );
+        assert!(storage::Host::set(&mut s, "extra".into(), vec![1]).is_err());
+        storage::Host::delete(&mut s, "key".into());
+        storage::Host::set(&mut s, "extra".into(), vec![1, 2, 3]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -3952,6 +4067,8 @@ mod entity_tests {
             browser: BrowserState::default(),
             browser_ext: BrowserExtState::default(),
             data_dir: PathBuf::new(),
+            storage: StorageUsage::default(),
+            see_through: Default::default(),
             storage_budget: STORAGE_WRITE_BUDGET,
             item_spawn_budget: (None, 0),
             break_budget: (None, 0),

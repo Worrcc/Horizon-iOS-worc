@@ -525,6 +525,7 @@ fn version_at(
         api: facts.api,
         side: facts.side,
         capabilities: facts.capabilities,
+        storage_mb: facts.storage_mb,
         api_level: facts.api_level,
         game: v.game.clone(),
         requires: facts.requires,

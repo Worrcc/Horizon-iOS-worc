@@ -787,6 +787,16 @@ A chunk's 256 columns, x fastest: column `z * 16 + x`.
 | `light` | `list<u8>` | The light just above each top block: sky light << 4 \| block light. |
 | `tints` | `list<u32>` | Each column's grass, foliage and water colours, 0xRRGGBB, three per column, at its top block's biome (as the game draws them, before the biome blend). |
 
+### record `prepared-chunk`
+
+API level 23: columns after skipping their leading see-through states.
+
+| Field | Type | |
+| --- | --- | --- |
+| `columns` | `chunk-columns` | As `columns`, with only tops and states changed. Water, light, tints (including the original top's biome colours) and revision stay exactly as read; light is not resampled at the lowered top. |
+| `skips` | `list<u8>` | 256 counts, x fastest. Zero for an empty column, a solid first state, or no solid within depth. Otherwise the first solid's index k. |
+| `skipped-states` | `list<u32>` | Original leading k states for each nonzero skip, top down, in column order, concatenated without padding. The skips are their lengths: no per-column lists or allocations. Use these states with the mod's albedos to compute plant/glass overlay colours. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `block-at` | `func(x: s32, y: s32, z: s32) -> option<string>` | API level 20: the client-loaded block state, e.g. minecraft:oak_log[axis=y]. None for unloaded chunks and on the title screen. |
@@ -795,6 +805,8 @@ A chunk's 256 columns, x fastest: column `z * 16 + x`.
 | `table-version` | `func() -> u64` | The block table's `version` now, without reading the table: cheap enough to ask every tick, to know when the packs reloaded. |
 | `texture` | `func(name: string) -> option<texture-pixels>` | A texture by its name in `block-states.sprites`, from the loaded resource packs (a higher pack's over a lower one's); none for one no block model uses. |
 | `columns` | `func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<chunk-columns>>, string>` | The chunks at these chunk coordinates (block x >> 4, z >> 4), each column's `depth` blocks (1 to 16) from the top in `layer`; none for a chunk the game hasn't loaded. At most 16 chunks a call: more, or a depth out of range, is an error. |
+| `set-see-through` | `func(states: list<u32>) -> result<_, string>` | API level 23: replaces this mod's see-through state set (at most 65536 ids; duplicates allowed). Empty initially; unlisted ids are solid. Register again after a block-table/looks rebuild. Other mods' sets are independent. An error leaves the previous set intact. |
+| `prepared-columns` | `func(chunks: list<tuple<s32, s32>>, layer: layer, depth: u8) -> result<list<option<prepared-chunk>>, string>` | API level 23: the same order, missing chunks and limits as `columns`. For each nonempty column, find the first state not in this mod's see-through set within depth. If its index k > 0, lower the top by k, shift states up by k and pad with the original deepest state. k == 0 or no solid found leaves the column unchanged (skip zero). Fixed-size data stays in flat primitive lists for cheap guest lifting. |
 | `changes` | `func(since: u64, radius: u32) -> tuple<u64, list<tuple<s32, s32>>>` | The chunks within `radius` chunks of the player (at most 64) whose change counter moved past `since`: changed, loaded or unloaded since (an unloaded one now reads none), nearest first, at most 4096. Returns the counter now, for the next call; 0 asks for every loaded chunk. |
 | `light` | `func(x: s32, y: s32, z: s32) -> option<u8>` | Light at a block, sky light << 4 \| block light; none where no chunk is loaded. |
 | `biome` | `func(x: s32, y: s32, z: s32) -> option<string>` | The biome at a block (`minecraft:plains`), as the chunk stores it (one per 4 × 4 × 4 cell); none where no chunk is loaded. |

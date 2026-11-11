@@ -17,6 +17,7 @@ use horizon_mod_sdk::{
 
 struct Guest {
     working: bool,
+    see_through: Vec<u32>,
     events: Vec<String>,
     screen_frames: bool,
     /// Work done in frames, so the loop isn't optimised away.
@@ -54,6 +55,9 @@ impl Mod for Guest {
             "table",
             "texture",
             "columns",
+            "see_through",
+            "prepared",
+            "prepared_read",
             "changes",
         ]
         .into_iter()
@@ -62,6 +66,7 @@ impl Mod for Guest {
         Ok((
             Guest {
                 working: false,
+                see_through: Vec::new(),
                 events: Vec::new(),
                 screen_frames: false,
                 spun: 0,
@@ -252,6 +257,91 @@ impl Mod for Guest {
                 let read = client_world::columns(&chunks, Layer::Surface, at(1) as u8)?;
                 let loaded = read.iter().flatten().count();
                 format!("{} chunks, {loaded} loaded", read.len())
+            }
+            "see_through" => {
+                let table = client_world::block_table();
+                let states: Vec<u32> = if args.trim() == "clear" {
+                    Vec::new()
+                } else if args.trim() == "over" {
+                    vec![0; 65537]
+                } else {
+                    table
+                        .state_block
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(id, &block)| {
+                            matches!(
+                                table.blocks[usize::from(block)].as_str(),
+                                "minecraft:air" | "minecraft:poppy" | "minecraft:glass"
+                            )
+                            .then_some(id as u32)
+                        })
+                        .collect()
+                };
+                client_world::set_see_through(&states)?;
+                self.see_through = states;
+                "set".into()
+            }
+            "prepared_read" => {
+                let chunks: Vec<_> = (0..at(0) as i32).map(|i| (i, 0)).collect();
+                let read = client_world::prepared_columns(&chunks, Layer::Surface, at(1) as u8)?;
+                let loaded = read.iter().flatten().count();
+                format!("{} chunks, {loaded} loaded", read.len())
+            }
+            "prepared" => {
+                let chunks: Vec<_> = (0..at(0) as i32).map(|i| (i, 0)).collect();
+                let depth = at(1) as u8;
+                let layer = if n.len() > 2 {
+                    Layer::Below(at(2) as i32)
+                } else {
+                    Layer::Surface
+                };
+                let prepared = client_world::prepared_columns(&chunks, layer, depth)?;
+                let raw = client_world::columns(&chunks, layer, depth)?;
+                assert_eq!(prepared.len(), raw.len());
+                let (mut changed, mut skipped) = (0, 0);
+                for (got, original) in prepared.into_iter().zip(raw) {
+                    let (got, mut original) = match (got, original) {
+                        (Some(got), Some(original)) => (got, original),
+                        (None, None) => continue,
+                        _ => panic!("loaded chunk mismatch"),
+                    };
+                    // Independent reference: walk the prefix, then rebuild each
+                    // row from the original with clamped source indices.
+                    let d = usize::from(depth);
+                    let mut counts = vec![0; 256];
+                    let mut overlays = Vec::new();
+                    for (col, count) in counts.iter_mut().enumerate() {
+                        if original.tops[col] == i16::MIN {
+                            continue;
+                        }
+                        let row = original.states[col * d..(col + 1) * d].to_vec();
+                        let mut k = 0;
+                        while k < d && self.see_through.contains(&row[k]) {
+                            k += 1;
+                        }
+                        if k == 0 || k == d {
+                            continue;
+                        }
+                        *count = k as u8;
+                        overlays.extend_from_slice(&row[..k]);
+                        original.tops[col] -= k as i16;
+                        for j in 0..d {
+                            original.states[col * d + j] = row[(j + k).min(d - 1)];
+                        }
+                    }
+                    assert_eq!(got.columns.tops, original.tops);
+                    assert_eq!(got.columns.states, original.states);
+                    assert_eq!(got.columns.water, original.water);
+                    assert_eq!(got.columns.light, original.light);
+                    assert_eq!(got.columns.tints, original.tints);
+                    assert_eq!(got.columns.revision, original.revision);
+                    assert_eq!(got.skips, counts);
+                    assert_eq!(got.skipped_states, overlays);
+                    changed += counts.iter().filter(|&&k| k > 0).count();
+                    skipped += overlays.len();
+                }
+                format!("{changed} changed, {skipped} skipped")
             }
             "changes" => {
                 let (now, chunks) = client_world::changes(u64::from(at(0)), at(1));

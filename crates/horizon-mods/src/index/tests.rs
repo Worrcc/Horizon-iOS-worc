@@ -86,6 +86,12 @@ fn a_changed_file_key_or_manifest_is_refused() {
     other_level.projects[0].versions[0].api_level = Some(1);
     let e = check(&other_level, "coords_hud", &hmod).unwrap_err();
     assert!(e.contains("isn't what the index lists"), "{e}");
+
+    // Disk permissions are part of what the player approved at install.
+    let mut other_quota = index.clone();
+    other_quota.projects[0].versions[0].storage_mb = Some(1024);
+    let e = check(&other_quota, "coords_hud", &hmod).unwrap_err();
+    assert!(e.contains("isn't what the index lists"), "{e}");
     // An index built before levels lists none: the file still passes.
     let mut no_level = index.clone();
     no_level.projects[0].versions[0].api_level = None;

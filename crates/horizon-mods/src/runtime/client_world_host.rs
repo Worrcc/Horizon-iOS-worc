@@ -97,6 +97,32 @@ fn no_table() -> BlockTable {
 }
 
 impl client_world::Host for State {
+    fn set_see_through(&mut self, states: Vec<u32>) -> Result<(), String> {
+        if states.len() > 65536 {
+            return Err("at most 65536 see-through state ids".into());
+        }
+        let started = std::time::Instant::now();
+        self.see_through = states.into_iter().collect();
+        self.canvas.charge(started);
+        Ok(())
+    }
+    fn prepared_columns(
+        &mut self,
+        chunks: Vec<(i32, i32)>,
+        layer: ColumnLayer,
+        depth: u8,
+    ) -> Result<Vec<Option<client_world::PreparedChunk>>, String> {
+        let read = self.columns(chunks, layer, depth)?;
+        let started = std::time::Instant::now();
+        let prepared = read
+            .into_iter()
+            .map(|chunk| {
+                chunk.map(|columns| prepare(columns, usize::from(depth), &self.see_through))
+            })
+            .collect();
+        self.canvas.charge(started);
+        Ok(prepared)
+    }
     fn block_at(&mut self, x: i32, y: i32, z: i32) -> Option<String> {
         self.with_view(|v| v.dimension().and_then(|_| v.block_at(x, y, z)))
             .flatten()
@@ -165,6 +191,41 @@ impl client_world::Host for State {
     }
 }
 
+fn prepare(
+    mut columns: ChunkColumns,
+    depth: usize,
+    see_through: &std::collections::HashSet<u32>,
+) -> client_world::PreparedChunk {
+    let mut skips = vec![0; 256];
+    let mut skipped_states = Vec::new();
+    for (col, skip) in skips.iter_mut().enumerate() {
+        let Some(top) = columns.tops.get_mut(col).filter(|t| **t != NO_TOP) else {
+            continue;
+        };
+        let Some(row) = columns.states.get_mut(col * depth..(col + 1) * depth) else {
+            continue;
+        };
+        let Some(k) = row
+            .iter()
+            .position(|s| !see_through.contains(s))
+            .filter(|k| *k > 0)
+        else {
+            continue;
+        };
+        *skip = k as u8;
+        skipped_states.extend_from_slice(&row[..k]);
+        row.copy_within(k.., 0);
+        let last = row[depth - k - 1];
+        row[depth - k..].fill(last);
+        *top -= k as i16;
+    }
+    client_world::PreparedChunk {
+        columns,
+        skips,
+        skipped_states,
+    }
+}
+
 impl Mods {
     /// Some running mod reads capability `world-read`: only then is a view
     /// worth lending.
@@ -188,5 +249,42 @@ impl Mods {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_columns_keep_missing_chunks_and_validate_without_a_view() {
+        let mut state = super::super::entity_tests::state();
+        use client_world::Host;
+        let read = state
+            .prepared_columns(vec![(0, 0), (2, -3)], ColumnLayer::Surface, 16)
+            .unwrap();
+        assert_eq!(read.len(), 2);
+        assert!(read.iter().all(Option::is_none));
+        assert!(
+            state
+                .prepared_columns(vec![(0, 0); 17], ColumnLayer::Surface, 1)
+                .is_err()
+        );
+        assert!(
+            state
+                .prepared_columns(vec![], ColumnLayer::Surface, 0)
+                .is_err()
+        );
+        assert!(
+            state
+                .prepared_columns(vec![], ColumnLayer::Surface, 17)
+                .is_err()
+        );
+        assert!(
+            state
+                .prepared_columns(vec![], ColumnLayer::Surface, 1)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

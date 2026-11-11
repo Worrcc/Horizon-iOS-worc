@@ -815,7 +815,11 @@ impl Game<'_> {
                     };
                 };
                 // What it may do first: the row cuts long descriptions.
-                let may: Vec<&str> = m.capabilities.iter().map(|c| c.describe()).collect();
+                let may: Vec<String> = m
+                    .capabilities
+                    .iter()
+                    .map(|c| c.describe_with_storage(m.storage_mb))
+                    .collect();
                 let may = if may.is_empty() {
                     "Asks for nothing.".to_owned()
                 } else {

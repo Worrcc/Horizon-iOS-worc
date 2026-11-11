@@ -74,7 +74,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id; `raycast-entity(distance)` (API level 16): the nearest living entity before a block, its display name and current/max health; `world-id()` (API level 17): `sp:<save folder>` or `mp:<address>`, for what a mod keeps per world |
 | `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call); API level 21: `open(text)` prefills the chat box for the player to edit and send, without sending anything |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
-| `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
+| `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total by default; `storage-mb = N` opts into N MiB and 65536 keys; at most 1 MiB written per hook call |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows). API level 20: `run-mod-quiet(lines)` runs registered server-mod commands quietly (16 a call, 64 a tick per mod); vanilla and unknown names are dropped |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box (Ctrl+F, or Cmd+F on macOS, focuses it while the panel is shown), and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. `browser-ext` (level 19) adds a paged bookmark panel left of the window, hidden while the recipe book is open, and `keep-empty` to keep the browser and search box visible with no results; `set-item-lines` adds grey tooltip lines to items in either panel; `browser-ext.set-recipes` mixes standard recipes with custom boxes of placed slots, text and GUI sprites. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
@@ -1366,3 +1366,76 @@ click or tap calls only that owner's `Mod::container_button(id)` and consumes th
 `clear-screen-button(id)` removes it. Buttons persist across screens until cleared or unloaded.
 `Mod::container_opened` and `Mod::container_closed` bracket the container screen; `state()` is
 None in `closed`. Every export is individually optional, so older components keep loading.
+
+
+## Larger stores and native column preparation (API level 23)
+
+A mod can declare a top-level `storage-mb = N` in `horizon-mod.toml`, where N is
+an integer from 1 through 1024, inclusive. With capability `storage`, this permits
+N MiB total (MB in the player-facing text) and up to 65536 distinct keys. The field
+is optional: without it, limits stay exactly 4 MiB and 64 keys. A declaration of
+1, 2 or 3 explicitly opts into that smaller byte quota and the larger key limit.
+Malformed or out-of-range declarations fail manifest validation. Key syntax stays
+`[a-z0-9_.-]{1,64}`, excluding `.` and `..`. The 1 MiB write budget across each
+hook call still applies, including replacements. Replacements and deletion free
+space; usage is seeded from disk once per load and tracked without directory
+scans on each write. Check output and capability descriptions say
+“may save up to N MB to disk” for a declared quota.
+
+**Older builds reject unknown manifest fields**, including `storage-mb`: a mod
+with this declaration needs an updated Horizon even if its imports need an older
+API level. To support older builds, ship a manifest without the declaration and
+stay within the legacy limits; unknown fields cannot be retroactively made
+optional on those builds. Registry metadata carries the quota for install prompts
+and verifies it against the downloaded manifest.
+
+Capability `world-read` adds two calls at level 23; existing `columns` is unchanged:
+
+- `client-world.set-see-through(states)` replaces this mod's see-through state ids
+  (up to 65536 entries; duplicates allowed). Initially none are registered. Unlisted
+  states are solid. Register again when the block table or the mod's looks change.
+  A failed registration leaves the previous set intact; each mod has its own set.
+- `client-world.prepared-columns(chunks, layer, depth)` has the same limits as
+  `columns`: at most 16 chunks, depth 1..=16, input order preserved and unloaded
+  chunks returned as `none`. Each `prepared-chunk` contains `columns`, `skips` and
+  `skipped-states`. In every nonempty column, find the first solid state's index k
+  within depth. For k > 0, lower the top by k, shift states up by k, and pad with
+  the original deepest state. For k == 0 or no solid found, leave it unchanged.
+  Revision, water, light and biome tints stay as originally read, including light
+  above the original top; they are not resampled after lowering.
+
+`skips` has 256 byte counts in column order (`z * 16 + x`). `skipped-states` packs
+all original skipped prefixes, top down, in the same column order, omitting
+zero-length prefixes. Their offsets are prefix sums of `skips`. These allow a mod
+to apply its own albedos and plant/glass overlay colour math. No colour blending
+runs in the host. This matches Diorama's preparation while moving state scanning
+and shifting into native code on iOS.
+
+The response keeps fixed-size arrays in flat primitive lists, as `columns` already
+does, and adds only two lists per chunk, rather than up to 256 small state lists.
+At depth d, the existing payload is 4096 + 1024d bytes per loaded chunk; preparation
+adds 256 + 4s bytes where s is the sum of the skip counts (at most 256(d - 1)).
+The guest allocates up to eight list buffers per loaded chunk instead of six; there is
+no guest loop over all columns to unpack records. Native reading and preparation
+both count toward the canvas time budget. Primitive list copying still costs time
+on Pulley; these payload counts describe the lifting overhead, not a device timing
+guarantee.
+
+
+A release Linux x86_64 Pulley run (200 samples after 20 warmups, synthetic native
+view, depth 16) measured the following median complete command calls in µs. These
+include the native view, preparation and ABI round trip, not just lifting, and
+are not iPhone timings:
+
+| Leading skipped states in every column | `columns`, 1 chunk | `prepared-columns`, 1 chunk | `columns`, 16 chunks | `prepared-columns`, 16 chunks |
+|---|---:|---:|---:|---:|
+| 0 | 30.90 | 34.12 | 118.93 | 190.21 |
+| 1 | 30.31 | 38.97 | 120.73 | 268.61 |
+| 15 | 32.27 | 74.62 | 128.50 | 802.39 |
+
+For one chunk the guest used 5338 fuel for `columns`, 5584 for preparation with
+no skips, and 5772 for either 1 or 15 skipped states per column. The same guest
+fuel for the small and largest skipped-state payload shows there is no guest
+per-state unpacking loop; the native scan and bulk copying still take wall time.
+Reproduce with `cargo test --release --offline -p horizon-mods --features
+runtime,pack,force-pulley --test sandbox column_lifting_cost -- --ignored --nocapture`.
