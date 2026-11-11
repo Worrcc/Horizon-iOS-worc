@@ -94,6 +94,11 @@ interface game {
 interface chat {
     /// Shown in chat after the mod's name, like a system message.
     show: func(text: string);
+    /// API level 21: opens the chat box with `text` typed in (at most 256 characters, cursor at the
+    /// end), as if the player had opened chat and typed it: they edit it and send it, or close it.
+    /// Nothing is sent by the mod. Closes the mod's own open screen first. Ignored when there is no
+    /// world, or when chat is hidden in the player's settings (as the chat key is).
+    open: func(text: string);
 }
 
 /// Capability `hud`: one panel of text lines per mod, drawn by the game
@@ -271,8 +276,11 @@ interface input {
     /// A finger sends key-down/key-up and consumes the touch. Clamped fully on screen,
     /// including the small button's outer selection ring. Hit area at least 24x24, centred.
     /// Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame.
+    /// Player touch-layout overrides win over the anchor/offset. Removing an
+    /// explicit button restores the key's automatic button.
     set-touch-button: func(name: string, button: option<touch-button>) -> result<_, string>;
-    /// API level 20: whether the game's touch controls are shown now.
+    /// API level 20: whether the player is using the touch screen (the game's touch controls show
+    /// while playing). It stays true on screens, so a mod can offer touch buttons on its own.
     touch-active: func() -> bool;
     /// The main hand's stack.
     record held-item {
@@ -310,7 +318,12 @@ interface input {
     /// `label` says what it does, `key` is the key as options.txt writes
     /// it (`key.keyboard.r`), the default: the player can bind another
     /// one on the mod's page in Options > Mods, and that one wins. At most
-    /// 16; an unknown key is an error.
+    /// 16; an unknown key is an error. While touch controls are shown, keys
+    /// without set-touch-button get automatic 20px slot buttons, in registration
+    /// order down the right side. The player can move or hide them in Edit Touch Layout.
+    /// Controller Settings > Bindings lists every registered key, unbound by default.
+    /// A player-chosen button or two-button combination sends the same key-down/key-up
+    /// events while playing, independently of the keyboard and touch bindings.
     register-key: func(name: string, label: string, key: string) -> result<_, string>;
     /// The main hand's stack, as of this tick; none when it is empty.
     held: func() -> option<held-item>;
@@ -556,6 +569,13 @@ interface canvas {
     /// anchor in GUI pixels, clamped fully on screen. Same limits as
     /// set-corner; independent of corner stacking and hidden with F1.
     set-placed: func(anchor: corner, dx: f32, dy: f32, width: f32, height: f32, shapes: list<shape>);
+
+    /// API level 21: a finger on the drawn canvas box sends key-down for this
+    /// input.register-key name, and lifting sends key-up. Only while playing
+    /// with touch controls shown; consumes the touch. Game and mod touch
+    /// buttons win overlaps. none restores the default of taking no touches.
+    /// An unknown key name is an error.
+    set-box-key: func(name: option<string>) -> result<_, string>;
     /// API level 18: opens the mod's full-window canvas (capabilities ui and
     /// render). Up to 4096 shapes in GUI pixels from the window top left,
     /// clipped to the window. Hides its HUD box; Escape sends ui-events.closed.

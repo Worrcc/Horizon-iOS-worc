@@ -213,3 +213,66 @@ impl Game<'_> {
         })
     }
 }
+
+impl Game<'_> {
+    /// Registered keys only, in mod load/key registration order. The stable id is stored in
+    /// this instance's controller settings, separately from each key's keyboard binding.
+    pub(super) fn mod_pad_bindings(&self) -> Vec<horizon_client::controller_ui::ModBinding> {
+        #[cfg(feature = "mods")]
+        {
+            self.mods
+                .mods
+                .entries()
+                .iter()
+                .enumerate()
+                .flat_map(|(owner, entry)| {
+                    let Some(manifest) = &entry.manifest else {
+                        return Vec::new();
+                    };
+                    self.mods
+                        .mods
+                        .keys_of(owner)
+                        .iter()
+                        .map(|key| horizon_client::controller_ui::ModBinding {
+                            action: horizon_client::gamepad::mod_action(&manifest.id, &key.name),
+                            label: format!("{}: {}", manifest.name, key.label),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }
+        #[cfg(not(feature = "mods"))]
+        {
+            Vec::new()
+        }
+    }
+    pub(super) fn mod_pad_key(&mut self, action: &str, down: bool) {
+        #[cfg(feature = "mods")]
+        {
+            let target = self
+                .mods
+                .mods
+                .entries()
+                .iter()
+                .enumerate()
+                .find_map(|(owner, entry)| {
+                    let manifest = entry.manifest.as_ref()?;
+                    self.mods
+                        .mods
+                        .keys_of(owner)
+                        .iter()
+                        .find(|key| {
+                            horizon_client::gamepad::mod_action(&manifest.id, &key.name) == action
+                        })
+                        .map(|k| (owner, k.name.clone()))
+                });
+            if let Some((owner, name)) = target
+                && (!down || self.mod_playing())
+            {
+                self.mods.mods.controller_key(owner, &name, down);
+            }
+        }
+        #[cfg(not(feature = "mods"))]
+        let _ = (action, down);
+    }
+}

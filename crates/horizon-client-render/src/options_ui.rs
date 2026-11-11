@@ -1304,6 +1304,7 @@ pub enum Page {
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
+    TouchLayout,
     None,
     Push(Page),
     Done,
@@ -1456,6 +1457,7 @@ fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    TouchLayout,
     /// An accepted button press or the release of a slider.
     ButtonClick,
     /// Horizon's own: download the Modrinth hit at this index of the pack
@@ -1567,6 +1569,7 @@ fn slider_unsnapped(opt: Opt, held: bool, moved: Instant) -> bool {
     }
 }
 pub struct OptionsUi {
+    pub touch_available: bool,
     pub modpack: crate::mod_list::ImportView,
     modpack_lines: Vec<Text>,
     pub stack: Vec<Page>,
@@ -1592,7 +1595,8 @@ pub struct OptionsUi {
     /// The native mod's key waiting: (mod, key) in `mods.installed`.
     selected_native_key: Option<(usize, usize)>,
     /// Controller Binds: the action waiting for a pad button.
-    pub selected_pad_action: Option<&'static str>,
+    pub selected_pad_action: Option<String>,
+    pub pad_capture: crate::gamepad::Capture,
     /// The glyphs the binds list shows (the setting, else the pad's family).
     pub pad_style: GlyphStyle,
     /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
@@ -1672,6 +1676,7 @@ impl Default for OptionsUi {
         let mut settings_search = ui::EditBox::new(0.0, 0.0, 200.0, 15.0);
         settings_search.focused = false;
         Self {
+            touch_available: false,
             modpack: Default::default(),
             modpack_lines: Vec::new(),
             stack: vec![Page::Main],
@@ -1685,6 +1690,7 @@ impl Default for OptionsUi {
             selected_key: None,
             selected_native_key: None,
             selected_pad_action: None,
+            pad_capture: crate::gamepad::Capture::default(),
             pad_style: GlyphStyle::Xbox,
             pad_by_letter: false,
             pad_driving: false,
@@ -2354,7 +2360,10 @@ impl OptionsUi {
                 Action::ButtonClick => events.push(Event::ButtonClick),
                 Action::Changed => events.push(Event::Changed),
                 Action::SliderDrag => events.push(Event::SliderDrag),
-                Action::BindPad(action) => self.selected_pad_action = Some(action),
+                Action::BindPad(action) => {
+                    self.selected_pad_action = Some(action);
+                    self.pad_capture = crate::gamepad::Capture::default();
+                }
                 Action::Done => events.extend(self.back(s)),
             }
         }
@@ -2840,6 +2849,12 @@ impl OptionsUi {
                     ),
                     None,
                 ));
+                if self.touch_available {
+                    rows.push(Row::Buttons(
+                        button(0.0, 0.0, 310.0, tr("horizon.touch.edit"), Act::TouchLayout),
+                        None,
+                    ));
+                }
                 self.filter_option_rows(rows)
             }
             Page::Mouse => pairs(MOUSE_OPTIONS),
@@ -2897,6 +2912,12 @@ impl OptionsUi {
                         )
                     })
                     .collect();
+                if self.touch_available {
+                    imports.push(Row::Buttons(
+                        button(0.0, 0.0, 310.0, tr("horizon.touch.edit"), Act::TouchLayout),
+                        None,
+                    ));
+                }
                 if s.mods.installed.is_empty() {
                     imports.push(Row::Header("horizon.mods.empty"));
                     return imports;
@@ -3714,7 +3735,8 @@ impl OptionsUi {
             return;
         }
         if Self::controller_page(self.page()).is_some() {
-            self.controller.binding = self.selected_pad_action;
+            self.controller.binding = self.selected_pad_action.clone();
+            self.controller.capture = self.pad_capture.first();
             self.controller.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
@@ -4379,6 +4401,7 @@ impl OptionsUi {
                     self.can_change_value = false;
                     events.push(Event::ButtonClick);
                     match act {
+                        Act::TouchLayout => events.push(Event::TouchLayout),
                         Act::Push(p) => {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
@@ -5089,7 +5112,7 @@ impl OptionsUi {
         if let Some(action) = self.selected_pad_action.take() {
             // As on Key Binds, Escape unbinds; other keys cancel.
             if key == K::Escape {
-                s.controller.bind(action, None);
+                s.controller.bind(&action, None);
             }
             return vec![Event::Changed];
         }
@@ -5354,6 +5377,7 @@ impl OptionsUi {
                     let mut events = vec![Event::ButtonClick];
                     let act = act.clone();
                     match act {
+                        Act::TouchLayout => events.push(Event::TouchLayout),
                         Act::Push(p) => {
                             self.focus = None;
                             self.focus_from_keyboard = false;
@@ -5764,6 +5788,44 @@ mod tests {
         assert_eq!(options[at + 1], Opt::AutoSuggestions);
     }
 
+    #[test]
+    fn touch_layout_can_open_from_controls_and_mods_only_when_available() {
+        let atlas = atlas();
+        let mut settings = Settings::default();
+        for page in [Page::Controls, Page::Mods] {
+            let mut ui = OptionsUi::default();
+            ui.show(page);
+            let size = (480.0, 600.0);
+            let find = |ui: &mut OptionsUi| {
+                ui.layout(&settings, size.0, size.1)
+                    .0
+                    .into_iter()
+                    .find(|w| {
+                        matches!(
+                            w.kind,
+                            WKind::Button {
+                                act: Act::TouchLayout,
+                                ..
+                            }
+                        )
+                    })
+            };
+            assert!(find(&mut ui).is_none());
+            ui.touch_available = true;
+            let w = find(&mut ui).expect("editor entry point");
+            let events = ui.click(
+                &mut settings,
+                &atlas,
+                w.x + w.w / 2.0,
+                w.y + w.h / 2.0,
+                size,
+                [960, 1200],
+                false,
+                false,
+            );
+            assert!(events.contains(&Event::TouchLayout));
+        }
+    }
     #[test]
     fn controls_match_java_26_3_option_order() {
         let mut ui = OptionsUi::default();

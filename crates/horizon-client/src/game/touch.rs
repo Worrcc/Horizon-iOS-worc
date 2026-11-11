@@ -1,7 +1,9 @@
 //! Touch controls in the game (`touch_controls.rs` turns fingers into [`Output`]s): applying
 //! them as the keys, clicks and look movement a keyboard and mouse would give, and drawing
 //! the buttons over the HUD. Enabled on iOS, or with HORIZON_TOUCH=1 for desktop testing.
+mod editor;
 use super::{Game, Screen, event_loop::EventLoopCtl};
+use horizon_client::touch_layout::{self, Entry, Overrides, Rect};
 use horizon_client::{
     hud::{HudAtlas, HudBatch},
     lang,
@@ -314,6 +316,8 @@ impl MenuTouch {
 
 #[derive(Default)]
 pub(super) struct TouchInput {
+    overrides: Overrides,
+    editor: Option<editor::Editor>,
     controls: TouchControls,
     /// The touchscreen, for the pointer events the menus get.
     device: Option<DeviceId>,
@@ -321,6 +325,42 @@ pub(super) struct TouchInput {
     keyboard: bool,
     #[cfg(feature = "mods")]
     mod_fingers: std::collections::HashMap<u64, (usize, String)>,
+    /// Menu buttons own their finger through lift, including across screen changes.
+    menu_fingers: std::collections::HashSet<u64>,
+}
+
+impl TouchInput {
+    pub(super) fn editor_closed_by_options(&mut self) {
+        self.editor = None;
+    }
+    pub(super) fn load(options: &std::path::Path) -> Self {
+        let text = std::fs::read_to_string(options.with_file_name("horizon-touch.txt"))
+            .unwrap_or_default();
+        Self {
+            overrides: Overrides::parse(&text),
+            ..Default::default()
+        }
+    }
+}
+
+struct TouchItem {
+    id: String,
+    name: String,
+    label: String,
+    rect: Option<Rect>,
+    hidden: bool,
+    kind: TouchKind,
+}
+enum TouchKind {
+    Game(Button),
+    Stick,
+    #[cfg(feature = "mods")]
+    Mod {
+        owner: usize,
+        key: String,
+        button: Option<horizon_mods::TouchButton>,
+        down: bool,
+    },
 }
 
 const HOTBAR_KEYS: [KeyCode; 9] = [
@@ -336,10 +376,134 @@ const HOTBAR_KEYS: [KeyCode; 9] = [
 ];
 
 impl Game<'_> {
+    fn touch_items(&self, layout: &Layout) -> Vec<TouchItem> {
+        let mut items: Vec<_> = Button::ALL
+            .into_iter()
+            .map(|b| TouchItem {
+                id: b.id().into(),
+                name: lang::get(b.name_key()),
+                label: lang::get(b.label_key()),
+                rect: Some(layout.button(b)),
+                hidden: false,
+                kind: TouchKind::Game(b),
+            })
+            .collect();
+        let r = horizon_client::touch_controls::STICK_RADIUS;
+        let (x, y) = layout.stick_rest();
+        items.push(TouchItem {
+            id: "game.stick".into(),
+            name: lang::get("horizon.touch.stick"),
+            label: String::new(),
+            rect: Some([x - r, y - r, 2.0 * r, 2.0 * r]),
+            hidden: false,
+            kind: TouchKind::Stick,
+        });
+        #[cfg(feature = "mods")]
+        for (owner, entry) in self.mods.mods.entries().iter().enumerate() {
+            let Some(manifest) = &entry.manifest else {
+                continue;
+            };
+            let keys = self.mods.mods.keys_of(owner);
+            let buttons: Vec<_> = self
+                .mods
+                .mods
+                .touch_buttons()
+                .filter(|(i, _, _, _)| *i == owner)
+                .collect();
+            let auto: Vec<_> = keys
+                .iter()
+                .filter(|k| !buttons.iter().any(|(_, n, _, _)| *n == k.name))
+                .collect();
+            let labels = touch_layout::labels(
+                &auto
+                    .iter()
+                    .map(|k| {
+                        if k.label.is_empty() {
+                            k.name.as_str()
+                        } else {
+                            k.label.as_str()
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            for key in keys {
+                let button = buttons
+                    .iter()
+                    .find(|(_, name, _, _)| *name == key.name)
+                    .map(|(_, _, b, _)| (*b).clone());
+                let rect = button.as_ref().map(|b| {
+                    let [x, y, w, h] = touch_rect(b, layout);
+                    let inset = if w < 20.0 { 3.0 } else { 0.0 };
+                    [x - inset, y - inset, w + 2.0 * inset, h + 2.0 * inset]
+                });
+                let label = button.as_ref().map_or_else(
+                    || {
+                        labels[auto
+                            .iter()
+                            .position(|k| k.name == key.name)
+                            .expect("automatic key")]
+                        .clone()
+                    },
+                    |b| b.label.clone(),
+                );
+                items.push(TouchItem {
+                    id: format!("mod.{}.{}", manifest.id, key.name),
+                    name: horizon_client::text::Text::tr(
+                        "horizon.touch.mod_name",
+                        &[&manifest.name, &key.label],
+                    )
+                    .plain(),
+                    label,
+                    rect,
+                    hidden: false,
+                    kind: TouchKind::Mod {
+                        owner,
+                        key: key.name.clone(),
+                        button,
+                        down: self.mods.mods.touch_key_down(owner, &key.name),
+                    },
+                });
+            }
+        }
+        let entries: Vec<_> = items
+            .iter()
+            .map(|item| Entry {
+                id: item.id.clone(),
+                default: item.rect,
+            })
+            .collect();
+        for (item, placed) in items.iter_mut().zip(touch_layout::resolve(
+            (layout.width, layout.height),
+            &entries,
+            &self.touch.overrides,
+        )) {
+            item.rect = placed.rect;
+            item.hidden = placed.hidden;
+        }
+        items
+    }
+    fn touch_geometry(&self, items: &[TouchItem]) -> horizon_client::touch_controls::Geometry {
+        horizon_client::touch_controls::Geometry {
+            buttons: Button::ALL.map(|b| {
+                items
+                    .iter()
+                    .find(|i| i.id == b.id() && !i.hidden)
+                    .and_then(|i| i.rect)
+            }),
+            stick: items
+                .iter()
+                .find(|i| i.id == "game.stick" && !i.hidden)
+                .and_then(|i| i.rect),
+            moved_stick: self.touch.overrides.0.contains_key("game.stick"),
+        }
+    }
     /// The world is on screen with nothing over it: the controls act on it.
     #[cfg(feature = "mods")]
+    /// `input.touch-active`: the player is using the touch screen. True on the game's screens
+    /// too (a mod's own screen, the layout editor), where a mod still has to know to offer its
+    /// touch buttons; the buttons themselves only draw while playing.
     pub(super) fn mod_touch_active(&self) -> bool {
-        enabled() && (self.touch.controls.used || forced()) && self.touch_playing()
+        enabled() && (self.touch.controls.used || forced())
     }
     fn touch_playing(&self) -> bool {
         self.title.is_none()
@@ -381,9 +545,21 @@ impl Game<'_> {
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
         );
+        if self.touch_editor_open() {
+            self.touch_editor_touch(touch.id, touch.phase, at);
+            return;
+        }
+        let items = self.touch_items(&layout);
+        self.touch.controls.configure(self.touch_geometry(&items));
         let playing = self.touch_playing();
+        if self.touch.menu_fingers.contains(&touch.id) {
+            if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.touch.menu_fingers.remove(&touch.id);
+            }
+            return;
+        }
         #[cfg(feature = "mods")]
-        if self.mod_touch_event(&touch, at, &layout, playing) {
+        if self.mod_touch_event(&touch, at, &layout, playing, &items) {
             return;
         }
         if !playing && touch.phase == TouchPhase::Started {
@@ -392,15 +568,27 @@ impl Game<'_> {
                 return;
             }
             if inside(menu_button(&layout, MenuButton::Keyboard), at) {
+                self.touch.controls.used = true;
+                self.touch.menu_fingers.insert(touch.id);
                 let shown = !self.touch.keyboard;
                 self.show_keyboard(shown);
                 return;
             }
             if self.touch_back_shown() && inside(menu_button(&layout, MenuButton::Back), at) {
+                self.touch.menu_fingers.insert(touch.id);
                 self.apply_touch(event_loop, Output::Key(KeyCode::Escape, true), scale);
                 self.apply_touch(event_loop, Output::Key(KeyCode::Escape, false), scale);
                 return;
             }
+        }
+        #[cfg(feature = "mods")]
+        if self.screen == Screen::Mod && self.mods.canvas_screen.is_some() {
+            self.touch.controls.used = true;
+            for output in self.touch.controls.release_all() {
+                self.apply_touch(event_loop, output, scale);
+            }
+            self.mod_canvas_touch(touch.id, touch.phase, at);
+            return;
         }
         let outputs =
             self.touch
@@ -418,7 +606,7 @@ impl Game<'_> {
     /// Once a frame: held fingers start breaking or right click.
     pub(super) fn touch_update(&mut self, event_loop: &dyn EventLoopCtl) {
         #[cfg(feature = "mods")]
-        if !self.mod_touch_active() {
+        if !self.mod_touch_active() || !self.touch_playing() {
             self.release_mod_touches();
         }
         if !enabled() || !self.touch.controls.used {
@@ -441,8 +629,13 @@ impl Game<'_> {
 
     /// Lets go of every finger: the app went to the background.
     pub(super) fn touch_release_all(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.cancel_touch_editor_pointer();
         #[cfg(feature = "mods")]
-        self.release_mod_touches();
+        {
+            self.release_mod_touches();
+            self.release_canvas_touch();
+        }
+        self.touch.menu_fingers.clear();
         let Some((_, scale)) = self.touch_layout() else {
             return;
         };
@@ -537,7 +730,7 @@ impl Game<'_> {
 
     /// The buttons over the HUD, once a finger has touched the screen.
     pub(super) fn draw_touch_controls(&self, batch: &mut HudBatch) {
-        if !enabled() {
+        if !enabled() || self.touch_editor_open() {
             return;
         }
         let layout = Layout {
@@ -572,57 +765,90 @@ impl Game<'_> {
             }
             return;
         }
-        for b in Button::ALL {
-            let rect = layout.button(b);
-            let frame = if b == Button::Inventory {
-                TouchFrame::Offhand(layout.main_hand_left)
-            } else {
-                SLOT_FRAME
-            };
-            draw_button_frame(batch, atlas, rect, frame, self.touch.controls.touching(b));
-            match b {
-                Button::Pause => draw_pause(batch, atlas, rect),
-                Button::Inventory => {
-                    let (cx, cy) = layout.inventory_label_center();
-                    draw_button_label(
-                        batch,
-                        atlas,
-                        [cx - 12.0, cy - 12.0, 24.0, 24.0],
-                        &lang::get_or(b.label_key(), b.label()),
-                    );
-                }
-                _ => draw_button_label(batch, atlas, rect, &lang::get_or(b.label_key(), b.label())),
-            }
-            draw_button_selection(batch, atlas, rect, frame, self.touch.controls.latched(b));
+        for item in self.touch_items(&layout).iter().filter(|item| !item.hidden) {
+            self.draw_touch_item(batch, item, &layout, false);
         }
-        // The joystick: its ring where the finger landed, or at rest.
-        let (origin, at) = self
-            .touch
-            .controls
-            .stick()
-            .unwrap_or_else(|| (layout.stick_rest(), layout.stick_rest()));
-        let r = horizon_client::touch_controls::STICK_RADIUS;
-        draw_button_frame(
-            batch,
-            atlas,
-            [origin.0 - r, origin.1 - r, r * 2.0, r * 2.0],
-            TouchFrame::Slot(0x80FFFFFF),
-            false,
-        );
-        let (dx, dy) = (at.0 - origin.0, at.1 - origin.1);
-        let length = dx.hypot(dy).max(1.0);
-        let k = length.min(r) / length;
-        let knob = (origin.0 + dx * k, origin.1 + dy * k);
-        draw_button_frame(
-            batch,
-            atlas,
-            [knob.0 - 7.0, knob.1 - 7.0, 14.0, 14.0],
-            TouchFrame::Slot(0xCCFFFFFF),
-            false,
-        );
-        #[cfg(feature = "mods")]
-        for (_, _, b, down) in self.mods.mods.touch_buttons() {
-            self.draw_mod_touch_button(batch, b, down, &layout);
+    }
+    fn draw_touch_item(
+        &self,
+        batch: &mut HudBatch,
+        item: &TouchItem,
+        layout: &Layout,
+        editing: bool,
+    ) {
+        let Some(rect) = item.rect else { return };
+        let atlas = &self.gui.atlas;
+        match &item.kind {
+            TouchKind::Game(b) => {
+                let frame = if *b == Button::Inventory {
+                    TouchFrame::Offhand(layout.main_hand_left)
+                } else {
+                    SLOT_FRAME
+                };
+                draw_button_frame(
+                    batch,
+                    atlas,
+                    rect,
+                    frame,
+                    !editing && self.touch.controls.touching(*b),
+                );
+                if *b == Button::Pause {
+                    draw_pause(batch, atlas, rect);
+                } else {
+                    let label_rect = if *b == Button::Inventory {
+                        [
+                            rect[0] + if layout.main_hand_left { -1.0 } else { 6.0 },
+                            rect[1],
+                            24.0,
+                            24.0,
+                        ]
+                    } else {
+                        rect
+                    };
+                    draw_button_label(batch, atlas, label_rect, &item.label);
+                }
+                draw_button_selection(
+                    batch,
+                    atlas,
+                    rect,
+                    frame,
+                    !editing && self.touch.controls.latched(*b),
+                );
+            }
+            TouchKind::Stick => {
+                let centre = (rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+                let (origin, at) = if editing {
+                    (centre, centre)
+                } else {
+                    self.touch.controls.stick().unwrap_or((centre, centre))
+                };
+                let r = rect[2] / 2.0;
+                draw_button_frame(
+                    batch,
+                    atlas,
+                    [origin.0 - r, origin.1 - r, 2.0 * r, 2.0 * r],
+                    TouchFrame::Slot(0x80FFFFFF),
+                    false,
+                );
+                let (dx, dy) = (at.0 - origin.0, at.1 - origin.1);
+                let length = dx.hypot(dy).max(1.0);
+                let k = length.min(r) / length;
+                draw_button_frame(
+                    batch,
+                    atlas,
+                    [origin.0 + dx * k - 7.0, origin.1 + dy * k - 7.0, 14.0, 14.0],
+                    TouchFrame::Slot(0xCCFFFFFF),
+                    false,
+                );
+            }
+            #[cfg(feature = "mods")]
+            TouchKind::Mod { button, down, .. } => {
+                if let Some(b) = button {
+                    self.draw_mod_touch_button(batch, b, !editing && *down, rect, editing);
+                } else {
+                    draw_button(batch, atlas, rect, &item.label, !editing && *down);
+                }
+            }
         }
     }
     #[cfg(feature = "mods")]
@@ -631,12 +857,19 @@ impl Game<'_> {
         batch: &mut HudBatch,
         b: &horizon_mods::TouchButton,
         down: bool,
-        layout: &Layout,
+        rect: Rect,
+        editing: bool,
     ) {
         use horizon_client::items::ItemStack;
         let atlas = &self.gui.atlas;
-        let [x, y, w, h] = touch_rect(b, layout);
-        let small = w < 20.0;
+        let [mut x, mut y, mut w, mut h] = rect;
+        let small = b.size < 20.0;
+        if small {
+            x += 3.0;
+            y += 3.0;
+            w -= 6.0;
+            h -= 6.0;
+        }
         let frame = if small {
             TouchFrame::SmallPlate
         } else {
@@ -656,7 +889,7 @@ impl Game<'_> {
         } else {
             draw_button_label(batch, atlas, [x, y, w, h], &b.label);
         }
-        draw_button_selection(batch, atlas, [x, y, w, h], frame, b.lit);
+        draw_button_selection(batch, atlas, [x, y, w, h], frame, b.lit && !editing);
     }
     #[cfg(feature = "mods")]
     fn mod_touch_event(
@@ -665,6 +898,7 @@ impl Game<'_> {
         at: (f32, f32),
         layout: &Layout,
         playing: bool,
+        items: &[TouchItem],
     ) -> bool {
         if self.touch.mod_fingers.contains_key(&touch.id) {
             if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
@@ -675,25 +909,38 @@ impl Game<'_> {
                     .values()
                     .any(|f| f == &(owner, name.clone()))
                 {
-                    self.mods.mods.touch_key(owner, &name, false);
+                    self.mods.mods.registered_touch_key(owner, &name, false);
                 }
             }
             return true;
         }
         if playing && touch.phase == TouchPhase::Started {
-            let hit = self
-                .mods
-                .mods
-                .touch_buttons()
+            let button = items
+                .iter()
                 .rev()
-                .find(|(_, _, b, _)| {
-                    let [x, y, w, h] = touch_hit_rect(b, layout);
-                    at.0 >= x && at.0 < x + w && at.1 >= y && at.1 < y + h
-                })
-                .map(|(owner, name, _, _)| (owner, name.to_owned()));
+                .filter(|item| !item.hidden)
+                .find_map(|item| {
+                    let TouchKind::Mod { owner, key, .. } = &item.kind else {
+                        return None;
+                    };
+                    let rect = mod_hit_rect(item)?;
+                    touch_layout::contains(rect, at).then(|| (*owner, key.clone()))
+                });
+            let hit = button.or_else(|| {
+                let geometry = self.touch_geometry(items);
+                if geometry.button_at(at).is_some()
+                    || layout.hotbar_slot(at.0, at.1).is_some()
+                    || geometry
+                        .stick
+                        .is_some_and(|r| touch_layout::contains(r, at))
+                {
+                    return None;
+                }
+                self.mod_canvas_box_hit(at, (layout.width, layout.height))
+            });
             if let Some((owner, name)) = hit {
                 self.touch.controls.used = true;
-                self.mods.mods.touch_key(owner, &name, true);
+                self.mods.mods.registered_touch_key(owner, &name, true);
                 self.touch.mod_fingers.insert(touch.id, (owner, name));
                 return true;
             }
@@ -703,7 +950,7 @@ impl Game<'_> {
     #[cfg(feature = "mods")]
     fn release_mod_touches(&mut self) {
         for (_, (owner, name)) in self.touch.mod_fingers.drain() {
-            self.mods.mods.touch_key(owner, &name, false);
+            self.mods.mods.registered_touch_key(owner, &name, false);
         }
     }
 }
@@ -738,6 +985,13 @@ fn touch_rect(b: &horizon_mods::TouchButton, layout: &Layout) -> [f32; 4] {
 }
 
 #[cfg(feature = "mods")]
+fn mod_hit_rect(item: &TouchItem) -> Option<Rect> {
+    let [x, y, w, h] = item.rect?;
+    let (hw, hh) = (w.max(24.0), h.max(24.0));
+    Some([x - (hw - w) / 2.0, y - (hh - h) / 2.0, hw, hh])
+}
+
+#[cfg(all(test, feature = "mods"))]
 fn touch_hit_rect(b: &horizon_mods::TouchButton, layout: &Layout) -> [f32; 4] {
     let [x, y, w, h] = touch_rect(b, layout);
     let (hw, hh) = (w.max(24.0), h.max(24.0));

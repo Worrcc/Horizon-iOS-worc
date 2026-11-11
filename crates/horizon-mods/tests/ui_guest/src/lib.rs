@@ -101,6 +101,7 @@ impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
         let hooks = [
             "ui_screen",
+            "chat_open",
             "ui_settings",
             "ui_close",
             "render_hud",
@@ -182,6 +183,7 @@ impl Mod for Guest {
                 title: "Guest's screen".into(),
                 widgets: widgets(),
             }),
+            "chat_open" => chat::open(args),
             "ui_settings" => ui::set_settings(&widgets()),
             "ui_close" => ui::close_screen(),
             "render_hud" => render::set_hud(&shapes()),

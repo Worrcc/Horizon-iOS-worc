@@ -56,6 +56,7 @@ pub enum Item {
     Option(Opt),
     /// Wait for a button to bind to this action.
     Bind(&'static str),
+    ModBind(usize),
     ResetBinds,
     Info(Info),
 }
@@ -78,9 +79,6 @@ fn info(info: Info, text: &'static str) -> Setting {
     }
 }
 
-/// Shown on a binding's row until it is focused, and in the search.
-const BIND_TEXT: &str = "Press this row, then the button that should do it.";
-
 /// Every page's settings, in named groups of related rows. Settings another controller feature
 /// brings get a group here, or a new `Page` when they are a subject of their own.
 pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
@@ -88,7 +86,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
         .iter()
         .map(|(action, _)| Setting {
             item: Item::Bind(action),
-            text: BIND_TEXT,
+            text: "horizon.controller.bind_help",
         })
         .collect();
     vec![
@@ -258,14 +256,6 @@ fn glyphs_name(style: GlyphStyle) -> String {
     })
 }
 
-/// Whether a binding differs from its default: only then can it be reset.
-fn resets(s: &Settings, item: Item) -> Option<&'static str> {
-    match item {
-        Item::Bind(action) if !s.controller.is_default(action) => Some(action),
-        _ => None,
-    }
-}
-
 impl Item {
     fn switch(self, s: &Settings) -> Option<bool> {
         let c = &s.controller;
@@ -291,13 +281,13 @@ impl Item {
 }
 
 /// What the options screen must do after an interaction here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     ButtonClick,
     Changed,
     SliderDrag,
     /// Wait for a controller button to bind to this action.
-    BindPad(&'static str),
+    BindPad(String),
     Done,
 }
 
@@ -306,7 +296,8 @@ pub enum Action {
 pub enum Target {
     Item(Item),
     /// The reset button on a changed binding's row.
-    ResetBind(&'static str),
+    ResetBind(Item),
+    RemoveBind(Item),
     Page(Page),
     Search,
     Undo,
@@ -324,7 +315,18 @@ fn reset_rect(cols: &Columns, y: f32) -> [f32; 4] {
 /// A binding row without its reset button.
 fn bind_rect(cols: &Columns, y: f32) -> [f32; 4] {
     let [x, y, w, h] = cols.row(y);
-    [x, y, w - 40.0, h]
+    [x, y, w - 80.0, h]
+}
+
+/// A registered mod key, supplied by the game without exposing its runtime to rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModBinding {
+    pub action: String,
+    pub label: String,
+}
+fn remove_rect(cols: &Columns, y: f32) -> [f32; 4] {
+    let [x, y, w, h] = reset_rect(cols, y);
+    [x - 40.0, y, w, h]
 }
 
 pub struct ControllerUi {
@@ -334,7 +336,9 @@ pub struct ControllerUi {
     pub focus: Option<Target>,
     pub can_change_value: bool,
     /// The action waiting for a button (`Action::BindPad`).
-    pub binding: Option<&'static str>,
+    pub binding: Option<String>,
+    pub capture: Option<Button>,
+    pub mods: Vec<ModBinding>,
     pub search: ui::EditBox,
     /// The page the plate shows, alone, while nothing is searched.
     page: Page,
@@ -356,6 +360,8 @@ impl Default for ControllerUi {
             focus: None,
             can_change_value: false,
             binding: None,
+            capture: None,
+            mods: Vec::new(),
             search,
             page: Page::General,
             picked: None,
@@ -371,8 +377,24 @@ impl ControllerUi {
         *self = Self {
             page,
             context: std::mem::take(&mut self.context),
+            mods: std::mem::take(&mut self.mods),
             ..Self::default()
         };
+    }
+    pub fn set_mod_bindings(&mut self, mods: Vec<ModBinding>) {
+        if self.mods != mods {
+            if matches!(
+                self.focus,
+                Some(
+                    Target::Item(Item::ModBind(_))
+                        | Target::ResetBind(Item::ModBind(_))
+                        | Target::RemoveBind(Item::ModBind(_))
+                )
+            ) {
+                self.focus = None;
+            }
+            self.mods = mods;
+        }
     }
     /// Settings take effect as they change, so all that can be pending is going back on them:
     /// Undo is there only while they differ from what the screen opened with.
@@ -394,17 +416,42 @@ impl ControllerUi {
             b
         }
     }
+    fn action(&self, item: Item) -> Option<&str> {
+        match item {
+            Item::Bind(a) => Some(a),
+            Item::ModBind(i) => self.mods.get(i).map(|m| m.action.as_str()),
+            _ => None,
+        }
+    }
+    fn resets(&self, s: &Settings, item: Item) -> bool {
+        self.action(item)
+            .is_some_and(|a| !s.controller.is_default(a))
+    }
+    fn binding_name(&self, item: Item) -> String {
+        match item {
+            Item::ModBind(i) => self.mods[i].label.clone(),
+            Item::Bind(a) => lang::get(gamepad::action_caption(a)),
+            _ => String::new(),
+        }
+    }
     /// A row as its name and its value.
     fn parts(&self, item: Item, s: &Settings) -> (String, Option<String>) {
         match item {
             Item::Option(o) => shell::name_and_value(&o.label(s).plain()),
-            Item::Bind(action) => {
-                let name = lang::get(gamepad::action_caption(action));
-                let value = match s.controller.binding(action) {
-                    Some(b) => self.shown(b).label(self.context.style).to_owned(),
-                    None => lang::get("key.keyboard.unknown"),
+            Item::Bind(_) | Item::ModBind(_) => {
+                let action = self.action(item).unwrap();
+                let name = self.binding_name(item);
+                let value = match s.controller.combination(action) {
+                    Some(b) => b.label(self.context.style, self.context.by_letter),
+                    None => lang::get("horizon.controller.not_bound"),
                 };
-                let value = if self.binding == Some(action) {
+                let value = self
+                    .capture
+                    .filter(|_| self.binding.as_deref() == Some(action))
+                    .map_or(value, |b| {
+                        self.shown(b).label(self.context.style).to_owned()
+                    });
+                let value = if self.binding.as_deref() == Some(action) {
                     format!("> {value} <")
                 } else if s.controller.conflicts(action) {
                     format!("[ {value} ]")
@@ -446,7 +493,21 @@ impl ControllerUi {
     fn lines(&self, s: &Settings) -> (Vec<Line>, f32) {
         let query = self.query();
         let mut lines = shell::Lines::new();
-        for (page, groups) in rows() {
+        for (page, mut groups) in rows() {
+            if page == Page::Bindings && !self.mods.is_empty() {
+                groups.insert(
+                    1,
+                    (
+                        "horizon.controller.mods",
+                        (0..self.mods.len())
+                            .map(|i| Setting {
+                                item: Item::ModBind(i),
+                                text: "horizon.controller.bind_help",
+                            })
+                            .collect(),
+                    ),
+                );
+            }
             if query.is_empty() && page != self.page {
                 continue;
             }
@@ -571,14 +632,14 @@ impl ControllerUi {
                 let [rx, ry, rw, rh] = cols.row(y);
                 let hover = over_list && ui::hovered(cursor, rx, ry, rw, rh);
                 let focused = self.focus == Some(Target::Item(item))
-                    || matches!((self.focus, item), (Some(Target::ResetBind(a)), Item::Bind(b)) if a == b);
+                    || matches!(self.focus, Some(Target::ResetBind(i) | Target::RemoveBind(i)) if i == item);
                 // The pointer's row wins over the keyboard's.
                 if hover || self.dragging == Some(item) || (focused && described.is_none()) {
                     described = Some(setting);
                 }
                 match item {
-                    Item::Bind(action) => {
-                        self.draw_bind(batch, atlas, s, &cols, action, y, cursor, over_list)
+                    Item::Bind(_) | Item::ModBind(_) => {
+                        self.draw_bind(batch, atlas, s, &cols, item, y, cursor, over_list)
                     }
                     Item::Info(_) => self.draw_info(batch, atlas, s, &cols, item, y, hover),
                     _ => {
@@ -661,12 +722,12 @@ impl ControllerUi {
         atlas: &HudAtlas,
         s: &Settings,
         cols: &Columns,
-        action: &'static str,
+        item: Item,
         y: f32,
         cursor: (f32, f32),
         over_list: bool,
     ) {
-        let item = Item::Bind(action);
+        let action = self.action(item).unwrap();
         let rect = bind_rect(cols, y);
         let reset = reset_rect(cols, y);
         let over = |[x, y, w, h]: [f32; 4]| over_list && ui::hovered(cursor, x, y, w, h);
@@ -697,12 +758,15 @@ impl ControllerUi {
             style::CONTROL_H,
         ];
         // The button in its colour; yellow over it when another action has it too.
-        let shown = match s.controller.binding(action) {
-            _ if self.binding == Some(action) || s.controller.conflicts(action) => {
+        let shown = match s.controller.combination(action) {
+            _ if self.binding.as_deref() == Some(action) || s.controller.conflicts(action) => {
                 Text::literal(value).with_color(crate::text::YELLOW)
             }
             Some(b) => {
-                let [r, g, bl] = self.shown(b).color(self.context.style);
+                let first = match b {
+                    gamepad::Binding::Single(b) | gamepad::Binding::Chord(b, _) => b,
+                };
+                let [r, g, bl] = self.shown(first).color(self.context.style);
                 Text::literal(value)
                     .with_color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(bl))
             }
@@ -718,7 +782,7 @@ impl ControllerUi {
         let live = !s.controller.is_default(action);
         let reset_label = lang::get("controls.reset");
         let reset_hover = live && over(reset);
-        let reset_focused = self.focus == Some(Target::ResetBind(action));
+        let reset_focused = self.focus == Some(Target::ResetBind(item));
         crate::widgets::widget_cursor(reset_hover, live);
         crate::widgets::record(&reset_label, reset, live);
         crate::widgets::narratable(|| {
@@ -737,6 +801,31 @@ impl ControllerUi {
         style::button(batch, atlas, reset, &shown, (reset_hover, live, false));
         if reset_focused {
             style::ring(batch, atlas, reset, style::WHITE);
+        }
+        let remove = remove_rect(cols, y);
+        let live = s.controller.combination(action).is_some();
+        let hover = live && over(remove);
+        let focused = self.focus == Some(Target::RemoveBind(item));
+        let label = lang::get("horizon.controller.remove");
+        crate::widgets::widget_cursor(hover, live);
+        crate::widgets::record(&format!("{name}: {label}"), remove, live);
+        crate::widgets::narratable(|| {
+            crate::widgets::Narratable::button(format!("{name}: {label}"), remove, live)
+                .hovered(hover)
+                .focused(focused)
+        });
+        if live {
+            crate::widgets::target(remove);
+        }
+        style::button(
+            batch,
+            atlas,
+            remove,
+            &Text::literal(label),
+            (hover, live, false),
+        );
+        if focused {
+            style::ring(batch, atlas, remove, style::WHITE);
         }
     }
     /// A line to read: focusable, so the narrator and a controller reach it, and it does nothing.
@@ -811,27 +900,14 @@ impl ControllerUi {
     /// What a row does. A binding names the controller's own buttons, and what else its button
     /// does when it shares it.
     fn description(&self, setting: Setting, s: &Settings) -> String {
-        let Item::Bind(action) = setting.item else {
+        let Some(action) = self.action(setting.item) else {
             return lang::get(setting.text);
         };
-        let pad = &s.controller;
-        let style = self.context.style;
-        if self.binding == Some(action) {
-            return lang::tr(
-                "Press the button for this. %s cancels.",
-                &[&Button::Start.label(style)],
-            );
+        if self.binding.as_deref() == Some(action) {
+            return lang::get("horizon.controller.capture_help");
         }
-        if pad.conflicts(action)
-            && let Some(button) = pad.binding(action)
-        {
-            let others: Vec<String> = pad
-                .actions_of(button)
-                .into_iter()
-                .filter(|other| *other != action)
-                .map(|other| lang::get(gamepad::action_caption(other)))
-                .collect();
-            return lang::tr("This button also does: %s", &[&others.join(", ")]);
+        if s.controller.conflicts(action) {
+            return lang::get("horizon.controller.conflict");
         }
         lang::get(setting.text)
     }
@@ -917,18 +993,26 @@ impl ControllerUi {
         }) else {
             return Vec::new();
         };
-        if let Some(action) = resets(s, item)
-            && at(reset_rect(&cols, row_y))
-        {
-            return self.reset_bind(s, action);
+        if self.resets(s, item) && at(reset_rect(&cols, row_y)) {
+            return self.reset_bind(s, item);
+        }
+        if self.action(item).is_some() && at(remove_rect(&cols, row_y)) {
+            return self.remove_bind(s, item);
         }
         self.focus = Some(Target::Item(item));
         self.activate(s, item, shift, framebuffer, Some((x, &cols)))
     }
     /// A binding back on its default; the focus goes back to its row, as its reset goes away.
-    fn reset_bind(&mut self, s: &mut Settings, action: &'static str) -> Vec<Action> {
+    fn reset_bind(&mut self, s: &mut Settings, item: Item) -> Vec<Action> {
+        let action = self.action(item).unwrap();
         s.controller.bind(action, PadSettings::default_of(action));
-        self.focus = Some(Target::Item(Item::Bind(action)));
+        self.focus = Some(Target::Item(item));
+        vec![Action::ButtonClick, Action::Changed]
+    }
+    fn remove_bind(&mut self, s: &mut Settings, item: Item) -> Vec<Action> {
+        let action = self.action(item).unwrap();
+        s.controller.bind_combination(action, None);
+        self.focus = Some(Target::Item(item));
         vec![Action::ButtonClick, Action::Changed]
     }
     /// Press `item`: `at` is where on its row and its slider's track (`None` from the keyboard).
@@ -942,7 +1026,10 @@ impl ControllerUi {
     ) -> Vec<Action> {
         match item {
             Item::Info(_) => Vec::new(),
-            Item::Bind(action) => vec![Action::ButtonClick, Action::BindPad(action)],
+            Item::Bind(_) | Item::ModBind(_) => vec![
+                Action::ButtonClick,
+                Action::BindPad(self.action(item).unwrap().to_owned()),
+            ],
             Item::ResetBinds => {
                 s.controller.reset_bindings();
                 vec![Action::ButtonClick, Action::Changed]
@@ -1031,12 +1118,18 @@ impl ControllerUi {
         let reach = shell::reach(&rows, cols, near);
         for &(item, y, _) in &rows[reach] {
             let rect = match item {
-                Item::Bind(_) => bind_rect(cols, y),
+                Item::Bind(_) | Item::ModBind(_) => bind_rect(cols, y),
                 _ => cols.row(y),
             };
             out.push((Target::Item(item), rect));
-            if let Some(action) = resets(s, item) {
-                out.push((Target::ResetBind(action), reset_rect(cols, y)));
+            if self.resets(s, item) {
+                out.push((Target::ResetBind(item), reset_rect(cols, y)));
+            }
+            if self
+                .action(item)
+                .is_some_and(|a| s.controller.combination(a).is_some())
+            {
+                out.push((Target::RemoveBind(item), remove_rect(cols, y)));
             }
         }
         if self.pending(s) {
@@ -1056,7 +1149,10 @@ impl ControllerUi {
     ) {
         self.focus = Some(target);
         self.can_change_value = matches!(target, Target::Item(i) if i.slider(s).is_some());
-        if matches!(target, Target::Item(_) | Target::ResetBind(_)) {
+        if matches!(
+            target,
+            Target::Item(_) | Target::ResetBind(_) | Target::RemoveBind(_)
+        ) {
             shell::scroll_into_view(&mut self.scroll, rect, cols, content);
             self.picked = None;
         }
@@ -1148,7 +1244,8 @@ impl ControllerUi {
                     Vec::new()
                 }
                 Target::Item(item) => self.activate(s, item, shift, framebuffer, None),
-                Target::ResetBind(action) => self.reset_bind(s, action),
+                Target::ResetBind(item) => self.reset_bind(s, item),
+                Target::RemoveBind(item) => self.remove_bind(s, item),
                 Target::Undo => {
                     self.undo(s);
                     // Undo goes away with the change it undid.
@@ -1220,6 +1317,42 @@ mod tests {
     /// Tab reaches every row of every page from nothing but the keyboard, as a controller's
     /// focus reaches the same targets.
     #[test]
+    fn mod_rows_bind_remove_reset_and_search() {
+        let mut s = Settings::default();
+        let mut ui = ControllerUi::default();
+        let action = gamepad::mod_action("map", "open");
+        ui.mods.push(ModBinding {
+            action: action.clone(),
+            label: "Map: Open map".into(),
+        });
+        ui.open(Page::Bindings);
+        assert!(ui.row_names(&s).contains(&"Map: Open map".into()));
+        assert_eq!(s.controller.combination(&action), None);
+        assert_eq!(
+            ui.activate(&mut s, Item::ModBind(0), false, FB, None),
+            vec![Action::ButtonClick, Action::BindPad(action.clone())]
+        );
+        s.controller
+            .bind_combination(&action, gamepad::Binding::parse("north+south"));
+        assert!(ui.parts(Item::ModBind(0), &s).1.unwrap().contains(" + "));
+        assert!(
+            ui.remove_bind(&mut s, Item::ModBind(0))
+                .contains(&Action::Changed)
+        );
+        assert_eq!(s.controller.combination(&action), None);
+        s.controller.bind(&action, Some(Button::West));
+        ui.reset_bind(&mut s, Item::ModBind(0));
+        assert_eq!(s.controller.combination(&action), None);
+        ui.remove_bind(&mut s, Item::Bind("key.jump"));
+        assert_eq!(s.controller.combination("key.jump"), None);
+        ui.reset_bind(&mut s, Item::Bind("key.jump"));
+        assert_eq!(s.controller.binding("key.jump"), Some(Button::South));
+        ui.focus = None;
+        ui.search.set_value("open map");
+        assert_eq!(ui.row_names(&s), vec!["Map: Open map"]);
+    }
+
+    #[test]
     fn tab_reaches_every_setting_on_every_page() {
         let mut s = Settings::default();
         let mut ui = ControllerUi::default();
@@ -1230,10 +1363,13 @@ mod tests {
                 .flat_map(|(_, rows)| rows.iter().map(|r| r.item))
                 .collect();
             let mut seen = Vec::new();
-            for _ in 0..want.len() + Page::ALL.len() + 3 {
+            for _ in 0..want.len() * 3 + Page::ALL.len() + 3 {
                 key(&mut ui, &mut s, K::Tab);
                 if let Some(Target::Item(item)) = ui.focus {
                     seen.push(item);
+                    if seen.len() == want.len() {
+                        break;
+                    }
                 }
             }
             assert_eq!(seen, want, "{page:?}");
@@ -1327,14 +1463,16 @@ mod tests {
         }
         assert_eq!(ui.focus, Some(Target::Item(Item::Bind("key.jump"))));
         key(&mut ui, &mut s, K::ArrowRight);
-        assert_eq!(ui.focus, Some(Target::ResetBind("key.jump")));
+        assert_eq!(ui.focus, Some(Target::RemoveBind(Item::Bind("key.jump"))));
+        key(&mut ui, &mut s, K::ArrowRight);
+        assert_eq!(ui.focus, Some(Target::ResetBind(Item::Bind("key.jump"))));
         let actions = key(&mut ui, &mut s, K::Enter);
         assert!(actions.contains(&Action::Changed));
         assert!(s.controller.is_default("key.jump"));
         assert_eq!(ui.focus, Some(Target::Item(Item::Bind("key.jump"))));
-        // A default binding has nothing to the right of it.
+        // A default binding still offers Remove.
         key(&mut ui, &mut s, K::ArrowRight);
-        assert_eq!(ui.focus, Some(Target::Item(Item::Bind("key.jump"))));
+        assert_eq!(ui.focus, Some(Target::RemoveBind(Item::Bind("key.jump"))));
     }
 
     #[test]
@@ -1342,7 +1480,10 @@ mod tests {
         let mut s = Settings::default();
         let mut ui = ControllerUi::default();
         let actions = ui.activate(&mut s, Item::Bind("key.jump"), false, FB, None);
-        assert_eq!(actions, [Action::ButtonClick, Action::BindPad("key.jump")]);
+        assert_eq!(
+            actions,
+            [Action::ButtonClick, Action::BindPad("key.jump".into())]
+        );
         let before = s.controller.clone();
         assert!(
             ui.activate(&mut s, Item::Info(Info::Device), false, FB, None)
@@ -1388,6 +1529,12 @@ mod tests {
                 "Editing: %s",
                 "Press the button for this. %s cancels.",
                 "This button also does: %s",
+                "horizon.controller.not_bound",
+                "horizon.controller.remove",
+                "horizon.controller.mods",
+                "horizon.controller.capture_help",
+                "horizon.controller.bind_help",
+                "horizon.controller.conflict",
             ] {
                 lang::get(text);
             }

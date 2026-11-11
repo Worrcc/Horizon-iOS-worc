@@ -161,6 +161,7 @@ Capability `chat`: messages only the local player sees.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `show` | `func(text: string)` | Shown in chat after the mod's name, like a system message. |
+| `open` | `func(text: string)` | API level 21: opens the chat box with `text` typed in (at most 256 characters, cursor at the end), as if the player had opened chat and typed it: they edit it and send it, or close it. Nothing is sent by the mod. Closes the mod's own open screen first. Ignored when there is no world, or when chat is hidden in the player's settings (as the chat key is). |
 
 ## `hud`
 
@@ -519,10 +520,10 @@ A mapping as the player has bound it.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
-| `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. |
-| `touch-active` | `func() -> bool` | API level 20: whether the game's touch controls are shown now. |
+| `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. Player touch-layout overrides win over the anchor/offset. Removing an explicit button restores the key's automatic button. |
+| `touch-active` | `func() -> bool` | API level 20: whether the player is using the touch screen (the game's touch controls show while playing). It stays true on screens, so a mod can offer touch buttons on its own. |
 | `claim-items` | `func(ids: list<string>)` | The items whose use the mod handles instead of the game, by id (at most 64). Replaces the previous list. |
-| `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. |
+| `register-key` | `func(name: string, label: string, key: string) -> result<_, string>` | A key of the mod's: `name` comes back in `key-down` and `key-up`, `label` says what it does, `key` is the key as options.txt writes it (`key.keyboard.r`), the default: the player can bind another one on the mod's page in Options > Mods, and that one wins. At most 16; an unknown key is an error. While touch controls are shown, keys without set-touch-button get automatic 20px slot buttons, in registration order down the right side. The player can move or hide them in Edit Touch Layout. Controller Settings > Bindings lists every registered key, unbound by default. A player-chosen button or two-button combination sends the same key-down/key-up events while playing, independently of the keyboard and touch bindings. |
 | `held` | `func() -> option<held-item>` | The main hand's stack, as of this tick; none when it is empty. |
 | `poll` | `func() -> list<event>` | The events since the last call, oldest first. |
 | `claim-wheel` | `func(on: bool)` | Takes the mouse wheel while playing (true) or gives it back: while taken, its steps are the mod's `wheel` events and the hotbar doesn't move. The game gives it back when the mod stops. |
@@ -600,6 +601,7 @@ What a canvas corner box holds.
 | `drop-image` | `func(image: image)` | Frees `image` and its place on the page; an unknown one is ignored. A mod's images go when it stops. |
 | `set-corner` | `func(corner: corner, width: f32, height: f32, shapes: list<shape>)` | Replaces the mod's canvas box: shapes in GUI pixels from the top left of a `width` × `height` box that the game places in `corner`, stacked with the game's overlays, the mods' panels and their `render` corner panels, under the status effects at the top right; hidden with the HUD (F1), and the top left gives way to the debug screen (F3). Up to 1024 shapes; an image shape of an unknown image draws nothing. |
 | `set-placed` | `func(anchor: corner, dx: f32, dy: f32, width: f32, height: f32, shapes: list<shape>)` | API level 18: replaces the mod's canvas box, offset inward from the anchor in GUI pixels, clamped fully on screen. Same limits as set-corner; independent of corner stacking and hidden with F1. |
+| `set-box-key` | `func(name: option<string>) -> result<_, string>` | API level 21: a finger on the drawn canvas box sends key-down for this input.register-key name, and lifting sends key-up. Only while playing with touch controls shown; consumes the touch. Game and mod touch buttons win overlaps. none restores the default of taking no touches. An unknown key name is an error. |
 | `open-canvas-screen` | `func(title: string, shapes: list<shape>)` | API level 18: opens the mod's full-window canvas (capabilities ui and render). Up to 4096 shapes in GUI pixels from the window top left, clipped to the window. Hides its HUD box; Escape sends ui-events.closed. |
 | `set-canvas-screen` | `func(shapes: list<shape>)` | Replaces the open canvas screen's shapes; ignored without a screen. |
 | `close-canvas-screen` | `func()` | Closes the mod's canvas screen without a closed event. |

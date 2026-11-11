@@ -69,6 +69,9 @@ pub(super) fn note_canvas_mods(
 pub(super) struct CanvasHost {
     /// The atlas is new: every image goes up whole.
     upload_all: bool,
+    /// Draw order and exact drawn bounds, including other corner overlays.
+    hits: Vec<(usize, [f32; 4])>,
+    hit_size: (f32, f32),
 }
 
 /// The sides of a round image's fan.
@@ -118,7 +121,8 @@ impl Game<'_> {
         }
     }
     /// The mods' canvas boxes, stacked with the other panels in `corners`.
-    pub(super) fn draw_canvas_panels(&self, batch: &mut HudBatch, corners: &mut Corners) {
+    pub(super) fn draw_canvas_panels(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
+        let mut hits = Vec::new();
         for (owner, panel) in self.mods.mods.canvas_panels() {
             if self
                 .mods
@@ -142,6 +146,7 @@ impl Game<'_> {
                 .placed_origin((batch.width, batch.height))
                 .unwrap_or_else(|| corners.place(corner, panel.width, panel.height));
             let start = batch.vertices.len();
+            hits.push((owner, [at.0, at.1, panel.width, panel.height]));
             self.draw_canvas_shapes(batch, owner, &panel.shapes, at);
             if panel.placed.is_some() {
                 batch.clip_since(
@@ -153,6 +158,31 @@ impl Game<'_> {
                 );
             }
         }
+        self.mods.canvas.hits = hits;
+        self.mods.canvas.hit_size = (batch.width, batch.height);
+    }
+
+    pub(super) fn mod_canvas_box_hit(
+        &self,
+        at: (f32, f32),
+        size: (f32, f32),
+    ) -> Option<(usize, String)> {
+        if self.ui.hide_gui || self.mods.canvas.hit_size != size {
+            return None;
+        }
+        self.mods
+            .canvas
+            .hits
+            .iter()
+            .rev()
+            .find_map(|&(owner, rect)| {
+                let key = self.mods.mods.canvas_box_key(owner)?;
+                let (_, panel) = self.mods.mods.canvas_panels().find(|(i, _)| *i == owner)?;
+                if self.debug && panel.corner == RenderCorner::TopLeft {
+                    return None;
+                }
+                box_contains(rect, size, at).then(|| (owner, key.to_owned()))
+            })
     }
     /// Shared canvas primitives, from the box or window's top left.
     pub(super) fn draw_canvas_shapes(
@@ -248,9 +278,18 @@ impl Game<'_> {
     }
 }
 
+/// Exact box bounds as drawn, intersected with the viewport; no touch padding.
+#[cfg(feature = "mods")]
+fn box_contains([x, y, w, h]: [f32; 4], size: (f32, f32), at: (f32, f32)) -> bool {
+    at.0 >= x.max(0.0)
+        && at.1 >= y.max(0.0)
+        && at.0 < (x + w).min(size.0)
+        && at.1 < (y + h).min(size.1)
+}
+
+#[cfg(feature = "mods")]
 /// `src` (texels `[x, y, w, h]`) cut to an image of `size`, and the part of
 /// `dst` (GUI pixels) it then covers; none when nothing is left.
-#[cfg(feature = "mods")]
 fn clip_to_image(src: [f32; 4], dst: [f32; 4], size: (f32, f32)) -> Option<([f32; 4], [f32; 4])> {
     let (x0, y0) = (src[0].max(0.0), src[1].max(0.0));
     let (x1, y1) = ((src[0] + src[2]).min(size.0), (src[1] + src[3]).min(size.1));
@@ -277,6 +316,34 @@ impl Game<'_> {
 #[cfg(all(test, feature = "mods"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_hit_uses_drawn_bounds_and_clips_to_window() {
+        let size = (320.0, 180.0);
+        // A stacked box includes the overlays above it in its drawn origin.
+        let stacked = [2.0, 52.0, 40.0, 30.0];
+        assert!(box_contains(stacked, size, (2.0, 52.0)));
+        for at in [(2.0, 51.0), (1.0, 60.0), (42.0, 60.0), (20.0, 82.0)] {
+            assert!(!box_contains(stacked, size, at));
+        }
+        let panel = horizon_mods::CanvasPanel {
+            corner: RenderCorner::BottomRight,
+            placed: Some((-100.0, 1000.0)),
+            width: 40.0,
+            height: 30.0,
+            shapes: Vec::new(),
+        };
+        let at = panel.placed_origin(size).unwrap();
+        assert_eq!(at, (280.0, 0.0));
+        let rect = [at.0, at.1, panel.width, panel.height];
+        assert!(box_contains(rect, size, (319.0, 29.0)));
+        assert!(!box_contains(rect, size, (320.0, 29.0)));
+        assert!(!box_contains(rect, size, (279.0, 0.0)));
+        // Oversized boxes and corner boxes partially outside the viewport.
+        assert!(box_contains([-2.0, -2.0, 400.0, 200.0], size, (0.0, 0.0)));
+        assert!(!box_contains([-2.0, -2.0, 400.0, 200.0], size, (-1.0, 0.0)));
+        assert!(!box_contains([0.0, 0.0, 0.0, 10.0], size, (0.0, 0.0)));
+    }
 
     #[test]
     fn a_source_past_the_image_draws_only_the_image() {

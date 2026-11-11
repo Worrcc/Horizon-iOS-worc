@@ -17773,6 +17773,9 @@ impl Game<'_> {
         if !ours {
             return;
         }
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.cancel_touch_editor_pointer();
+        }
         if touch::enabled()
             && let WindowEvent::Touch(t) = event
         {
@@ -19592,7 +19595,7 @@ impl<'a> Game<'a> {
             split_hud: Default::default(),
             split_auth: None,
             focused: true,
-            touch: Default::default(),
+            touch: touch::TouchInput::load(&Self::options_path()),
             ime_allowed: false,
             ime_area: None,
             focus_lost: None,

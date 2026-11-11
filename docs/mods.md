@@ -72,7 +72,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 |---|---|---|
 | `log` | always | `write(level, message)`, in the game log as `[mod <id>]` |
 | `game` | `game-read` | `get-player()`: x y z, yaw, pitch, health, food, dimension; `get-clock()`: game time, day time; `raycast(distance)`: the first block along the view (fluids pass), up to 1024 blocks and across the distant terrain, with the point hit and the block's id; `raycast-entity(distance)` (API level 16): the nearest living entity before a block, its display name and current/max health; `world-id()` (API level 17): `sp:<save folder>` or `mp:<address>`, for what a mod keeps per world |
-| `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call) |
+| `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call); API level 21: `open(text)` prefills the chat box for the player to edit and send, without sending anything |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows). API level 20: `run-mod-quiet(lines)` runs registered server-mod commands quietly (16 a call, 64 a tick per mod); vanilla and unknown names are dropped |
@@ -1127,6 +1127,66 @@ beside its existing corner, size, shape/image and round-image counts.
 `expect.canvas-screen` checks `open`, `title`, shape count and `texts` (the text
 shapes in drawing order).
 
+**Automatic touch keys and the touch layout editor.** While playing with touch
+controls shown, every registered key without an explicit `input.set-touch-button`
+gets a 20 × 20 slot button. Defaults follow mod load order and key registration
+order, down the right side under F5 / T / pause, wrapping to columns on the left
+before the lower action cluster. They avoid game controls and mod-authored
+buttons. One-word labels use their first four characters; several words use up to
+four uppercase initials. Collisions within one mod get numeric suffixes. A finger
+holds the mod key until lift/cancellation, without looking, breaking or placing.
+Keyboard/controller activity keeps the game's existing touch visibility rules;
+an idle connected controller does not acquire new behaviour here.
+
+On iOS, or desktop with `HORIZON_TOUCH=1`, open **Options > Controls > Edit Touch
+Layout...** or **Options > Mods > Edit Touch Layout...**. Agent control can open
+it with `horizon-ctl options touch-layout`; `ui`, `click-at`, and
+`touch down|move|up X Y --id N` drive it. The editor uses the options screen's
+pause/blur behaviour and draws the game controls, joystick, explicit mod buttons,
+and automatic keys. Tap to select (gold frame and full action name); drag to
+move, clamped inside the viewport and snapped to two GUI pixels. Hide/Show,
+Reset (selected), Reset All, and Done are centred below the title, with the selected
+name on the next line. The toolbar takes touch priority; moved controls clamp below
+it so they remain reachable. Pause cannot be hidden. Hidden controls remain faint and editable here. A moved joystick starts
+from its saved centre; resetting it restores the original floating joystick.
+
+Overrides live beside that player's `options.txt` in the instance, in
+`horizon-touch.txt`. Each line has a JSON-quoted stable id, x fraction, y fraction,
+and `true`/`false` hidden value, separated by **literal tabs**. For example:
+
+```text
+"game.jump"	0.75	0.6	false
+"mod.example.show_recipes"	0.5	0.2	true
+```
+
+Fractions measure the button's top left against the full GUI width/height; sizes
+stay in GUI pixels. Positions survive rotation/GUI size changes and are clamped
+again. For explicit small mod buttons the bounds include the outer selection
+ring. Unknown ids are retained for mods that are temporarily off; malformed lines
+are ignored. Player overrides win over a mod's anchor/offset, and remain fixed
+as other keys arrive or disappear. Untouched automatic buttons re-flow. Reset
+removes an override and returns to the current default. Changes save on release,
+Done, Escape or focus loss; switching instances reloads that instance's file.
+No new WIT functions or API level bump is needed for these controls.
+
+**API level 21: touch on canvas boxes.** After `input.register-key`, call
+`canvas.set-box-key(some(name))` to make a finger on the mod's HUD box hold that
+key: down on contact, up on lift or cancellation. An unknown key returns an error;
+`none` removes the binding (the default). This works only while playing with touch
+controls shown. It uses the box's drawn bounds, including corner stacking and
+`set-placed` clamping. Hidden boxes take no touches. Game buttons (including the
+joystick and hotbar) and mod touch buttons win overlaps. A captured finger never
+turns the camera, breaks or places, even when dragged outside the box.
+
+On a mod's full-window canvas screen, one finger sends pointer Down immediately,
+then Drag on movement and Up on lift. A second finger sends Up for the drag;
+while pinching, distance changes send `ui-events.scroll` at the fingers' midpoint
+(24 GUI pixels per step, positive when spreading). Lift both fingers before
+starting a new drag. Back and Aa retain their usual menu actions. Test on desktop
+with `HORIZON_TOUCH=1` and `horizon-ctl touch down|move|up|tap X Y --id N`;
+different IDs control the two fingers. Existing API signatures and older component
+imports remain compatible; HUD boxes take no touches unless explicitly bound.
+
 **API level 20: client blocks, world lines, touch buttons and queued player breaks.**
 All additions are new functions; mods built for API levels 19 and earlier keep linking unchanged.
 
@@ -1150,7 +1210,7 @@ All additions are new functions; mods built for API levels 19 and earlier keep l
   least 24x24 GUI pixels, centred on the button. The game's built-in and menu touch buttons share the slot frame.
   Press and lift send
   that mod key's `key-down`/`key-up`, consuming the finger without camera motion or block actions.
-  `input.touch-active()` reports whether the game's touch controls are shown while playing.
+  `input.touch-active()` reports whether the player is using the touch screen (it stays true on screens).
   Desktop testing can force them with `HORIZON_TOUCH=1`.
 - Server capability `world`: `world.break-blocks-as(player, blocks, options) -> result<_, string>`
   validates an online player and queues plain `{x, y, z}` positions, in order, for application after
@@ -1193,3 +1253,61 @@ Horizon's own mods are native. They live in
 The game keeps the parts that must be fast, such as drawing the minimap's map, and a native mod picks the options
 ([extras.md](extras.md)). Far View is not a mod any more: its distance and detail are Graphics > LOD Distance and Far
 Detail ([graphics.md](graphics.md)).
+
+### Controller bindings for mod keys
+
+Open **Options > Controls > Controller Settings... > Bindings** (or run
+`horizon-ctl options controller-binds`). The **Mods** section lists
+all registered keys as **<Mod name>: <key label>**, in mod/key registration order.
+They start **Not bound**. Select a row, press and release one button to bind it,
+or hold the first and press a second to bind a combination such as **Y + A**.
+**Remove** clears a binding; **Reset** restores that action's default (unbound for
+mod keys). Escape during capture also removes it; clicking cancels capture.
+These controls apply to every game binding too. Menu navigation keeps its usual
+buttons. Start pauses during play unless explicitly used in a gameplay binding.
+
+Only buttons participating in a bound combination delay their single action, by
+50 ms. A quick release sends the single action as a tap immediately. Pressing both
+within that window, or pressing the second while the first remains held, starts
+the combination; any active member single is released. The combination stays held
+until either member lifts. Member singles stay suppressed until they lift. A held
+member can still complete another combination with a fresh second press; multiple
+completed combinations can remain active together. Identical combinations can drive
+multiple actions. Mod key events merge controller, keyboard
+and touch holds; releasing one source does not release another source's hold.
+
+Settings stay in the instance's **horizon-controller.txt**, beside `options.txt`:
+
+```text
+bind_key.jump:north+south
+bind_key.attack:none
+bind_mod.example.6f70656e:north+south
+```
+
+A value is one existing positional button token (`south`, `north`, `lb`, etc.),
+two distinct tokens separated by `+`, or `none`. Old single-button files load
+unchanged. Combination matching ignores order; display preserves capture order.
+Mod action ids are `mod.<modid>.<key-name UTF-8 bytes as lowercase hex>` (`open`
+is `6f70656e`); this safely stores names containing punctuation or newlines.
+Absent mods keep their saved bindings but do not participate in resolution.
+Default bindings need no line; removing a mod binding returns to its unbound default.
+
+For automation, `horizon-ctl pad north+south down` presses both in one poll;
+`pad north+south up` releases both. `pad north down` followed by `pad south down`
+exercises hold-then-press. `pad north+south tap` and trigger-button tokens work too.
+
+### Opening chat for player input (API level 21)
+
+With capability `chat`, call `chat::open("/waypoint rename ")` in the Rust SDK
+(`chat.open(text)` in WIT) to open the player's normal chat box with up to 256
+Unicode characters and the cursor at the end. A leading `/` uses the usual command
+parsing, completion and send behavior. This request sends no message or command:
+the player edits and submits it, or closes chat. It replaces any restored draft
+with the supplied text, including an empty string.
+
+The request is queued until the hook returns (the last prefill in that hook wins).
+The game closes the calling mod's own widget/canvas screen first. Requests are
+ignored without a world or when the player's Chat setting is **Hidden**; an ignored
+request leaves the current screen and draft alone. Touch uses the same automatic
+on-screen keyboard path as the game's **T** button. API level stays **21**, and mods
+using the older `chat.show` interface continue to link.

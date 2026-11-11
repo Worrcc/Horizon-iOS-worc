@@ -7,6 +7,15 @@
 //! file stays exactly vanilla's. The game reads the pads with gilrs.
 use std::{collections::BTreeMap, fs, path::Path};
 
+mod chords;
+pub use chords::{ActionEdge, Binding, CHORD_WINDOW, Capture, Resolver};
+
+/// Stable, line-safe action id for a mod key (UTF-8 bytes encoded as hex).
+pub fn mod_action(id: &str, key: &str) -> String {
+    let encoded: String = key.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    format!("mod.{id}.{encoded}")
+}
+
 pub const FILE: &str = "horizon-controller.txt";
 
 /// A button by its position on the pad (gilrs' and SDL's layout): `South`
@@ -486,7 +495,7 @@ pub struct PadSettings {
     pub repeat_delay: f32,
     pub repeat_interval: f32,
     /// Action name -> button, `None` for unbound; missing means the default.
-    bindings: BTreeMap<&'static str, Option<Button>>,
+    bindings: BTreeMap<String, Option<Binding>>,
 }
 impl Default for PadSettings {
     fn default() -> Self {
@@ -582,10 +591,10 @@ impl PadSettings {
                         let button = if value == "none" {
                             Some(None)
                         } else {
-                            Button::parse(value).map(Some)
+                            Binding::parse(value).map(Some)
                         };
                         if let Some(button) = button {
-                            s.bind(action, button);
+                            s.bind_combination(action, button);
                         }
                     }
                 }
@@ -618,7 +627,7 @@ impl PadSettings {
         for (action, button) in &self.bindings {
             text.push_str(&format!(
                 "bind_{action}:{}\n",
-                button.map_or("none", Button::name)
+                button.map_or_else(|| "none".to_owned(), Binding::name)
             ));
         }
         text
@@ -626,36 +635,61 @@ impl PadSettings {
     pub fn default_of(action: &str) -> Option<Button> {
         ACTIONS.iter().find(|a| a.0 == action).and_then(|a| a.1)
     }
-    /// The button an action is bound to.
+    /// Compatibility accessor for callers interested only in a single button.
     pub fn binding(&self, action: &str) -> Option<Button> {
-        match self.bindings.get(action) {
-            Some(button) => *button,
-            None => Self::default_of(action),
+        match self.combination(action) {
+            Some(Binding::Single(b)) => Some(b),
+            _ => None,
         }
     }
-    /// Bind an action (`None` unbinds); unknown actions are ignored.
+    pub fn combination(&self, action: &str) -> Option<Binding> {
+        self.bindings
+            .get(action)
+            .copied()
+            .unwrap_or_else(|| Self::default_of(action).map(Binding::Single))
+    }
     pub fn bind(&mut self, action: &str, button: Option<Button>) {
-        let Some((name, default)) = ACTIONS.iter().find(|a| a.0 == action) else {
+        self.bind_combination(action, button.map(Binding::Single));
+    }
+    /// Unknown game actions are ignored. Mod ids remain stored while their mod is absent.
+    pub fn bind_combination(&mut self, action: &str, binding: Option<Binding>) {
+        if !ACTIONS.iter().any(|a| a.0 == action) && !action.starts_with("mod.") {
             return;
-        };
-        if button == *default {
-            self.bindings.remove(name);
+        }
+        if binding == Self::default_of(action).map(Binding::Single) {
+            self.bindings.remove(action);
         } else {
-            self.bindings.insert(name, button);
+            self.bindings.insert(action.to_owned(), binding);
         }
     }
     pub fn reset_bindings(&mut self) {
         self.bindings.clear();
     }
-    /// Other actions on the same button (marked in the binds list).
     pub fn conflicts(&self, action: &str) -> bool {
-        self.binding(action)
-            .is_some_and(|b| self.actions_of(b).iter().any(|a| *a != action))
+        self.combination(action).is_some_and(|b| {
+            self.configured()
+                .iter()
+                .any(|(a, other)| a != action && b.same_buttons(*other))
+        })
     }
     pub fn is_default(&self, action: &str) -> bool {
         !self.bindings.contains_key(action)
     }
-    /// The actions a button triggers, in `ACTIONS` order.
+    /// Game actions in their usual order, then stored mod bindings. The game filters these to
+    /// registered mod keys before resolving input, so absent mods never delay game buttons.
+    pub fn configured(&self) -> Vec<(String, Binding)> {
+        ACTIONS
+            .iter()
+            .filter_map(|(a, _)| self.combination(a).map(|b| ((*a).to_owned(), b)))
+            .chain(
+                self.bindings
+                    .iter()
+                    .filter(|(a, _)| a.starts_with("mod."))
+                    .filter_map(|(a, b)| b.map(|b| (a.clone(), b))),
+            )
+            .collect()
+    }
+    /// Single-button actions only; also used for adaptive-trigger feedback.
     pub fn actions_of(&self, button: Button) -> Vec<&'static str> {
         ACTIONS
             .iter()
@@ -1452,6 +1486,42 @@ pub fn bow_power(ticks: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_singles_chords_unbound_and_absent_mods_round_trip() {
+        let old =
+            PadSettings::parse("bind_key.jump:north\nbind_key.attack:none\nbind_key.drop:west\n");
+        assert_eq!(old.binding("key.jump"), Some(Button::North));
+        assert_eq!(old.binding("key.drop"), Some(Button::West));
+        assert_eq!(old.combination("key.attack"), None);
+        let mut s = old;
+        s.bind_combination("key.jump", Binding::parse("north+south"));
+        let id = mod_action("test", "Map: café\n");
+        assert_eq!(id, "mod.test.4d61703a20636166c3a90a");
+        s.bind_combination(&id, Binding::parse("lb+rb"));
+        assert!(
+            !s.conflicts("key.jump"),
+            "a chord differs from either single"
+        );
+        let stored = s.serialize();
+        assert!(stored.contains("bind_key.jump:north+south\n"));
+        assert!(stored.contains("bind_key.attack:none\n"));
+        assert_eq!(PadSettings::parse(&stored), s);
+        s.bind_combination("key.drop", Binding::parse("south+north"));
+        assert!(
+            s.conflicts("key.jump"),
+            "press order does not change a chord"
+        );
+        s.bind_combination(&id, None);
+        assert_eq!(s.combination(&id), None);
+        s.reset_bindings();
+        assert_eq!(s.binding("key.jump"), Some(Button::South));
+        assert_eq!(s.combination(&id), None);
+        let invalid = PadSettings::parse(
+            "bind_key.jump:south+south\nbind_key.attack:invalid\nbind_typo:south\n",
+        );
+        assert_eq!(invalid, PadSettings::default());
+    }
 
     #[test]
     fn every_bindable_action_reaches_the_game() {

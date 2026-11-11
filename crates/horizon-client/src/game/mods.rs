@@ -713,7 +713,7 @@ impl Game<'_> {
         false
     }
     pub(super) fn mods_chat(&mut self, _line: &str) {}
-    pub(super) fn draw_mod_panels(&self, _batch: &mut HudBatch, _corners: &mut Corners) {}
+    pub(super) fn draw_mod_panels(&mut self, _batch: &mut HudBatch, _corners: &mut Corners) {}
     pub(super) fn open_mod_screen(&mut self, _owner: usize, _settings: bool) {}
     pub(super) fn close_wasm_mod_screen(&mut self, _tell: bool) {}
     pub(super) fn draw_mod_screen(&mut self, _batch: &mut HudBatch) {}
@@ -1303,6 +1303,10 @@ impl Game<'_> {
                     self.open_mod_screen(owner, false);
                     continue;
                 }
+                Output::OpenChat { owner, text } => {
+                    self.open_mod_chat(owner, &text);
+                    continue;
+                }
                 Output::Shake { strength, seconds } => {
                     self.mods.shake.add(strength, seconds);
                     continue;
@@ -1341,6 +1345,23 @@ impl Game<'_> {
             row.has_settings = e.has_ui_settings();
         }
     }
+    /// An explicit prefill, using the normal chat screen and its automatic touch keyboard.
+    /// Check first so ignored requests leave the mod's screen and any chat draft alone.
+    fn open_mod_chat(&mut self, owner: usize, text: &str) {
+        if self.player.is_none() || self.title.is_some() || !self.chat_abilities().send_commands {
+            return;
+        }
+        if self.mods.screen.as_ref().is_some_and(|s| s.owner == owner)
+            || self
+                .mods
+                .canvas_screen
+                .as_ref()
+                .is_some_and(|s| s.owner == owner)
+        {
+            self.close_wasm_mod_screen(false);
+        }
+        self.open_chat(text);
+    }
     /// A mod's line in the window's chat; not through system_message: a mod
     /// must not hear its own lines.
     /// Written by this client, so the Chat option doesn't hide it.
@@ -1356,7 +1377,7 @@ impl Game<'_> {
         );
     }
     /// The mods' HUD panels, stacked with the extras in their corners.
-    pub(super) fn draw_mod_panels(&self, batch: &mut HudBatch, corners: &mut Corners) {
+    pub(super) fn draw_mod_panels(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         for panel in self.mods.mods.panels() {
             let corner = match panel.corner {
                 horizon_mods::Corner::TopLeft => Corner::TopLeft,

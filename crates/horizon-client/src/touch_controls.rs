@@ -47,6 +47,30 @@ pub enum Button {
 }
 
 impl Button {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Jump => "game.jump",
+            Self::Sneak => "game.sneak",
+            Self::Use => "game.use",
+            Self::Drop => "game.drop",
+            Self::Inventory => "game.inventory",
+            Self::Chat => "game.chat",
+            Self::Perspective => "game.perspective",
+            Self::Pause => "game.pause",
+        }
+    }
+    pub fn name_key(self) -> &'static str {
+        match self {
+            Self::Jump => "key.jump",
+            Self::Sneak => "key.sneak",
+            Self::Use => "key.use",
+            Self::Drop => "key.drop",
+            Self::Inventory => "key.inventory",
+            Self::Chat => "key.chat",
+            Self::Perspective => "key.togglePerspective",
+            Self::Pause => "menu.game",
+        }
+    }
     pub const ALL: [Button; 8] = [
         Button::Jump,
         Button::Sneak,
@@ -226,6 +250,8 @@ enum Finger {
 /// The fingers on the screen and the keys they hold.
 #[derive(Default)]
 pub struct TouchControls {
+    /// The resolved player layout. Menus and standalone callers retain the defaults.
+    geometry: Option<Geometry>,
     fingers: HashMap<u64, Finger>,
     /// Forward, back, left, right and sprint, as the joystick holds them.
     stick_keys: [bool; 5],
@@ -234,6 +260,26 @@ pub struct TouchControls {
     playing: bool,
     /// A finger has touched the screen: the controls are drawn until a controller is used.
     pub used: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Geometry {
+    pub buttons: [Option<[f32; 4]>; 8],
+    pub stick: Option<[f32; 4]>,
+    pub moved_stick: bool,
+}
+impl Geometry {
+    pub fn button_at(&self, at: (f32, f32)) -> Option<Button> {
+        Button::ALL
+            .into_iter()
+            .zip(self.buttons)
+            .find_map(|(b, r)| {
+                r.filter(|&[x, y, w, h]| {
+                    crate::touch_layout::contains([x - 2.0, y - 2.0, w + 4.0, h + 4.0], at)
+                })
+                .map(|_| b)
+            })
+    }
 }
 
 const STICK_KEYS: [KeyCode; 5] = [
@@ -249,6 +295,9 @@ fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
 }
 
 impl TouchControls {
+    pub fn configure(&mut self, geometry: Geometry) {
+        self.geometry = Some(geometry);
+    }
     /// One touch event at `(x, y)` GUI pixels. `playing`: the world is on screen with no menu.
     pub fn touch(
         &mut self,
@@ -284,20 +333,39 @@ impl TouchControls {
                             mode: PointerMode::Pending,
                         }
                     }
-                } else if let Some(button) = layout.button_at(x, y) {
+                } else if let Some(button) = self
+                    .geometry
+                    .as_ref()
+                    .map_or_else(|| layout.button_at(x, y), |g| g.button_at((x, y)))
+                {
                     out.extend(self.press_button(button));
                     Finger::Button(button)
                 } else if let Some(slot) = layout.hotbar_slot(x, y) {
                     out.push(Output::Hotbar(slot));
                     Finger::Hotbar
-                } else if layout.in_stick_zone(x, y)
-                    && !self
-                        .fingers
-                        .values()
-                        .any(|f| matches!(f, Finger::Stick { .. }))
+                } else if self.geometry.as_ref().map_or_else(
+                    || layout.in_stick_zone(x, y),
+                    |g| {
+                        g.stick.is_some_and(|r| {
+                            if g.moved_stick {
+                                crate::touch_layout::contains(r, (x, y))
+                            } else {
+                                layout.in_stick_zone(x, y)
+                            }
+                        })
+                    },
+                ) && !self
+                    .fingers
+                    .values()
+                    .any(|f| matches!(f, Finger::Stick { .. }))
                 {
                     Finger::Stick {
-                        origin: (x, y),
+                        origin: self
+                            .geometry
+                            .as_ref()
+                            .filter(|g| g.moved_stick)
+                            .and_then(|g| g.stick)
+                            .map_or((x, y), |r| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)),
                         at: (x, y),
                     }
                 } else {
@@ -521,6 +589,73 @@ mod tests {
         controls.touch(id, phase, p, &LAYOUT, true, now)
     }
 
+    #[test]
+    fn resolved_geometry_moves_buttons_and_hidden_controls_take_no_touches() {
+        let mut controls = TouchControls::default();
+        let mut geometry = Geometry {
+            buttons: [None; 8],
+            stick: None,
+            moved_stick: false,
+        };
+        geometry.buttons[0] = Some([100.0, 100.0, 32.0, 24.0]);
+        controls.configure(geometry);
+        let now = Instant::now();
+        assert_eq!(
+            at(&mut controls, 1, TouchPhase::Started, (110.0, 110.0), now),
+            [Output::Key(KeyCode::Space, true)]
+        );
+        assert_eq!(
+            at(&mut controls, 1, TouchPhase::Ended, (300.0, 110.0), now),
+            [Output::Key(KeyCode::Space, false)]
+        );
+        // Jump's default box is no longer active. A hidden stick never starts movement.
+        let r = LAYOUT.button(Button::Jump);
+        assert!(
+            at(
+                &mut controls,
+                2,
+                TouchPhase::Started,
+                (r[0] + 5.0, r[1] + 5.0),
+                now
+            )
+            .is_empty()
+        );
+        assert!(!controls.pressed(Button::Jump));
+        at(
+            &mut controls,
+            3,
+            TouchPhase::Started,
+            LAYOUT.stick_rest(),
+            now,
+        );
+        assert!(controls.stick().is_none());
+    }
+    #[test]
+    fn moved_stick_uses_its_new_centre_and_releases_movement() {
+        let mut controls = TouchControls::default();
+        controls.configure(Geometry {
+            buttons: [None; 8],
+            stick: Some([200.0, 80.0, 44.0, 44.0]),
+            moved_stick: true,
+        });
+        let now = Instant::now();
+        at(&mut controls, 1, TouchPhase::Started, (222.0, 102.0), now);
+        assert_eq!(controls.stick(), Some(((222.0, 102.0), (222.0, 102.0))));
+        let out = at(&mut controls, 1, TouchPhase::Moved, (222.0, 50.0), now);
+        assert!(out.contains(&Output::Key(KeyCode::KeyW, true)));
+        assert!(out.contains(&Output::Key(KeyCode::ControlLeft, true)));
+        let out = at(&mut controls, 1, TouchPhase::Ended, (222.0, 50.0), now);
+        assert!(out.contains(&Output::Key(KeyCode::KeyW, false)));
+        assert!(out.contains(&Output::Key(KeyCode::ControlLeft, false)));
+        at(
+            &mut controls,
+            2,
+            TouchPhase::Started,
+            LAYOUT.stick_rest(),
+            now,
+        );
+        assert!(controls.stick().is_none());
+    }
     #[test]
     fn top_row_and_inventory_follow_the_art_layout_and_main_arm() {
         for (button, rect) in [

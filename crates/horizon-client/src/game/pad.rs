@@ -18,7 +18,7 @@ use std::time::Instant;
 use winit::keyboard::KeyCode;
 
 pub(super) const HELP: &[&str] = &[
-    "pad BUTTON down|up|tap         a virtual controller button (south east west north lb rb lt rt select start ls rs up down left right)",
+    "pad BUTTON[+BUTTON] down|up|tap   a virtual controller button or atomic chord (south east west north lb rb lt rt select start ls rs up down left right)",
     "pad stick left|right X Y       tilt a virtual stick (-1..1, up positive); 0 0 centres it",
     "pad trigger left|right VALUE   pull a virtual trigger (0..1)",
     "pad release                    centre and release the virtual controller",
@@ -46,13 +46,11 @@ pub(super) struct Pads {
     activity: gamepad::Activity,
     context: Option<Context>,
     blocked_sticks: [bool; 2],
-    /// Releases use the action that received the press, even after a rebind.
-    actions: [Vec<&'static str>; 16],
-    /// The game tick each button went down in, and releases held back until
-    /// a tick has passed: vanilla samples keys once per tick, so a click
-    /// shorter than that (a quick stick click for sprint) would be lost.
-    pressed_at: [Option<u64>; 16],
-    late_releases: Vec<Button>,
+    resolver: gamepad::Resolver,
+    clock: Option<Instant>,
+    /// Dispatched holds, including quick taps kept until the next simulation tick.
+    held_actions: std::collections::BTreeMap<String, u64>,
+    late_releases: Vec<String>,
     /// The merged state of the last poll.
     pub(super) state: PadState,
     /// The hardware's buttons at the last poll, for `input-log`'s `pad`
@@ -261,7 +259,13 @@ impl Pads {
     /// A replay's pad button, in place of `pad`'s line.
     pub(super) fn inject_button(&mut self, button: Button, down: bool) {
         self.injected.set(button, down);
+        match button {
+            Button::LeftTrigger => self.injected.triggers[0] = if down { 1.0 } else { 0.0 },
+            Button::RightTrigger => self.injected.triggers[1] = if down { 1.0 } else { 0.0 },
+            _ => {}
+        }
     }
+
     /// Splitscreen: this player's pad state, from `source`. Another pad, or
     /// none: the old one's A going away isn't a release.
     pub(super) fn feed_from(&mut self, source: Option<PadId>, state: PadState) {
@@ -287,11 +291,9 @@ impl Pads {
         self.injected = PadState::default();
     }
 
-    /// Include releases delayed until the next simulation tick.
-    pub(super) fn holds_action(&self, settings: &gamepad::PadSettings, action: &str) -> bool {
-        settings.binding(action).is_some_and(|button| {
-            self.edges.is_held(button) || self.late_releases.contains(&button)
-        })
+    /// Resolved holds only: raw chord members must never leak into movement or key handoff.
+    pub(super) fn holds_action(&self, _settings: &gamepad::PadSettings, action: &str) -> bool {
+        self.held_actions.contains_key(action)
     }
 
     /// A new player entity took over (spawn, respawn, a server joined, a
@@ -387,7 +389,7 @@ impl Game<'_> {
             }
         }
         for button in std::mem::take(&mut self.pad.taps) {
-            self.pad.injected.set(button, false);
+            self.pad.inject_button(button, false);
         }
         let threshold = self.settings.controller.trigger_threshold;
         let edges = self.pad.edges.update(&state, threshold);
@@ -410,15 +412,48 @@ impl Game<'_> {
             self.pad_rumble(Rumble::Hurt(damage));
         }
         let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
-        for button in std::mem::take(&mut self.pad.late_releases) {
-            if !ticking || self.pad.pressed_at[button as usize] != Some(self.ticks) {
-                self.pad_button_logged(event_loop, button, false);
+        for action in std::mem::take(&mut self.pad.late_releases) {
+            if !ticking || self.pad.held_actions.get(&action) != Some(&self.ticks) {
+                if let Err(e) = self.pad_action(&action, false) {
+                    log::warn!("Horizon: releasing controller action {action}: {e}");
+                }
             } else {
-                self.pad.late_releases.push(button);
+                self.pad.late_releases.push(action);
             }
         }
+        // Gameplay edges are a batch so simultaneous overlapping chords use binding order.
+        if !self.pad_in_menu() && self.pad_focused() {
+            if !self.captured && self.focused && edges.iter().any(|(_, d)| *d) {
+                self.capture(true);
+            }
+            let start_bound = self
+                .pad_bindings()
+                .iter()
+                .any(|(_, b)| b.mask() & (1 << Button::Start as u32) != 0);
+            if !start_bound && edges.contains(&(Button::Start, true)) {
+                if let Err(e) = self.pad_back() {
+                    log::warn!("Horizon: controller pause: {e}");
+                }
+            } else {
+                let edges: Vec<_> = edges
+                    .into_iter()
+                    .filter(|(b, _)| *b != Button::Start || start_bound)
+                    .collect();
+                self.pad_resolve(&edges);
+            }
+            let changed = self
+                .pad
+                .context
+                .is_some_and(|old| old != self.pad_context());
+            if changed {
+                self.pad_cancel_inputs(event_loop);
+                self.pad.context = Some(self.pad_context());
+            }
+            self.pad_menu_frame(event_loop);
+            return;
+        }
         for (button, down) in edges {
-            self.pad_edge(event_loop, button, down);
+            self.pad_button_logged(event_loop, button, down);
             let context = self.pad_context();
             if let Some(old) = self.pad.context.filter(|old| *old != context) {
                 if old.screen != context.screen {
@@ -429,23 +464,74 @@ impl Game<'_> {
                 break;
             }
         }
+        if !self.pad_in_menu() && self.pad_focused() {
+            self.pad_resolve(&[]);
+        }
         self.pad_menu_frame(event_loop);
     }
 
-    fn pad_edge(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
-        let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
-        if down {
-            // Pressed again before its held-back release went out.
-            if let Some(i) = self.pad.late_releases.iter().position(|b| *b == button) {
-                self.pad.late_releases.remove(i);
-                self.pad_button_logged(event_loop, button, false);
+    fn pad_bindings(&self) -> Vec<(String, gamepad::Binding)> {
+        let mods = self.mod_pad_bindings();
+        self.settings
+            .controller
+            .configured()
+            .into_iter()
+            .filter(|(a, _)| !a.starts_with("mod.") || mods.iter().any(|m| m.action == *a))
+            .collect()
+    }
+    fn pad_resolve(&mut self, edges: &[(Button, bool)]) {
+        let bindings = self.pad_bindings();
+        let now = self.pad.clock.get_or_insert_with(Instant::now).elapsed();
+        let events = self.pad.resolver.advance(now, edges, &bindings);
+        let chord_members = events
+            .iter()
+            .filter(|(_, down)| *down)
+            .filter_map(|(a, _)| {
+                bindings.iter().find_map(|(name, b)| {
+                    (name == a && matches!(b, gamepad::Binding::Chord(_, _))).then_some(b.mask())
+                })
+            })
+            .fold(0, |mask, members| mask | members);
+        let member_single = |action: &str| {
+            bindings.iter().any(|(a, b)| {
+                a == action
+                    && matches!(b, gamepad::Binding::Single(_))
+                    && b.mask() & chord_members != 0
+            })
+        };
+        // A quick single tap may already await its simulation tick. A newly completed chord
+        // must release that hold too, even though the pure resolver already emitted its up.
+        for action in self.pad.late_releases.clone() {
+            if member_single(&action) {
+                self.pad.late_releases.retain(|a| a != &action);
+                if let Err(e) = self.pad_action(&action, false) {
+                    log::warn!("Horizon: releasing controller action {action}: {e}");
+                }
             }
-            self.pad.pressed_at[button as usize] = Some(self.ticks);
-        } else if ticking && self.pad.pressed_at[button as usize] == Some(self.ticks) {
-            self.pad.late_releases.push(button);
-            return;
         }
-        self.pad_button_logged(event_loop, button, down);
+        let context = self.pad_context();
+        for (action, down) in events {
+            if down && self.pad.late_releases.contains(&action) {
+                self.pad.late_releases.retain(|a| a != &action);
+                let _ = self.pad_action(&action, false);
+            }
+            let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
+            if !down
+                && !member_single(&action)
+                && !action.starts_with("mod.")
+                && ticking
+                && self.pad.held_actions.get(&action) == Some(&self.ticks)
+            {
+                if !self.pad.late_releases.contains(&action) {
+                    self.pad.late_releases.push(action);
+                }
+            } else if let Err(e) = self.pad_action(&action, down) {
+                log::warn!("Horizon: controller action {action}: {e}");
+            }
+            if self.pad_context() != context {
+                break;
+            }
+        }
     }
 
     /// End held actions and captures before another context receives input.
@@ -464,15 +550,11 @@ impl Game<'_> {
         self.pad.state.left = [0.0; 2];
         self.pad.state.right = [0.0; 2];
         self.pad.late_releases.clear();
-        for (button, down) in self.pad.edges.cancel() {
-            self.pad_button_logged(event_loop, button, down);
-        }
-        // A short tap may already be up in Edges but still await its simulation tick.
-        for button in Button::ALL {
-            for action in std::mem::take(&mut self.pad.actions[button as usize]) {
-                if let Err(e) = self.pad_action(action, false) {
-                    log::warn!("Horizon: releasing controller action {action}: {e}");
-                }
+        self.pad.edges.cancel();
+        self.pad.resolver.cancel();
+        for action in self.pad.held_actions.keys().cloned().collect::<Vec<_>>() {
+            if let Err(e) = self.pad_action(&action, false) {
+                log::warn!("Horizon: releasing controller action {action}: {e}");
             }
         }
         self.pad_cancel_menu(event_loop);
@@ -512,31 +594,33 @@ impl Game<'_> {
             self.capture(true);
         }
         if !playing {
-            self.pad_menu_button(event_loop, button, down)?;
-            if down {
-                return Ok(());
-            }
-        } else if button == Button::Start {
+            return self.pad_menu_button(event_loop, button, down);
+        }
+        // Start remains the ordinary pause shortcut unless explicitly used in a binding.
+        if button == Button::Start
+            && !self
+                .pad_bindings()
+                .iter()
+                .any(|(_, b)| b.mask() & (1 << Button::Start as u32) != 0)
+        {
             return if down { self.pad_back() } else { Ok(()) };
         }
-        // Releases always reach the mappings, so nothing stays held when a
-        // screen opened in between.
-        let actions = if down {
-            let actions = self.settings.controller.actions_of(button);
-            self.pad.actions[button as usize] = actions.clone();
-            actions
-        } else {
-            std::mem::take(&mut self.pad.actions[button as usize])
-        };
-        for action in actions {
-            self.pad_action(action, down)?;
-        }
+        self.pad_resolve(&[(button, down)]);
         Ok(())
     }
 
     /// A bound action: a vanilla mapping acts as its default key or mouse
     /// button, like a rebound keyboard key.
     fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
+        if down {
+            self.pad.held_actions.insert(action.to_owned(), self.ticks);
+        } else {
+            self.pad.held_actions.remove(action);
+        }
+        if action.starts_with("mod.") {
+            self.mod_pad_key(action, down);
+            return Ok(());
+        }
         let Some(route) = gamepad::route(action) else {
             log::warn!("Horizon: controller action {action} has no handler");
             return Ok(());
@@ -784,19 +868,24 @@ impl Game<'_> {
                 Ok(json!({ "ok": true }))
             }
             name => {
-                let button = Button::parse(name)
-                    .ok_or_else(|| format!("unknown pad button {name}; {}", HELP[0]))?;
-                match arg(2)? {
-                    "down" => self.pad.injected.set(button, true),
-                    "up" => self.pad.injected.set(button, false),
-                    "tap" => {
-                        self.pad.injected.set(button, true);
-                        self.pad.taps.push(button);
-                    }
+                let binding = gamepad::Binding::parse(name)
+                    .ok_or_else(|| format!("unknown pad button or chord {name}; {}", HELP[0]))?;
+                let down = match arg(2)? {
+                    "down" | "tap" => true,
+                    "up" => false,
                     other => {
                         return Err(
                             format!("pad action must be down, up or tap, not {other}").into()
                         );
+                    }
+                };
+                for button in Button::ALL {
+                    if binding.mask() & (1 << button as u32) == 0 {
+                        continue;
+                    }
+                    self.pad.inject_button(button, down);
+                    if arg(2)? == "tap" {
+                        self.pad.taps.push(button);
                     }
                 }
                 Ok(json!({ "ok": true }))

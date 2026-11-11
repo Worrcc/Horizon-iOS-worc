@@ -198,6 +198,26 @@ LiveContainer's Info.plist that counts, so the game may stay at 60 there.
 | **T**, **F5**, **\|\|** | Chat, change perspective, pause. |
 | Hotbar | Tap a slot to select it. |
 | Menus | Tap to click. Swipe to scroll. Press and hold, then drag, to move stacks, sliders and scroll bars. **Back** (top right) is Esc; **Aa** (top left) shows the keyboard for text fields. Chat, signs and command blocks open it by themselves. |
+| Mod canvas screens | One finger presses immediately and drags; lift to release. Two fingers pinch to zoom: spreading sends positive scroll steps at their midpoint (one step per 24 GUI pixels). The second finger releases the drag; lift both before starting another. **Back** and **Aa** still work. |
+| Mod HUD canvas boxes | A mod can opt in with API level 21 `canvas.set-box-key`: touch its box to hold its registered key, lift to release. The touch is consumed; game and mod touch buttons take priority where they overlap. |
+
+Every mod key without its own touch button gets a 20 × 20 slot button under the
+right-hand top row, in mod/key registration order. Columns wrap left before the
+lower game buttons, avoiding existing controls. Labels use the first four letters
+of one word or up to four initials; duplicates within a mod get numbered.
+
+Open **Options > Controls > Edit Touch Layout...**, or the same button in
+**Options > Mods**. Tap a control to select it; drag to move it in two-GUI-pixel
+steps, clamped on screen. This includes the joystick, all game buttons, and mods'
+explicit and automatic buttons. **Hide/Show**, **Reset**, **Reset All**, and **Done**
+are centred below the title, with the selected name underneath. The toolbar takes
+touch priority; dragged controls stay below it so they remain reachable. Hidden
+buttons stay faint in the editor; pause cannot be hidden. A moved joystick uses its
+saved centre; Reset restores its floating zone.
+The instance's `horizon-touch.txt`, beside `options.txt`, stores JSON-quoted ids
+(`game.jump`, `game.stick`, `mod.<modid>.<key name>`), top-left x/y fractions of the
+whole screen, and hidden true/false, separated by tabs. These overrides survive
+rotation and win over a mod's position; Reset returns to the current default.
 
 **Controllers**: Xbox, PlayStation (DualShock 4, DualSense), Switch Pro and MFi pads work
 through Apple's GameController framework, with the same bindings as Horizon on desktop
@@ -207,6 +227,18 @@ moves a pointer, A clicks and B goes back. The touch controls hide while you pla
 Vibration plays through Core Haptics. A DualSense's adaptive triggers resist as a bow draws,
 click for a loaded crossbow and buzz while mining, and its lightbar (a DualShock 4's too)
 follows your health or dimension. Each can be turned off in Controller Settings.
+
+Controller Settings > **Bindings** supports one button or two held together for
+every game action and registered mod key (**Mods** section, unbound by default).
+Select a row, press and release one button, or hold it and press a second to capture
+**Y + A**. **Remove** makes it **Not bound**; **Reset** restores its default.
+Only members of a configured combination wait 50 ms for their single action;
+a quick release taps it immediately. Pressing the second while holding the first
+starts the combination and suppresses both singles until the buttons lift.
+Bindings persist per instance in `horizon-controller.txt`: for example
+`bind_key.jump:north+south` or `bind_key.jump:none`. Old single-button files still load.
+Mod keyboard, touch and controller holds work independently. Menu buttons keep their
+usual navigation roles; Start pauses in play unless explicitly bound there.
 
 **Keyboards**: an iPad's Magic Keyboard or a Bluetooth keyboard works as on desktop (WASD,
 E, Esc, F3 and so on).

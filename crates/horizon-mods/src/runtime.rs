@@ -367,6 +367,11 @@ pub enum Output {
         name: String,
         text: String,
     },
+    /// `chat.open`: prefill chat for the player; no message or command is sent.
+    OpenChat {
+        owner: usize,
+        text: String,
+    },
     /// A mod command's feedback, red when `error`.
     Feedback {
         text: String,
@@ -700,6 +705,8 @@ struct UiState {
     /// The calls since the last hook ended, for [`Output`].
     open: bool,
     close: bool,
+    /// The last chat prefill in this hook, applied after its screen changes.
+    chat: Option<String>,
 }
 
 impl UiState {
@@ -710,6 +717,9 @@ impl UiState {
         }
         if std::mem::take(&mut self.close) {
             out.push(Output::CloseScreen { owner });
+        }
+        if let Some(text) = self.chat.take() {
+            out.push(Output::OpenChat { owner, text });
         }
     }
 }
@@ -914,11 +924,39 @@ impl Mods {
     }
     pub fn touch_key(&mut self, owner: usize, name: &str, pressed: bool) {
         if let Some(r) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
-            let input = &mut r.store.data_mut().input;
-            if !pressed || input.touch_buttons.iter().any(|(n, _)| n == name) {
+            let state = r.store.data_mut();
+            let input = &mut state.input;
+            if !pressed
+                || input.touch_buttons.iter().any(|(n, _)| n == name)
+                || state.canvas.box_key.as_deref() == Some(name)
+            {
                 input.touch_key(name, pressed);
             }
         }
+    }
+    /// A resolved automatic/explicit touch button holds a registered key.
+    pub fn registered_touch_key(&mut self, owner: usize, name: &str, pressed: bool) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            let input = &mut run.store.data_mut().input;
+            if !pressed || input.keys.iter().any(|k| k.name == name) {
+                input.touch_key(name, pressed);
+            }
+        }
+    }
+    /// A user-bound controller action for a registered key. Independent of keyboard and touch.
+    pub fn controller_key(&mut self, owner: usize, name: &str, pressed: bool) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            let input = &mut run.store.data_mut().input;
+            if input.keys.iter().any(|k| k.name == name) {
+                input.controller_key(name, pressed);
+            }
+        }
+    }
+    pub fn touch_key_down(&self, owner: usize, name: &str) -> bool {
+        self.entries
+            .get(owner)
+            .and_then(|e| e.run.as_ref())
+            .is_some_and(|r| r.store.data().input.touch_down.iter().any(|n| n == name))
     }
     /// Changes whenever the running mods (so their commands) change.
     pub fn generation(&self) -> u64 {
@@ -1860,7 +1898,7 @@ impl Mods {
                     }
                 } else {
                     input.physical_down.retain(|n| n != &name);
-                    if input.touch_down.contains(&name) {
+                    if input.touch_down.contains(&name) || input.controller_down.contains(&name) {
                         continue;
                     }
                 }
@@ -1888,6 +1926,7 @@ impl Mods {
         for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
             let input = &mut run.store.data_mut().input;
             input.touch_down.clear();
+            input.controller_down.clear();
             input.physical_down.clear();
             for name in std::mem::take(&mut input.down) {
                 input.push(InputEvent::KeyUp(name));
@@ -2450,6 +2489,9 @@ impl chat::Host for State {
             name,
             text: clip(text),
         });
+    }
+    fn open(&mut self, text: String) {
+        self.ui.chat = Some(clip_to(text, 256));
     }
 }
 impl mod_world::Host for State {
@@ -3380,6 +3422,7 @@ struct InputState {
     touch_buttons: Vec<(String, TouchButton)>,
     touch_down: Vec<String>,
     physical_down: Vec<String>,
+    controller_down: Vec<String>,
 }
 /// Events kept for `poll`, items claimed and keys, per mod.
 const INPUT_EVENTS: usize = 256;
@@ -3400,6 +3443,33 @@ fn key_ok(key: &str) -> bool {
 }
 
 impl InputState {
+    fn controller_key(&mut self, name: &str, pressed: bool) {
+        let was = self.controller_down.iter().any(|n| n == name);
+        if was == pressed {
+            return;
+        }
+        if pressed {
+            self.controller_down.push(name.to_owned());
+            if !self.down.iter().any(|n| n == name) {
+                self.down.push(name.to_owned());
+                self.push(InputEvent::KeyDown(name.to_owned()));
+            }
+        } else {
+            self.controller_down.retain(|n| n != name);
+            if self
+                .physical_down
+                .iter()
+                .chain(&self.touch_down)
+                .any(|n| n == name)
+            {
+                return;
+            }
+            if let Some(i) = self.down.iter().position(|n| n == name) {
+                let name = self.down.remove(i);
+                self.push(InputEvent::KeyUp(name));
+            }
+        }
+    }
     fn touch_key(&mut self, name: &str, pressed: bool) {
         let was = self.touch_down.iter().any(|n| n == name);
         if was == pressed {
@@ -3413,7 +3483,12 @@ impl InputState {
             }
         } else {
             self.touch_down.retain(|n| n != name);
-            if self.physical_down.iter().any(|n| n == name) {
+            if self
+                .physical_down
+                .iter()
+                .chain(&self.controller_down)
+                .any(|n| n == name)
+            {
                 return;
             }
             if let Some(i) = self.down.iter().position(|n| n == name) {
@@ -3429,6 +3504,7 @@ impl InputState {
         };
         k.key = key;
         self.touch_down.retain(|n| n != name);
+        self.controller_down.retain(|n| n != name);
         self.physical_down.retain(|n| n != name);
         if let Some(i) = self.down.iter().position(|n| n == name) {
             let name = self.down.swap_remove(i);
@@ -3861,6 +3937,29 @@ mod entity_tests {
     }
 
     #[test]
+    fn chat_prefill_is_bounded_and_drained_after_screen_requests() {
+        let mut s = state();
+        chat::Host::open(&mut s, "first".into());
+        chat::Host::open(&mut s, "é".repeat(257));
+        assert!(s.out.is_empty());
+        s.ui.open = true;
+        s.ui.drain(7, &mut s.out);
+        assert_eq!(
+            s.out,
+            [
+                Output::OpenScreen { owner: 7 },
+                Output::OpenChat {
+                    owner: 7,
+                    text: "é".repeat(256)
+                }
+            ]
+        );
+        s.out.clear();
+        s.ui.drain(7, &mut s.out);
+        assert!(s.out.is_empty());
+    }
+
+    #[test]
     fn entity_raycast_respects_distance_blocks_and_live_snapshot() {
         let mut s = state();
         assert!(game::Host::raycast_entity(&mut s, 64.0).is_none());
@@ -3939,9 +4038,18 @@ mod entity_tests {
 
     #[test]
     fn pre_level_20_components_still_link() {
+        older_components_still_link(20);
+    }
+
+    #[test]
+    fn pre_level_21_components_still_link() {
+        older_components_still_link(21);
+    }
+
+    fn older_components_still_link(level: u32) {
         use wit_parser::{ManglingAndAbi, Resolve};
         for (world_name, wanted) in [
-            ("render-host", &["input", "render"][..]),
+            ("render-host", &["input", "render", "canvas"][..]),
             ("world-read-host", &["client-world"][..]),
             ("horizon-mod", &["command"][..]),
             ("horizon-server-mod", &["world"][..]),
@@ -3956,7 +4064,8 @@ mod entity_tests {
             for (_, interface) in resolve.interfaces.iter_mut() {
                 let prefix = interface.name.clone().unwrap_or_default();
                 interface.functions.retain(|name, _| {
-                    crate::api_level::level_of(&format!("{prefix}.{name}")).is_none_or(|l| l < 20)
+                    crate::api_level::level_of(&format!("{prefix}.{name}"))
+                        .is_none_or(|l| l < level)
                 });
             }
             let world = resolve.select_world(&[package], Some(world_name)).unwrap();
@@ -3984,7 +4093,7 @@ mod entity_tests {
                         .iter()
                         .map(String::as_str)
                 )
-                .0 <= 19
+                .0 < level
             );
             let mut mods = Mods::default();
             let (engine, linker) = mods.engine().unwrap();
@@ -4225,6 +4334,7 @@ mod entity_tests {
                             | "open-canvas-screen"
                             | "set-canvas-screen"
                             | "close-canvas-screen"
+                            | "set-box-key"
                     )
                 });
             }

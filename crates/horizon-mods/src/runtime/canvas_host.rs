@@ -313,6 +313,7 @@ pub(super) struct CanvasState {
     /// RGBA bytes `update-image` took since the game last took the uploads.
     uploaded: usize,
     pub(super) panel: Option<CanvasPanel>,
+    pub(super) box_key: Option<String>,
     pub(super) screen: Option<CanvasScreen>,
     pub(super) budget: Budget,
     pub(super) work: Work,
@@ -335,6 +336,7 @@ impl CanvasState {
             texels: 0,
             uploaded: 0,
             panel: None,
+            box_key: None,
             screen: None,
             budget: Budget::default(),
             work: Work::default(),
@@ -420,6 +422,15 @@ fn clip_canvas(shapes: Vec<CanvasShape>, limit: usize) -> Vec<CanvasShape> {
 }
 
 impl canvas::Host for State {
+    fn set_box_key(&mut self, name: Option<String>) -> Result<(), String> {
+        if let Some(name) = &name
+            && !self.input.keys.iter().any(|k| &k.name == name)
+        {
+            return Err(format!("no registered key {name}"));
+        }
+        self.canvas.box_key = name;
+        Ok(())
+    }
     fn create_image(&mut self, width: u32, height: u32) -> Result<ImageId, String> {
         let c = &mut self.canvas;
         let side = 1..=IMAGE_SIDE;
@@ -593,6 +604,18 @@ impl State {
 }
 
 impl Mods {
+    /// The registered key activated by touching this running mod's HUD box.
+    pub fn canvas_box_key(&self, owner: usize) -> Option<&str> {
+        self.entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .canvas
+            .box_key
+            .as_deref()
+    }
     /// The running mods' canvas boxes, in load order, with the mod's index.
     pub fn canvas_panels(&self) -> impl Iterator<Item = (usize, &CanvasPanel)> {
         self.entries.iter().enumerate().filter_map(|(i, e)| {

@@ -7,13 +7,15 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 20;
+pub const LEVEL: u32 = 21;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 120] = [
+pub const FUNCTIONS: [(&str, u32); 122] = [
+    ("chat.open", 21),
+    ("canvas.set-box-key", 21),
     ("command.run-mod-quiet", 20),
     ("client-world.block-at", 20),
     ("render.set-world-lines", 20),

@@ -76,6 +76,7 @@ impl Game<'_> {
         }
         log::info!("Horizon: playing instance {id} ({})", folder.display());
         self.settings = super::Settings::load(&Self::options_path());
+        self.touch = super::touch::TouchInput::load(&Self::options_path());
         self.apply_settings();
         let mut title =
             horizon_client::title::Title::new(folder.join("saves"), &self.options.resources);

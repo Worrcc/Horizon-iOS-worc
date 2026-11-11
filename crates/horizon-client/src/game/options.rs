@@ -118,6 +118,8 @@ impl Game<'_> {
         self.open_options_at(from_title, Page::Main);
     }
     pub(super) fn open_options_at(&mut self, from_title: bool, page: Page) {
+        self.cancel_touch_editor_pointer();
+        self.touch.editor_closed_by_options();
         // Gameplay keys must not stay held behind the options screen, where
         // bindings can also change before the physical key is released.
         self.keys.clear();
@@ -173,11 +175,17 @@ impl Game<'_> {
         }
     }
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
+        if self.touch_editor_open() {
+            self.draw_touch_editor(batch);
+            return;
+        }
+        self.ui.options.touch_available = super::touch::enabled();
         self.watch_pack_folder();
         let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
         if ui.controller_open() {
             ui.controller.context = context;
+            ui.controller.set_mod_bindings(self.mod_pad_bindings());
         }
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
@@ -235,6 +243,13 @@ impl Game<'_> {
         }
     }
     pub(super) fn options_mouse(&mut self, pressed: bool, right: bool) -> Result<()> {
+        if self.touch_editor_open() {
+            if !right {
+                self.dragging = pressed;
+                self.touch_editor_pointer(pressed);
+            }
+            return Ok(());
+        }
         if !pressed {
             if right {
                 return Ok(());
@@ -266,6 +281,10 @@ impl Game<'_> {
         self.handle_option_events(events)
     }
     pub(super) fn options_drag(&mut self) -> Result<()> {
+        if self.touch_editor_open() {
+            self.touch_editor_drag();
+            return Ok(());
+        }
         let size = self.gui_size();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
             [r.config.width as i32, r.config.height as i32]
@@ -285,6 +304,12 @@ impl Game<'_> {
         self.handle_option_events(events)
     }
     pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+        if self.touch_editor_open() {
+            if key == KeyCode::Escape {
+                self.close_touch_editor();
+            }
+            return Ok(());
+        }
         let size = self.gui_size();
         let shift = self.has_shift_down();
         let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
@@ -307,6 +332,9 @@ impl Game<'_> {
             .shortcut(&self.gui.atlas, shortcut, &mut self.clipboard)
     }
     pub(super) fn options_scroll(&mut self, amount: f32) -> Result<()> {
+        if self.touch_editor_open() {
+            return Ok(());
+        }
         if self.pad_stick_scroll() {
             let size = self.gui_size();
             self.ui
@@ -342,6 +370,7 @@ impl Game<'_> {
     pub(super) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> {
         for e in events {
             match e {
+                Event::TouchLayout => self.open_touch_editor()?,
                 Event::ButtonClick => self.audio.play_button_click(),
                 Event::Changed => {
                     self.settings.save(&Self::options_path());

@@ -67,7 +67,7 @@ once per loop iteration next to winit's events.
 | Chat | D-pad right | D-pad right | `key.chat` |
 | Advancements | D-pad down | D-pad down | `key.advancements` |
 | Player list (hold) | View | Create / Share | `key.playerlist` |
-| Pause / back | Menu | Options | Escape (fixed) |
+| Pause / back | Menu | Options | Escape (unless explicitly bound during play) |
 
 The Guide / PS / Steam button is left to the system. Sneak on a stick click
 toggles by default (holding a stick in while steering the camera is
@@ -85,6 +85,30 @@ places). `nintendoLetters:true|false` in `horizon-controller.txt`
 picks one; by places unless it says otherwise (a build for the Switch itself
 goes by letters). Bindings name the part, so a rebinding means the same on
 either.
+
+## Single buttons, combinations and removing bindings
+
+In **Controller Settings > Bindings**, select any game or mod-key row, then press
+and release one button, or hold it and press another to capture a combination.
+The label preserves that order, e.g. **Y + A**; matching works in either order.
+**Remove** clears the binding (**Not bound**), **Reset** restores its default.
+Mod keys appear under **Mods**, as **<Mod name>: <label>**, unbound by default.
+Escape during capture removes the binding; a click cancels capture.
+
+Only buttons in a configured combination wait 50 ms before their single action
+fires. Releasing within that window sends a tap immediately. A second member
+pressed within the window or while the first remains held starts the combination,
+releasing any active member singles. It ends when either member lifts; member singles stay suppressed until they lift.
+A held member can complete another combination with a fresh second press, including
+while the first combination remains active. Duplicate bindings can drive several actions. Menu navigation stays fixed.
+Start pauses in play unless explicitly used in a binding.
+
+The instance's `horizon-controller.txt` retains old `bind_key.jump:south` settings.
+Combinations use `bind_key.jump:north+south`; removal uses `bind_key.jump:none`.
+Mod ids use `bind_mod.<modid>.<key-name UTF-8 as lowercase hex>:north+south`.
+Default bindings are omitted. Bindings for absent mods persist but do not delay input.
+`horizon-ctl pad north+south down|up|tap` injects both buttons atomically;
+separate `pad north down`, then `pad south down` exercises hold-then-press.
 
 ## Menus and inventories
 

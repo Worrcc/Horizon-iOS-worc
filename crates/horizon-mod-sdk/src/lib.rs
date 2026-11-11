@@ -38,6 +38,9 @@
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
+//! API level 21: [`canvas::set_box_key`] makes a touch on the HUD box hold a registered mod key.
+//! [`chat::open`] prefills the player's chat box without sending anything; touch chat opens
+//! the on-screen keyboard. A leading `/` prefills a command.
 
 wit_bindgen::generate!({
     path: "wit",

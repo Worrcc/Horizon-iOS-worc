@@ -11,7 +11,7 @@ use horizon_mod_sdk::{
     Mod, PointerKind, Registration,
     canvas::{self, ImageShape, Shape},
     client_world::{self, Layer},
-    game,
+    game, input,
     render::{Corner, FillShape, Rect},
 };
 
@@ -31,12 +31,15 @@ fn nums(args: &str) -> Vec<u32> {
 
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
+        input::register_key("box", "Canvas box", "key.keyboard.m")?;
         let hooks = [
             "image",
             "update",
             "update_short",
             "drop",
             "box",
+            "box_key",
+            "box_poll",
             "placed",
             "clear",
             "screen",
@@ -110,6 +113,19 @@ impl Mod for Guest {
         let n = nums(args);
         let at = |i: usize| n.get(i).copied().unwrap_or(0);
         Ok(Some(match name {
+            "box_key" => {
+                canvas::set_box_key((args.trim() != "none").then(|| args.trim()))?;
+                "box key set".into()
+            }
+            "box_poll" => input::poll()
+                .into_iter()
+                .filter_map(|event| match event {
+                    input::Event::KeyDown(name) => Some(format!("down {name}")),
+                    input::Event::KeyUp(name) => Some(format!("up {name}")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(";"),
             "block_at" => format!(
                 "{:?}",
                 client_world::block_at(at(0) as i32, at(1) as i32, at(2) as i32)

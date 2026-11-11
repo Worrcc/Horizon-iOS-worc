@@ -598,6 +598,22 @@ impl Game<'_> {
         button: Button,
         down: bool,
     ) -> Result<()> {
+        // Capture sees both edges before ordinary menu navigation. A single commits on release;
+        // a second press while held commits the chord. Neither release clicks a menu widget.
+        if self.screen == Screen::Options
+            && self.ui.options.controller_open()
+            && self.ui.options.selected_pad_action.is_some()
+        {
+            self.pad.menu.armed = None;
+            if let Some(binding) = self.ui.options.pad_capture.edge(button, down) {
+                let action = self.ui.options.selected_pad_action.take().unwrap();
+                self.settings
+                    .controller
+                    .bind_combination(&action, Some(binding));
+                return self.handle_option_events(vec![Event::Changed]);
+            }
+            return Ok(());
+        }
         if !down {
             match button {
                 Button::South if self.pad.menu.armed.is_some() => {
@@ -619,16 +635,6 @@ impl Game<'_> {
         }
         // The pad takes the focus back from the keyboard.
         self.pad.menu.keyboard = false;
-        // Controller Binds waiting for a button: this one (Start cancels).
-        if self.screen == Screen::Options
-            && self.ui.options.controller_open()
-            && let Some(action) = self.ui.options.selected_pad_action.take()
-        {
-            if button != Button::Start {
-                self.settings.controller.bind(action, Some(button));
-            }
-            return self.handle_option_events(vec![Event::Changed]);
-        }
         // Splitscreen Setup: A picks up the focused player's tile, then left/right (or LB/RB)
         // cycle where it goes, A drops it, B puts it back (`split_ui`).
         if self.screen == Screen::Options && self.ui.options.page() == Page::SplitSetup {

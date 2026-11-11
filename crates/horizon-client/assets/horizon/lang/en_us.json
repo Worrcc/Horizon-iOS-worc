@@ -805,5 +805,19 @@
   "horizon.modpack.restart": "Turn them on, then restart the game to finish loading the modpack.",
   "horizon.modpack.enable": "Turn All On",
   "horizon.modpack.error": "Import failed: %s",
-  "horizon.modpack.skipped": "%s: %s"
+  "horizon.modpack.skipped": "%s: %s",
+  "horizon.touch.edit": "Edit Touch Layout...",
+  "horizon.touch.edit_title": "Edit Touch Layout",
+  "horizon.touch.stick": "Move",
+  "horizon.touch.mod_name": "%s: %s",
+  "horizon.touch.hide": "Hide",
+  "horizon.touch.show": "Show",
+  "horizon.touch.select": "Tap a button to select it; drag to move it.",
+  "horizon.controller.not_bound": "Not bound",
+  "horizon.controller.remove": "Remove",
+  "horizon.controller.mods": "Mods",
+  "horizon.controller.bind_help": "Press this row, then a button. Hold it and press another to bind a combination.",
+  "horizon.controller.capture_help": "Press and release one button, or hold it and press a second. Escape removes the binding; a click cancels.",
+  "horizon.controller.conflict": "This combination is also bound to another action.",
+  "horizon.touch.reset_all": "Reset All"
 }

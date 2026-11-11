@@ -147,6 +147,7 @@ pub mod ticket_levels;
 pub mod title;
 pub mod toasts;
 pub mod touch_controls;
+pub mod touch_layout;
 pub mod ui_theme;
 pub mod vanillagen;
 pub mod voxel_occlusion;

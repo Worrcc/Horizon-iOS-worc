@@ -34,8 +34,8 @@ id = "test_canvas_guest"
 name = "Test Canvas Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "ui", "render", "world-read"]
-experimental = ["ui", "render", "world-read"]
+capabilities = ["game-read", "ui", "render", "world-read", "input"]
+experimental = ["ui", "render", "world-read", "input"]
 "#;
 
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
@@ -124,6 +124,25 @@ experimental = ["players", "world"]
             let core = std::fs::read(built.join(format!("{name}.wasm"))).unwrap();
             let hmod = Package::write(&manifest, &componentize(&core).unwrap()).unwrap();
             std::fs::write(dir.join(format!("{name}.hmod")), hmod).unwrap();
+            if name == "horizon_mods_test_guest" {
+                // This guest never calls chat.open: reproduce the pre-21 chat import contract.
+                let (stripped, mut metadata) = wit_component::metadata::decode(&core).unwrap();
+                for (_, interface) in metadata.resolve.interfaces.iter_mut() {
+                    if interface.name.as_deref() == Some("chat") {
+                        interface.functions.shift_remove("open");
+                    }
+                }
+                let mut legacy = stripped.unwrap();
+                wit_component::embed_component_metadata(
+                    &mut legacy,
+                    &metadata.resolve,
+                    metadata.world,
+                    wit_component::StringEncoding::UTF8,
+                )
+                .unwrap();
+                let hmod = Package::write(&manifest, &componentize(&legacy).unwrap()).unwrap();
+                std::fs::write(dir.join("legacy_chat.hmod"), hmod).unwrap();
+            }
             if name == "horizon_mods_test_api20_server_guest" {
                 let other = manifest
                     .replace("test_api20_server", "test_api20_other")
@@ -344,8 +363,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest uses API 20 world lines and touch buttons.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 20);
+    // The UI guest also imports the API 21 chat prefill.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 21);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -2443,4 +2462,149 @@ fn quiet_server_mod_hooks_keep_operations_but_drop_success_and_failure_feedback(
             .iter()
             .any(|o| matches!(o, Output::Reply { error: true, .. }))
     );
+}
+
+#[test]
+fn api21_canvas_box_key_validates_clears_and_delivers_registered_key() {
+    fn reply(mods: &mut Mods, line: &str) -> Result<String, String> {
+        assert!(mods.command(line));
+        mods.drain()
+            .into_iter()
+            .find_map(|out| match out {
+                Output::Feedback { text, error } => Some(if error { Err(text) } else { Ok(text) }),
+                _ => None,
+            })
+            .expect("command feedback")
+    }
+    let mut mods = load("horizon_mods_test_canvas_guest.hmod");
+    assert_eq!(mods.canvas_box_key(0), None);
+    assert!(
+        reply(&mut mods, "box_key missing")
+            .unwrap_err()
+            .contains("no registered key missing")
+    );
+    assert_eq!(
+        reply(&mut mods, "box_key box").as_deref(),
+        Ok("box key set")
+    );
+    assert_eq!(mods.canvas_box_key(0), Some("box"));
+    assert!(reply(&mut mods, "box_key missing").is_err());
+    assert_eq!(mods.canvas_box_key(0), Some("box"));
+    mods.touch_key(0, "box", true);
+    mods.touch_key(0, "box", false);
+    assert_eq!(
+        reply(&mut mods, "box_poll").as_deref(),
+        Ok("down box;up box")
+    );
+    assert_eq!(
+        reply(&mut mods, "box_key none").as_deref(),
+        Ok("box key set")
+    );
+    assert_eq!(mods.canvas_box_key(0), None);
+    mods.touch_key(0, "box", true);
+    mods.touch_key(0, "box", false);
+    assert_eq!(reply(&mut mods, "box_poll").as_deref(), Ok(""));
+    // The game's automatic button can use this registered key with neither an
+    // explicit touch button nor a canvas binding. Physical input still shares the hold.
+    mods.registered_touch_key(0, "box", true);
+    assert!(mods.touch_key_down(0, "box"));
+    mods.key("key.keyboard.m", true);
+    mods.registered_touch_key(0, "box", false);
+    assert_eq!(
+        reply(&mut mods, "box_poll").as_deref(),
+        Ok("down box;down box")
+    );
+    mods.key("key.keyboard.m", false);
+    assert_eq!(reply(&mut mods, "box_poll").as_deref(), Ok("up box"));
+    mods.registered_touch_key(0, "missing", true);
+    assert!(!mods.touch_key_down(0, "missing"));
+    assert_eq!(reply(&mut mods, "box_poll").as_deref(), Ok(""));
+}
+
+#[test]
+fn controller_registered_key_events_merge_with_touch_keyboard_and_menu_release() {
+    fn poll(mods: &mut Mods) -> String {
+        assert!(mods.command("box_poll"));
+        mods.drain()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Feedback { text, error: false } => Some(text),
+                _ => None,
+            })
+            .unwrap()
+    }
+    let mut mods = load("horizon_mods_test_canvas_guest.hmod");
+    mods.controller_key(0, "missing", true);
+    assert_eq!(poll(&mut mods), "");
+    mods.controller_key(0, "box", true);
+    mods.controller_key(0, "box", true);
+    assert_eq!(poll(&mut mods), "down box");
+    mods.registered_touch_key(0, "box", true);
+    mods.controller_key(0, "box", false);
+    assert_eq!(poll(&mut mods), "");
+    mods.registered_touch_key(0, "box", false);
+    assert_eq!(poll(&mut mods), "up box");
+    mods.key("key.keyboard.m", true);
+    mods.controller_key(0, "box", true);
+    mods.key("key.keyboard.m", false);
+    assert_eq!(poll(&mut mods), "down box");
+    mods.controller_key(0, "box", false);
+    assert_eq!(poll(&mut mods), "up box");
+    mods.controller_key(0, "box", true);
+    mods.release_keys();
+    mods.controller_key(0, "box", false);
+    assert_eq!(poll(&mut mods), "down box;up box");
+    mods.controller_key(0, "box", true);
+    mods.controller_key(0, "box", false);
+    assert_eq!(poll(&mut mods), "down box;up box");
+}
+
+#[test]
+fn api21_chat_open_queues_only_a_capped_prefill_and_legacy_chat_still_links() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.command("ui_screen"));
+    assert_eq!(mods.drain(), [Output::OpenScreen { owner: 0 }]);
+    assert!(mods.command("chat_open /waypoint rename Home"));
+    assert_eq!(
+        mods.drain(),
+        [Output::OpenChat {
+            owner: 0,
+            text: "/waypoint rename Home".into()
+        }]
+    );
+    assert!(
+        mods.drain().is_empty(),
+        "draining consumes the request; nothing was sent"
+    );
+    let text = format!("{}tail", "é".repeat(256));
+    assert!(mods.command(&format!("chat_open {text}")));
+    assert_eq!(
+        mods.drain(),
+        [Output::OpenChat {
+            owner: 0,
+            text: "é".repeat(256)
+        }]
+    );
+    assert!(mods.command("chat_open"));
+    assert_eq!(
+        mods.drain(),
+        [Output::OpenChat {
+            owner: 0,
+            text: String::new()
+        }]
+    );
+    let mut legacy = load("legacy_chat.hmod");
+    assert_eq!(legacy.entries()[0].status, Status::Running);
+    assert!(legacy.command("hello old chat"));
+    assert_eq!(
+        legacy.drain(),
+        [Output::Chat {
+            name: "Test Guest".into(),
+            text: "hello old chat after 0 ticks".into()
+        }]
+    );
+    let package = Package::read(&mods_dir().join("legacy_chat.hmod")).unwrap();
+    let functions = horizon_mods::api_level::imports(package.wasm.as_ref().unwrap()).unwrap();
+    assert!(functions.iter().any(|f| f == "chat.show"));
+    assert!(!functions.iter().any(|f| f == "chat.open"));
 }
