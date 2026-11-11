@@ -99,6 +99,9 @@ pub struct Clicks {
     /// `isQuickCrafting` with `quickCraftingButton`.
     quick_crafting: Option<Button>,
     skip_next_release: bool,
+    pressed: Option<Button>,
+    taken: Option<Button>,
+    shift_latch: bool,
 }
 
 /// What a release does.
@@ -112,6 +115,35 @@ pub enum Release {
 }
 
 impl Clicks {
+    /// Record a press before calling mods, so take_drag also works in pointer(down).
+    pub fn pointer_down(&mut self, button: Button) {
+        if self.pressed != Some(button) {
+            self.taken = None;
+            self.pressed = Some(button);
+        }
+    }
+
+    /// Stop vanilla quick craft without sending it and swallow this press's release.
+    pub fn take_drag(&mut self) {
+        if let Some(button) = self.pressed {
+            self.quick_crafting = None;
+            self.taken = Some(button);
+            self.skip_next_release = true;
+        }
+    }
+
+    pub fn drag_taken(&self) -> bool {
+        self.taken.is_some()
+    }
+
+    /// The host ORs every running mod's latch; it survives screen changes.
+    pub fn set_shift_latch(&mut self, on: bool) {
+        self.shift_latch = on;
+    }
+    pub fn shift_down(&self, physical: bool) -> bool {
+        physical || self.shift_latch
+    }
+
     /// A quick craft drag in progress, and the button that started it.
     pub fn quick_crafting(&self) -> Option<Button> {
         self.quick_crafting
@@ -134,6 +166,8 @@ impl Clicks {
     pub fn cancel_drag(&mut self) {
         self.quick_crafting = None;
         self.skip_next_release = false;
+        self.pressed = None;
+        self.taken = None;
     }
 
     /// `mouseClicked` (no double click): the `slotClicked` input it sends on
@@ -147,6 +181,11 @@ impl Clicks {
         shift: bool,
         cloning: bool,
     ) -> Option<Input> {
+        self.pointer_down(button);
+        if self.taken == Some(button) {
+            return None;
+        }
+        let shift = self.shift_down(shift);
         self.skip_next_release = false;
         if button == Button::Middle && !cloning {
             return None;
@@ -182,6 +221,13 @@ impl Clicks {
         shift: bool,
         pick_item: bool,
     ) -> Release {
+        let shift = self.shift_down(shift);
+        if self.pressed == Some(button) {
+            self.pressed = None;
+        }
+        if self.taken == Some(button) {
+            self.taken = None;
+        }
         if self.quick_crafting.is_some_and(|b| b != button) {
             self.quick_crafting = None;
             self.skip_next_release = true;
@@ -209,6 +255,70 @@ impl Clicks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_drag_stops_right_quick_craft_and_swallows_release() {
+        for button in [Button::Right, Button::Left] {
+            let mut clicks = Clicks::default();
+            let slot = Target::Slot(3);
+            clicks.press(&slot, button, false, false, false);
+            assert_eq!(clicks.quick_crafting(), Some(button));
+            clicks.take_drag();
+            assert_eq!(clicks.quick_crafting(), None);
+            assert_eq!(
+                clicks.release(&slot, button, false, true, false, false),
+                Release::Nothing
+            );
+            assert_eq!(
+                clicks.press(&slot, button, true, false, false),
+                Some(Input::Pickup)
+            );
+        }
+    }
+
+    #[test]
+    fn take_drag_in_down_prevents_vanilla_and_close_resets_it() {
+        let mut clicks = Clicks::default();
+        let slot = Target::Slot(3);
+        clicks.take_drag(); // no button down: no effect
+        clicks.pointer_down(Button::Left);
+        clicks.take_drag();
+        assert_eq!(clicks.press(&slot, Button::Left, false, false, false), None);
+        assert_eq!(clicks.quick_crafting(), None);
+        clicks.cancel_drag();
+        assert_eq!(clicks.press(&slot, Button::Left, false, false, false), None);
+        assert_eq!(clicks.quick_crafting(), Some(Button::Left));
+        assert_eq!(
+            clicks.release(&slot, Button::Left, false, true, false, false),
+            Release::QuickCraft
+        );
+    }
+
+    #[test]
+    fn shift_latch_applies_to_press_and_release_and_survives_screens() {
+        let mut clicks = Clicks::default();
+        let slot = Target::Slot(3);
+        clicks.set_shift_latch(true);
+        assert_eq!(
+            clicks.press(&slot, Button::Left, true, false, false),
+            Some(Input::QuickMove)
+        );
+        clicks.cancel_drag();
+        clicks.press(&slot, Button::Right, false, false, false);
+        assert_eq!(
+            clicks.release(&slot, Button::Right, false, false, false, false),
+            Release::Click(Input::QuickMove)
+        );
+        clicks.set_shift_latch(false);
+        assert_eq!(
+            clicks.press(&slot, Button::Left, true, false, false),
+            Some(Input::Pickup)
+        );
+        assert_eq!(
+            clicks.press(&slot, Button::Left, true, true, false),
+            Some(Input::QuickMove)
+        );
+    }
 
     const INV: Image = Image {
         left: 100,

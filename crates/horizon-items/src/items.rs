@@ -340,7 +340,7 @@ impl BlocksAttacks {
         })
     }
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct ItemStack {
     pub item: Arc<str>,
     pub count: u32,

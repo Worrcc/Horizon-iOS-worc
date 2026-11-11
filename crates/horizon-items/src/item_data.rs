@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// Enchantment id and level, in insertion order.
 pub type Levels = Vec<(Arc<str>, u32)>;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct StackData {
     /// `minecraft:enchantments`.
     pub enchantments: Levels,
@@ -82,6 +82,14 @@ impl Wire {
     pub fn patch(&self) -> Option<&[u8]> {
         self.0.as_deref().map(|(_, patch)| &**patch)
     }
+}
+// These values are deliberately ignored by equality, so they cannot affect
+// structural item hashes either (e.g. the mod container API's same-key).
+impl std::hash::Hash for Wire {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+impl std::hash::Hash for BundleSelected {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
 }
 impl PartialEq for Wire {
     fn eq(&self, _: &Self) -> bool {
@@ -221,7 +229,7 @@ fn ominous_tooltip_display() -> Tag {
 }
 
 /// `WrittenBookContent` with the pages as plain text.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct WrittenBook {
     pub title: String,
     pub author: String,

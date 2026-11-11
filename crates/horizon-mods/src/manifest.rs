@@ -110,9 +110,11 @@ pub enum Capability {
     /// loaded packs' block table and textures (client mods; interface
     /// `client-world`).
     WorldRead,
+    /// Inspect and click the local player's open container screen (experimental).
+    Container,
 }
 impl Capability {
-    pub const ALL: [Capability; 14] = [
+    pub const ALL: [Capability; 15] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -127,6 +129,7 @@ impl Capability {
         Capability::Recipes,
         Capability::Entities,
         Capability::WorldRead,
+        Capability::Container,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -152,6 +155,7 @@ impl Capability {
             Capability::Recipes => "recipes",
             Capability::Entities => "entities",
             Capability::WorldRead => "client-world",
+            Capability::Container => "container",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -165,6 +169,7 @@ impl Capability {
                 | Capability::Recipes
                 | Capability::Entities
                 | Capability::WorldRead
+                | Capability::Container
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -191,6 +196,7 @@ impl Capability {
             Capability::Entities => {
                 "see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them"
             }
+            Capability::Container => "inspect and click your open inventory and container screens",
             Capability::WorldRead => {
                 "see the blocks, biomes and light your game has loaded around you"
             }
@@ -241,6 +247,7 @@ impl fmt::Display for Capability {
             Capability::Recipes => "recipes",
             Capability::Entities => "entities",
             Capability::WorldRead => "world-read",
+            Capability::Container => "container",
         };
         f.write_str(name)
     }
@@ -689,6 +696,41 @@ experimental = ["ui", "recipes"]
         assert!(
             e.contains("capability world-read is for client mods"),
             "{e}"
+        );
+    }
+
+    #[test]
+    fn container_is_an_experimental_client_capability() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
+        let text = format!("{base}capabilities = [\"container\"]\n");
+        assert!(Manifest::parse(&text).unwrap_err().contains("experimental"));
+        let m = Manifest::parse(&format!("{text}experimental = [\"container\"]\n")).unwrap();
+        let functions = [
+            "state",
+            "click",
+            "take-drag",
+            "set-shift-latch",
+            "set-screen-button",
+            "clear-screen-button",
+        ]
+        .map(|f| format!("container.{f}"));
+        assert!(
+            m.check_code_imports(["horizon:mods/container@0.1.0"], &functions)
+                .is_ok()
+        );
+        assert!(
+            Manifest::parse(base)
+                .unwrap()
+                .check_code_imports(["horizon:mods/container@0.1.0"], &functions)
+                .unwrap_err()
+                .contains("capability container")
+        );
+        let server = format!("{text}experimental = [\"container\"]\nside = \"server\"\n")
+            .replace("0.1", "0.3");
+        assert!(
+            Manifest::parse(&server)
+                .unwrap_err()
+                .contains("for client mods")
         );
     }
 

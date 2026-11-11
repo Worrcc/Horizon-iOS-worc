@@ -80,6 +80,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
 | `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 1024, 1024 × 1024 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 1 MiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default); `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. The game measures how fast the mod burns fuel on this device (Pulley on iOS is slower) and sets each call's budget from it. **Experimental:** `experimental = ["render"]` |
 | `client-world` | `world-read` | API level 17. What this game has loaded, in single player and on any server (only what the server sent): `columns(chunks, layer, depth)`: up to 16 chunks a call, each column's top block in the layer (the surface, or the floor below a height as the game's minimap maps caves and the Nether) and up to 16 state ids down from it, its water depth, the light above it and its biome's grass, foliage and water colours; `changes(since, radius)`: the chunks changed, loaded or unloaded since a counter, nearest first; `block-table()`: every block state's block, facts (air, water, see-through, ...), the texture its model shows up and south with its tint source, and its map colour, from the loaded packs (its `version` changes on a resource reload; `table-version()` reads it alone, cheap enough every tick); `texture(name)`: a block texture's RGBA from the loaded packs, so a mod averages its own colours; `dimension()`, `light(x, y, z)`, `biome(x, y, z)`. **Experimental:** `experimental = ["world-read"]` |
+| `container` | `container` | API level 22: live container slots/cursor, real clicks, drag takeover, per-mod Shift latch and up to eight slot-style buttons; synchronous optional `container-events`. Excludes creative inventory. **Experimental:** `experimental = ["container"]` |
 | `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
 | `recipes` | `recipes` | `items()`: every item in the registry's order, with its name in the player's language and its tags; `all()`: every recipe (crafting, smelting, blasting, smoking, campfire, stonecutting, smithing, brewing), its slots as the stacks that fit each, its results, cooking time and experience, and the recipe book's id for it; `known()`: the book ids the player's recipe book holds; `place(book-id, all)`: the recipe book's click on a recipe, in the open inventory, crafting table, furnace, blast furnace or smoker (refused for a recipe the player's book doesn't hold, as vanilla's server refuses it); `give(stack)`: in creative mode, the stack into the player's inventory, as from the creative inventory. The recipes are the world's in single player and on Horizon's servers, vanilla 26.3's on any other server (a client is sent no others), while `known` follows that server's book. The game makes the tables once, when a mod first reads them. `browser-ext.item-facts` reads furnace burn ticks, compost chance and anvil repair materials; `browser-ext.other-recipes` reads custom recipe files; `browser-ext.recipe-count` and `browser-ext.recipes-page(start, count)` count and page through `recipes.all` (up to 2048 per call) when a full query would exceed frame fuel. These browser extensions are level 19 and need only `recipes`. **Experimental:** `experimental = ["recipes"]` |
 
@@ -1311,3 +1312,39 @@ ignored without a world or when the player's Chat setting is **Hidden**; an igno
 request leaves the current screen and draft alone. Touch uses the same automatic
 on-screen keyboard path as the game's **T** button. API level stays **21**, and mods
 using the older `chat.show` interface continue to link.
+
+### Container input (API level 22)
+
+Client mods can declare `capabilities = ["container"]` and `experimental = ["container"]`
+to implement inventory mouse/touch tweaks. Creative inventory is excluded. The SDK example
+[`container-test`](../crates/horizon-mod-sdk/examples/container-test) shows a right-drag and a Shift toggle.
+
+`container.state()` reads the live open menu, its background rectangle, slots and carried stack.
+Slot positions and pointer coordinates are window GUI pixels; button offsets are relative to the
+background's top left. Slot indices are opaque: pass the returned index back to `click`.
+`same-key` hashes item identity and components, excluding count. `max-stack` uses the menu's
+slot limit and the item's component-aware maximum. `accepts-item` tests the slot's placement
+rule for the carried stack (its own item if the cursor is empty, an ordinary stack if both are
+empty). Output slots are marked `crafting-output`; armor, offhand, main inventory and hotbar
+have distinct parts.
+
+`container.click(slot, button, shift)` uses the same PICKUP/QUICK_MOVE prediction and
+ServerboundContainerClick path as a player's slot click, including single player, LAN and
+multiplayer. It completes before returning: the next `state()` sees the changed cursor/slots.
+Invalid slots/buttons are ignored; at most 256 mutations per callback are serviced.
+
+`Mod::container_pointer` runs **before vanilla** on down/up/drag, for mouse and touch.
+`take-drag()` stops either vanilla quick-craft drag without sending it and swallows the
+coming release, including when called during `pointer(down)`. Without a held button it does
+nothing. Screen close clears the takeover. Wheel and two-finger touch scroll call
+`Mod::container_scroll`; the first mod returning true consumes the event. A second touch
+cancels the single-finger drag without a release click; the pair scrolls at its midpoint.
+
+`set-shift-latch(true)` treats the player's own container clicks as Shift-held (a mod's `click` uses its `shift` argument as given). Latches are per
+mod and ORed together with physical Shift; they survive screens and disappear on stop/unload.
+`set-screen-button(id, dx, dy, icon, lit, tooltip)` keeps up to eight 20×20 slot-style buttons per
+mod. Lit uses the touch controls' gold selection frame, and hover shows the tooltip. A mouse
+click or tap calls only that owner's `Mod::container_button(id)` and consumes the press/release.
+`clear-screen-button(id)` removes it. Buttons persist across screens until cleared or unloaded.
+`Mod::container_opened` and `Mod::container_closed` bracket the container screen; `state()` is
+None in `closed`. Every export is individually optional, so older components keep loading.

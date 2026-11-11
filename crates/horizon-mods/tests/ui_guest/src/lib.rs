@@ -16,7 +16,7 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, browser_ext, chat, command, game,
+    ContainerPointerKind, Mod, Registration, browser, browser_ext, chat, command, container, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -75,6 +75,7 @@ struct Guest {
     /// `/recipe_place ID [all] later`: placed on the first tick a crafting
     /// screen is open.
     pending: Option<(i32, bool, String)>,
+    container_latch: bool,
 }
 
 fn widgets() -> Vec<Widget> {
@@ -100,6 +101,12 @@ fn widgets() -> Vec<Widget> {
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
         let hooks = [
+            "container_trap",
+            "container_state",
+            "container_click",
+            "container_take",
+            "container_latch",
+            "container_buttons",
             "ui_screen",
             "chat_open",
             "ui_settings",
@@ -139,10 +146,62 @@ impl Mod for Guest {
         .into_iter()
         .fold(Registration::new(), Registration::command)
         .on_tick();
-        Ok((Guest { pending: None }, hooks))
+        container::set_screen_button(0, -24.0, 0.0, "minecraft:diamond", false, "Shift");
+        Ok((
+            Guest {
+                pending: None,
+                container_latch: false,
+            },
+            hooks,
+        ))
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {
+            "container_trap" => panic!("container test trap"),
+            "container_state" => match container::state() {
+                Some(state) => chat::show(&format!(
+                    "container {} carried {}",
+                    state.slots.len(),
+                    state.carried.map_or(0, |s| s.count)
+                )),
+                None => chat::show("no container"),
+            },
+            "container_click" => {
+                let args: Vec<_> = args.split_whitespace().collect();
+                container::click(
+                    args.first().and_then(|s| s.parse().ok()).unwrap_or(0),
+                    args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
+                    args.get(2) == Some(&"shift"),
+                );
+                if let Some(state) = container::state() {
+                    chat::show(&format!(
+                        "after click carried {}",
+                        state.carried.map_or(0, |s| s.count)
+                    ));
+                }
+            }
+            "container_take" => container::take_drag(),
+            "container_latch" => {
+                self.container_latch = args == "on";
+                container::set_shift_latch(self.container_latch);
+            }
+            "container_buttons" => {
+                if args == "off" {
+                    container::clear_screen_button(0);
+                } else {
+                    for id in 0..10 {
+                        container::set_screen_button(
+                            id,
+                            -24.0,
+                            id as f32 * 22.0,
+                            "minecraft:diamond",
+                            true,
+                            &"tip".repeat(100),
+                        );
+                    }
+                }
+            }
+
             "world_lines" => {
                 let count = args.parse::<usize>().unwrap_or(0);
                 render::set_world_lines(
@@ -695,6 +754,37 @@ impl Mod for Guest {
                 Err(e) => chat::show(&format!("place {id}: {e}")),
             }
         }
+    }
+    fn container_pointer(
+        &mut self,
+        kind: ContainerPointerKind,
+        x: f32,
+        y: f32,
+        button: u32,
+        slot: Option<u32>,
+        shift: bool,
+    ) {
+        if kind == ContainerPointerKind::Down {
+            container::take_drag();
+        }
+        chat::show(&format!(
+            "container pointer {kind:?} {x} {y} {button} {slot:?} {shift}"
+        ));
+    }
+    fn container_scroll(&mut self, _x: f32, _y: f32, steps: f32, slot: Option<u32>) -> bool {
+        chat::show(&format!("container scroll {steps} {slot:?}"));
+        slot.is_some()
+    }
+    fn container_button(&mut self, id: u32) {
+        self.container_latch = !self.container_latch;
+        container::set_shift_latch(self.container_latch);
+        chat::show(&format!("container button {id}"));
+    }
+    fn container_opened(&mut self) {
+        chat::show("container opened");
+    }
+    fn container_closed(&mut self) {
+        chat::show("container closed");
     }
     fn ui_select(&mut self, id: u32, row: u32) {
         chat::show(&format!("selected {id}:{row}"));

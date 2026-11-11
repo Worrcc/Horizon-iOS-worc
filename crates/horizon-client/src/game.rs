@@ -204,6 +204,7 @@ mod mod_api_host;
 mod mod_canvas;
 mod mod_canvas_screen;
 mod mod_client_world;
+mod mod_container;
 mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_panel;
@@ -8464,6 +8465,7 @@ impl Game<'_> {
         // arrived (the pointer left the window) cannot wedge the next
         // screen's quick move and clicks.
         self.reset_inventory_clicks();
+        self.mod_container_lifecycle();
         if !capture {
             self.stop_mining();
         }
@@ -9779,6 +9781,7 @@ impl Game<'_> {
         };
         self.draw_carried(batch);
         self.draw_slot_tooltip(batch);
+        self.draw_mod_container_buttons(batch);
         self.draw_native_screen_tooltip(batch);
         if let Some(lines) = effect_tip {
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
@@ -9801,6 +9804,7 @@ impl Game<'_> {
         // key that closed the container (Tab bound to the inventory) has
         // already moved the focus, and it must not outlive the screen.
         self.pad_clear_focus();
+        self.mod_container_closed();
         self.mod_browser_closed();
         self.reset_inventory_clicks();
         self.close_station();
@@ -10617,6 +10621,9 @@ impl Game<'_> {
     fn inventory_press(&mut self, right: bool) {
         use horizon_client::container_screen::Target;
         use horizon_client::menu::Input;
+        if self.inv_clicks.drag_taken() {
+            return;
+        }
         if self.mod_browser_press(right) {
             return;
         }
@@ -10766,6 +10773,9 @@ impl Game<'_> {
     }
     /// Mouse movement while a quick craft drag is running.
     fn inventory_drag_move(&mut self) {
+        if self.inv_clicks.drag_taken() {
+            return;
+        }
         if self.tweaks_on() && self.tweak_drag_move(self.inventory_target().0) {
             return;
         }
@@ -10811,6 +10821,7 @@ impl Game<'_> {
     /// cached key set is not vanilla's answer.
     pub(super) fn has_shift_down(&self) -> bool {
         self.modifiers.shift_key()
+            || (self.screen == Screen::Inventory && self.inv_clicks.shift_down(false))
     }
     /// The same live word for Control (`InputWithModifiers.hasControlDown`).
     pub(super) fn has_control_down(&self) -> bool {
@@ -18134,6 +18145,9 @@ impl Game<'_> {
             // The keyboard's focus took the key; its characters are a separate
             // callback and still come (`KeyboardHandler.charTyped`).
             self.screen_chars_typed(typed.as_deref());
+            return;
+        }
+        if self.mod_container_event(&event) {
             return;
         }
         let result: Result<()> = (|| {

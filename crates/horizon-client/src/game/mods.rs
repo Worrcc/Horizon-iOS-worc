@@ -166,6 +166,8 @@ pub(super) struct ModsState {
     /// The full-window canvas and its held pointer buttons.
     #[cfg(feature = "mods")]
     pub(super) canvas_screen: Option<super::mod_canvas_screen::CanvasScreenHost>,
+    #[cfg(feature = "mods")]
+    pub(super) container: super::mod_container::ContainerScreenHost,
     /// The HUD font's advances for `render.text-width`, made once.
     #[cfg(feature = "mods")]
     font_widths: std::sync::Arc<[f32]>,
@@ -1153,7 +1155,8 @@ impl Game<'_> {
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
         self.lend_client_world(false);
-        self.mods.mods.tick(self.ticks);
+        let ticks = self.ticks;
+        self.with_mod_container(|mods| mods.tick(ticks));
         self.return_client_world();
         self.show_mod_output();
     }
@@ -1169,7 +1172,7 @@ impl Game<'_> {
         }
         self.mods.checked = Some(Instant::now());
         self.lend_client_world(true);
-        let reloaded = self.mods.mods.reload_changed(vanilla_command);
+        let reloaded = self.with_mod_container(|mods| mods.reload_changed(vanilla_command));
         self.return_client_world();
         self.forget_client_world();
         if reloaded {
@@ -1196,7 +1199,8 @@ impl Game<'_> {
             self.mods.mods.set_snapshot(snapshot);
         }
         self.lend_client_world(false);
-        self.mods.mods.frame(elapsed.as_secs_f32());
+        self.mod_container_lifecycle();
+        self.with_mod_container(|mods| mods.frame(elapsed.as_secs_f32()));
         self.return_client_world();
         self.upload_mod_canvas();
         self.show_mod_output();
@@ -1210,7 +1214,7 @@ impl Game<'_> {
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
         self.lend_client_world(false);
-        let owned = self.mods.mods.command(command);
+        let owned = self.with_mod_container(|mods| mods.command(command));
         self.return_client_world();
         if !owned {
             return false;
@@ -1221,7 +1225,7 @@ impl Game<'_> {
     /// A chat line the player received.
     pub(super) fn mods_chat(&mut self, line: &str) {
         self.lend_client_world(false);
-        self.mods.mods.chat(line);
+        self.with_mod_container(|mods| mods.chat(line));
         self.return_client_world();
         self.show_mod_output();
     }

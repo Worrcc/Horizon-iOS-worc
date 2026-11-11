@@ -50,11 +50,14 @@ wit_bindgen::generate!({
     default_bindings_module: "horizon_mod_sdk",
 });
 
+pub use exports::horizon::mods::container_events::{
+    Guest as __ContainerEventsGuest, PointerKind as ContainerPointerKind,
+};
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::{Guest as __UiEventsGuest, PointerKind};
 pub use horizon::mods::{
-    browser, browser_ext, canvas, chat, client_world, command, game, hud, input, log, recipes,
-    render, storage, ui,
+    browser, browser_ext, canvas, chat, client_world, command, container, game, hud, input, log,
+    recipes, render, storage, ui,
 };
 
 /// `client_world::BlockStates::state_flags`' bits (capability `world-read`).
@@ -107,6 +110,24 @@ pub trait Mod: Sized + 'static {
     fn ui_scroll(&mut self, _x: f32, _y: f32, _steps: f32) {}
     /// A key.keyboard.* key on the canvas screen, excluding Escape.
     fn ui_screen_key(&mut self, _key: &str, _down: bool) {}
+    /// Before vanilla container input (API 22, capability `container`).
+    fn container_pointer(
+        &mut self,
+        _kind: ContainerPointerKind,
+        _x: f32,
+        _y: f32,
+        _button: u32,
+        _slot: Option<u32>,
+        _shift: bool,
+    ) {
+    }
+    /// True consumes the container wheel/two-finger scroll.
+    fn container_scroll(&mut self, _x: f32, _y: f32, _steps: f32, _slot: Option<u32>) -> bool {
+        false
+    }
+    fn container_button(&mut self, _id: u32) {}
+    fn container_opened(&mut self) {}
+    fn container_closed(&mut self) {}
     /// The player left the mod's screen (Esc or Done; capability `ui`).
     fn ui_closed(&mut self) {}
     /// The player opened the mod's settings page (capability `ui`): call
@@ -214,6 +235,32 @@ macro_rules! export_mod {
                 }
                 fn settings_opened() {
                     with(|m| $crate::Mod::ui_settings_opened(m))
+                }
+            }
+            impl $crate::__ContainerEventsGuest for Export {
+                fn pointer(
+                    kind: $crate::ContainerPointerKind,
+                    x: f32,
+                    y: f32,
+                    button: u32,
+                    slot: Option<u32>,
+                    shift: bool,
+                ) {
+                    with(|m| $crate::Mod::container_pointer(m, kind, x, y, button, slot, shift))
+                }
+                fn scroll(x: f32, y: f32, steps: f32, slot: Option<u32>) -> bool {
+                    let mut consumed = false;
+                    with(|m| consumed = $crate::Mod::container_scroll(m, x, y, steps, slot));
+                    consumed
+                }
+                fn button(id: u32) {
+                    with(|m| $crate::Mod::container_button(m, id))
+                }
+                fn opened() {
+                    with(|m| $crate::Mod::container_opened(m))
+                }
+                fn closed() {
+                    with(|m| $crate::Mod::container_closed(m))
                 }
             }
             // Only WebAssembly has the component's exports: a host build (cargo test or

@@ -252,6 +252,96 @@ interface ui-events {
     screen-key: func(key: string, down: bool);
 }
 
+/// API level 22. Capability `container` (experimental: also list it in
+/// `experimental`): inspect and click the open survival/container screen.
+/// Creative inventory is excluded. Calls are synchronous: state after click
+/// includes client prediction, and the normal container-click packet is sent.
+interface container {
+    enum part { player-main, hotbar, container, crafting-output, armor, offhand, other }
+    record stack {
+        /// Namespaced item id. Count is not part of same-key.
+        item: string,
+        count: u32,
+        /// The item's component-aware maximum stack size.
+        max-stack: u32,
+        /// Opaque item + components identity, equal for stacks that can merge.
+        /// Valid during this game session; never persist it.
+        same-key: u64,
+    }
+    record slot {
+        /// Opaque slot index for click and pointer/scroll events, stable while this menu is open.
+        index: u32,
+        /// Top left of the 16x16 item box, in GUI pixels from the window top left.
+        x: f32,
+        y: f32,
+        /// Empty string and count 0 for an empty slot; same-key is then 0.
+        item: string,
+        count: u32,
+        /// min(slot maximum for the item, item maximum). For an empty slot,
+        /// uses the carried item, or the ordinary 64-stack limit with no carried item.
+        max-stack: u32,
+        same-key: u64,
+        part: part,
+        /// Whether the slot may accept the carried item (or its own item with an
+        /// empty cursor; an ordinary stack for an empty slot). This is the slot's
+        /// placement rule, not a test of remaining space. Output slots are false.
+        accepts-item: bool,
+    }
+    record container-state {
+        slots: list<slot>,
+        carried: option<stack>,
+        /// Container background rectangle, in GUI pixels from the window top left.
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+    /// None without an open container screen, including creative inventory.
+    /// Reads the live menu, including clicks earlier in the same callback.
+    state: func() -> option<container-state>;
+    /// A real slot click: button 0 left or 1 right; shift selects QUICK_MOVE,
+    /// otherwise PICKUP. Invalid slots/buttons and closed screens are ignored.
+    /// At most 256 mutations per hook. Shift latches do not apply: `shift` alone decides. Uses the player's prediction
+    /// and network path in single player, LAN and multiplayer alike.
+    click: func(slot: u32, button: u32, shift: bool);
+    /// Take over the press in progress (either button). Stop vanilla quick craft
+    /// without sending it, and suppress that button's coming release click.
+    /// Works in pointer(down), before vanilla starts the drag. No button down:
+    /// no-op. Screen close clears the takeover and pending release suppression.
+    take-drag: func();
+    /// Treat the player's container clicks and the pointer events' shift as
+    /// Shift-held while on (not `click`, whose `shift` is used as given).
+    /// Per mod, ORed together; survives screen changes, cleared on unload/stop.
+    set-shift-latch: func(on: bool);
+    /// Set/replace a 20x20 slot-style button, relative to the container background's
+    /// top left in GUI pixels. At most 8 per mod; further ids are ignored. Finite
+    /// offsets only. Item icon; lit adds a gold frame; tooltip on hover (256 chars).
+    /// Click/tap fires container-events.button(id) and consumes press and release.
+    /// Kept across screens until cleared or the mod stops. Unknown icons draw nothing.
+    set-screen-button: func(id: u32, dx: f32, dy: f32, icon: string, lit: bool, tooltip: string);
+    /// Remove this mod's button; an unknown id is ignored.
+    clear-screen-button: func(id: u32);
+}
+
+/// Optional API level 22 exports for capability `container`. Each missing
+/// function is ignored, including mods built before this interface existed.
+interface container-events {
+    enum pointer-kind { down, up, drag }
+    /// Mouse and touch, synchronously BEFORE vanilla handles the event.
+    /// Window GUI pixels; button 0 left, 1 right, 2 middle. Slot uses state().
+    /// Shift includes physical Shift and every running mod's shift latch.
+    pointer: func(kind: pointer-kind, x: f32, y: f32, button: u32, slot: option<u32>, shift: bool);
+    /// Wheel and two-finger touch scroll, before vanilla; positive away from
+    /// the player. First mod returning true consumes; later mods are not called.
+    scroll: func(x: f32, y: f32, steps: f32, slot: option<u32>) -> bool;
+    /// The player clicked/tapped one of this mod's screen buttons.
+    button: func(id: u32);
+    /// A survival or container screen opened (never creative inventory).
+    opened: func();
+    /// The container screen closed; state() is now None.
+    closed: func();
+}
+
 /// Capability `input` (experimental: the manifest needs
 /// `experimental = ["input"]`): the use button on items the mod claims, and
 /// the mod's own keys. Events wait for `poll`, at most 256.
@@ -1633,6 +1723,8 @@ world horizon-ui-mod {
     import canvas;
     import client-world;
     export ui-events;
+    import container;
+    export container-events;
 }
 
 /// The game's side of `horizon-ui-mod` beyond `horizon-mod`.
@@ -1658,4 +1750,10 @@ world recipes-host {
     import recipes;
     import browser;
     import browser-ext;
+}
+
+/// The game's additive container imports and optional exports.
+world container-host {
+    import container;
+    export container-events;
 }

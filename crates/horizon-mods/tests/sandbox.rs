@@ -26,8 +26,8 @@ id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "container"]
+experimental = ["ui", "render", "input", "recipes", "container"]
 "#;
 const CANVAS_MANIFEST: &str = r#"
 id = "test_canvas_guest"
@@ -142,6 +142,44 @@ experimental = ["players", "world"]
                 .unwrap();
                 let hmod = Package::write(&manifest, &componentize(&legacy).unwrap()).unwrap();
                 std::fs::write(dir.join("legacy_chat.hmod"), hmod).unwrap();
+            }
+            if name == "horizon_mods_test_ui_guest" {
+                // Actual older components: absent interface, and an interface
+                // with only pointer. Resolve each optional callback independently.
+                for (file, partial) in [
+                    ("legacy_no_container", false),
+                    ("legacy_container_pointer", true),
+                ] {
+                    let (stripped, mut metadata) = wit_component::metadata::decode(&core).unwrap();
+                    if partial {
+                        for (_, interface) in metadata.resolve.interfaces.iter_mut() {
+                            if interface.name.as_deref() == Some("container-events") {
+                                interface.functions.retain(|name, _| name == "pointer");
+                            }
+                        }
+                    } else {
+                        let interfaces = &metadata.resolve.interfaces;
+                        metadata.resolve.worlds[metadata.world]
+                            .exports
+                            .retain(|_, item| {
+                                !matches!(item, wit_parser::WorldItem::Interface {id, ..}
+                                if interfaces[*id].name.as_deref() == Some("container-events"))
+                            });
+                    }
+                    let mut legacy = stripped.unwrap();
+                    wit_component::embed_component_metadata(
+                        &mut legacy,
+                        &metadata.resolve,
+                        metadata.world,
+                        wit_component::StringEncoding::UTF8,
+                    )
+                    .unwrap();
+                    std::fs::write(
+                        dir.join(format!("{file}.hmod")),
+                        Package::write(&manifest, &componentize(&legacy).unwrap()).unwrap(),
+                    )
+                    .unwrap();
+                }
             }
             if name == "horizon_mods_test_api20_server_guest" {
                 let other = manifest
@@ -349,8 +387,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read"]
-experimental = ["ui", "render", "input", "recipes", "world-read"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read", "container"]
+experimental = ["ui", "render", "input", "recipes", "world-read", "container"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -363,8 +401,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest also imports the API 21 chat prefill.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 21);
+    // The UI guest exercises the API 22 container calls.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 22);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -2607,4 +2645,178 @@ fn api21_chat_open_queues_only_a_capped_prefill_and_legacy_chat_still_links() {
     let functions = horizon_mods::api_level::imports(package.wasm.as_ref().unwrap()).unwrap();
     assert!(functions.iter().any(|f| f == "chat.show"));
     assert!(!functions.iter().any(|f| f == "chat.open"));
+}
+
+#[test]
+fn container_calls_read_live_updates_and_events_are_optional() {
+    use horizon_mods::{
+        ContainerPointerKind as K, ContainerRequest as Q, ContainerStack, ContainerState,
+    };
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    assert!(mods.command("container_state"));
+    assert!(matches!(&mods.drain()[..], [Output::Chat {text, ..}] if text == "no container"));
+    let mut state = ContainerState {
+        slots: vec![],
+        carried: None,
+        x: 20.0,
+        y: 30.0,
+        width: 176.0,
+        height: 166.0,
+    };
+    let mut took = false;
+    mods.with_container(
+        |q| match q {
+            Q::State => Some(state.clone()),
+            Q::Click {
+                slot,
+                button,
+                shift,
+            } => {
+                assert_eq!((slot, button, shift), (9, 1, true));
+                state.carried = Some(ContainerStack {
+                    item: "minecraft:stone".into(),
+                    count: 7,
+                    max_stack: 64,
+                    same_key: 11,
+                });
+                None
+            }
+            Q::TakeDrag => {
+                took = true;
+                None
+            }
+        },
+        |mods| {
+            assert!(mods.command("container_click 9 1 shift"));
+            mods.container_pointer(K::Down, 10.0, 20.0, 1, Some(9), false);
+        },
+    );
+    assert!(took);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Chat {text, ..} if text == "after click carried 7"))
+    );
+    mods.command("container_latch on");
+    let mut latched_click = false;
+    mods.with_container(
+        |q| {
+            if let Q::Click { shift, .. } = q {
+                latched_click = shift;
+            }
+            None
+        },
+        |mods| {
+            mods.command("container_click 9 0");
+        },
+    );
+    assert!(
+        !latched_click,
+        "a mod click's shift is used as given, the latch only shifts player clicks"
+    );
+    mods.command("container_latch off");
+    mods.container_opened();
+    mods.container_closed();
+    assert_eq!(mods.drain().len(), 2);
+    assert!(!mods.container_scroll(10.0, 20.0, 1.0, None));
+    assert!(mods.container_scroll(10.0, 20.0, -1.0, Some(9)));
+    // Components without the new interface keep running and don't consume input.
+    let mut old = load("legacy_no_container.hmod");
+    old.container_opened();
+    old.container_pointer(K::Drag, 1.0, 2.0, 0, Some(0), false);
+    old.container_closed();
+    assert!(!old.container_scroll(1.0, 2.0, 1.0, Some(0)));
+    assert_eq!(old.entries()[0].status, Status::Running);
+    assert!(old.drain().is_empty());
+    let mut partial = load("legacy_container_pointer.hmod");
+    partial.container_opened();
+    assert!(!partial.container_scroll(1.0, 2.0, 1.0, Some(0)));
+    partial.container_pointer(K::Drag, 1.0, 2.0, 0, Some(0), false);
+    assert_eq!(partial.drain().len(), 1, "present pointer still runs");
+}
+
+#[test]
+fn container_buttons_are_owned_bounded_and_latches_clear_on_stop() {
+    use horizon_mods::ContainerPointerKind as K;
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.command("container_buttons"));
+    let buttons: Vec<_> = mods.container_buttons().collect();
+    assert_eq!(buttons.len(), 8);
+    assert!(
+        buttons
+            .iter()
+            .all(|(owner, b)| *owner == 0 && b.tooltip.chars().count() == 256)
+    );
+    mods.container_button(0, 7);
+    assert!(mods.container_shift_latched());
+    mods.container_opened();
+    mods.container_closed();
+    assert!(mods.container_shift_latched(), "latch survives screens");
+    mods.drain();
+    mods.container_pointer(K::Drag, 10.0, 20.0, 0, Some(9), false);
+    assert!(matches!(&mods.drain()[..], [Output::Chat {text, ..}] if text.ends_with("true")));
+    mods.command("container_latch off");
+    assert!(!mods.container_shift_latched());
+    mods.command("container_buttons off");
+    assert_eq!(mods.container_buttons().count(), 7);
+    mods.container_button(0, 0);
+    assert!(mods.drain().is_empty(), "removed button cannot fire");
+    mods.command("container_latch on");
+    // Turning a mod off drops both the latch and buttons.
+    mods.command("container_trap");
+    assert!(matches!(mods.entries()[0].status, Status::Failed(_)));
+    assert!(!mods.container_shift_latched());
+    assert_eq!(mods.container_buttons().count(), 0);
+}
+
+#[test]
+fn container_scroll_stops_at_first_consumer_and_requires_capability() {
+    let package = Package::read(&mods_dir().join("horizon_mods_test_ui_guest.hmod")).unwrap();
+    let dir = std::env::temp_dir().join(format!("horizon-container-pair-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let second = dir.join("second.hmod");
+    let manifest = UI_MANIFEST.replace("test_ui_guest", "second_ui_guest");
+    std::fs::write(
+        &second,
+        Package::write(&manifest, package.wasm.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut mods = Mods::load(
+        &[mods_dir().join("horizon_mods_test_ui_guest.hmod"), second],
+        |_| true,
+        |_| false,
+    );
+    assert!(mods.entries().iter().all(|e| e.status == Status::Running));
+    assert!(!mods.container_scroll(1.0, 2.0, 1.0, None));
+    assert_eq!(mods.drain().len(), 2, "both hear an unconsumed scroll");
+    assert!(mods.container_scroll(1.0, 2.0, 1.0, Some(9)));
+    assert_eq!(mods.drain().len(), 1, "only the first consumer hears it");
+    mods.container_button(0, 0);
+    mods.container_button(1, 0);
+    assert!(mods.container_shift_latched());
+    mods.container_button(0, 0);
+    assert!(
+        mods.container_shift_latched(),
+        "second mod still latches shift"
+    );
+    mods.container_closed();
+    assert!(mods.container_shift_latched());
+    mods.container_button(1, 0);
+    assert!(
+        !mods.container_shift_latched(),
+        "both mods released their latch"
+    );
+    let denied = dir.join("denied.hmod");
+    let manifest = UI_MANIFEST.replace(", \"container\"", "");
+    std::fs::write(
+        &denied,
+        Package::write(&manifest, package.wasm.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mods = Mods::load(&[denied], |_| true, |_| false);
+    assert!(
+        matches!(&mods.entries()[0].status, Status::Failed(why) if why.contains("capability container"))
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

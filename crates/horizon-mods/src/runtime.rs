@@ -16,6 +16,13 @@ use wasmtime::{
     component::{Component, HasSelf, Instance, Linker, TypedFunc, Val},
 };
 
+mod container_host;
+pub use container_host::{
+    ContainerButton, ContainerPart, ContainerPointerKind, ContainerReply, ContainerRequest,
+    ContainerShift, ContainerSlot, ContainerStack, ContainerState,
+};
+use container_host::{ContainerCallbacks, ContainerData, ContainerHost};
+
 mod bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
@@ -655,6 +662,7 @@ struct Running {
     store: Store<State>,
     /// Optional UI callbacks; empty for a mod built before ui or a server mod.
     ui: UiCallbacks,
+    container: ContainerCallbacks,
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
@@ -841,6 +849,7 @@ struct State {
     out: Vec<Output>,
     panel: Option<Panel>,
     ui: UiState,
+    container: ContainerData,
     /// Capability `render`'s HUD shapes, drawn until replaced.
     shapes: Vec<Shape>,
     world_lines: ModWorldLines,
@@ -878,6 +887,8 @@ struct State {
 /// the state with none: no engine, and every hook a no-op.
 #[derive(Default)]
 pub struct Mods {
+    container_bridge: container_host::Bridge,
+    container_shift: ContainerShift,
     engine: Option<(Engine, Linker<State>)>,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
@@ -1143,6 +1154,8 @@ impl Mods {
                 })
                 .map_err(|e| e.to_string())?;
             linker.allow_shadowing(false);
+            ContainerHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -1208,6 +1221,8 @@ impl Mods {
         let inventories = self.inventories.clone();
         let client_world = self.client_world.clone();
         let page = self.page.clone();
+        let container_bridge = self.container_bridge.clone();
+        let container_shift = self.container_shift.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -1246,6 +1261,7 @@ impl Mods {
             out: Vec::new(),
             panel: None,
             ui: UiState::default(),
+            container: ContainerData::new(container_bridge, &container_shift),
             shapes: Vec::new(),
             world_lines: ModWorldLines::default(),
             corner: None,
@@ -1280,6 +1296,11 @@ impl Mods {
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
+        let container = if !server && m.capabilities.contains(&crate::Capability::Container) {
+            ContainerCallbacks::new(&mut store, &instance)
+        } else {
+            ContainerCallbacks::default()
+        };
         let (mut hooks, ui) = if server {
             let exports = HorizonServerMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             let r = exports
@@ -1326,6 +1347,7 @@ impl Mods {
         Ok(Some(Running {
             store,
             ui,
+            container,
             hooks,
             raycasts: functions
                 .iter()
@@ -1430,6 +1452,7 @@ impl Mods {
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
+        run.store.data_mut().container.reset_budget();
         // A `frame` call's soft budget is the granted time in fuel at the
         // rate the mod burned it here so far; other hooks' is their fuel.
         let canvas = &mut run.store.data_mut().canvas;
@@ -3914,6 +3937,7 @@ mod entity_tests {
             out: Vec::new(),
             panel: None,
             ui: UiState::default(),
+            container: ContainerData::default(),
             shapes: Vec::new(),
             world_lines: ModWorldLines::default(),
             corner: None,

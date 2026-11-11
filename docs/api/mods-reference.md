@@ -21,6 +21,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `recipes` | [`recipes`](#recipes) | read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items |
 | `entities` | [`entities`](#entities) | see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them |
 | `world-read` | [`client-world`](#client-world) | see the blocks, biomes and light your game has loaded around you |
+| `container` | [`container`](#container) | inspect and click your open inventory and container screens |
 
 ## World `horizon-mod`
 
@@ -40,8 +41,8 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `log`, `game`, `chat`, `hud`, `storage`, `command`
-- Exports (what the mod provides): `ui-events`, `events`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `container`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Exports (what the mod provides): `ui-events`, `container-events`, `events`
 
 ## World `ui-host`
 
@@ -70,6 +71,13 @@ The game's side of capability `recipes` (imports only).
 
 - Imports (what the game offers): `recipes`, `browser`, `browser-ext`
 - Exports (what the mod provides): 
+
+## World `container-host`
+
+The game's additive container imports and optional exports.
+
+- Imports (what the game offers): `container`
+- Exports (what the mod provides): `container-events`
 
 ## `log`
 
@@ -308,6 +316,89 @@ API level 18: pointer action on the mod's canvas screen.
 | `pointer` | `func(kind: pointer-kind, x: f32, y: f32, button: u32)` | GUI pixels from the window top left; buttons 0 left, 1 right, 2 middle. Drag is movement with a button held. Missing exports are ignored. |
 | `scroll` | `func(x: f32, y: f32, steps: f32)` | Wheel at GUI coordinates; positive steps away from the player. |
 | `screen-key` | `func(key: string, down: bool)` | A key.keyboard.* key pressed or released on the canvas screen. Escape closes the screen instead. Missing exports are ignored. |
+
+## `container`
+
+Access: capability `container`.
+
+API level 22. Capability `container` (experimental: also list it in `experimental`): inspect and click the open survival/container screen. Creative inventory is excluded. Calls are synchronous: state after click includes client prediction, and the normal container-click packet is sent.
+
+### enum `part`
+
+| Case | |
+| --- | --- |
+| `player-main` |  |
+| `hotbar` |  |
+| `container` |  |
+| `crafting-output` |  |
+| `armor` |  |
+| `offhand` |  |
+| `other` |  |
+
+### record `stack`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` | Namespaced item id. Count is not part of same-key. |
+| `count` | `u32` |  |
+| `max-stack` | `u32` | The item's component-aware maximum stack size. |
+| `same-key` | `u64` | Opaque item + components identity, equal for stacks that can merge. Valid during this game session; never persist it. |
+
+### record `slot`
+
+| Field | Type | |
+| --- | --- | --- |
+| `index` | `u32` | Opaque slot index for click and pointer/scroll events, stable while this menu is open. |
+| `x` | `f32` | Top left of the 16x16 item box, in GUI pixels from the window top left. |
+| `y` | `f32` |  |
+| `item` | `string` | Empty string and count 0 for an empty slot; same-key is then 0. |
+| `count` | `u32` |  |
+| `max-stack` | `u32` | min(slot maximum for the item, item maximum). For an empty slot, uses the carried item, or the ordinary 64-stack limit with no carried item. |
+| `same-key` | `u64` |  |
+| `part` | `part` |  |
+| `accepts-item` | `bool` | Whether the slot may accept the carried item (or its own item with an empty cursor; an ordinary stack for an empty slot). This is the slot's placement rule, not a test of remaining space. Output slots are false. |
+
+### record `container-state`
+
+| Field | Type | |
+| --- | --- | --- |
+| `slots` | `list<slot>` |  |
+| `carried` | `option<stack>` |  |
+| `x` | `f32` | Container background rectangle, in GUI pixels from the window top left. |
+| `y` | `f32` |  |
+| `width` | `f32` |  |
+| `height` | `f32` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `state` | `func() -> option<container-state>` | None without an open container screen, including creative inventory. Reads the live menu, including clicks earlier in the same callback. |
+| `click` | `func(slot: u32, button: u32, shift: bool)` | A real slot click: button 0 left or 1 right; shift selects QUICK_MOVE, otherwise PICKUP. Invalid slots/buttons and closed screens are ignored. At most 256 mutations per hook. Shift latches do not apply: `shift` alone decides. Uses the player's prediction and network path in single player, LAN and multiplayer alike. |
+| `take-drag` | `func()` | Take over the press in progress (either button). Stop vanilla quick craft without sending it, and suppress that button's coming release click. Works in pointer(down), before vanilla starts the drag. No button down: no-op. Screen close clears the takeover and pending release suppression. |
+| `set-shift-latch` | `func(on: bool)` | Treat the player's container clicks and the pointer events' shift as Shift-held while on (not `click`, whose `shift` is used as given). Per mod, ORed together; survives screen changes, cleared on unload/stop. |
+| `set-screen-button` | `func(id: u32, dx: f32, dy: f32, icon: string, lit: bool, tooltip: string)` | Set/replace a 20x20 slot-style button, relative to the container background's top left in GUI pixels. At most 8 per mod; further ids are ignored. Finite offsets only. Item icon; lit adds a gold frame; tooltip on hover (256 chars). Click/tap fires container-events.button(id) and consumes press and release. Kept across screens until cleared or the mod stops. Unknown icons draw nothing. |
+| `clear-screen-button` | `func(id: u32)` | Remove this mod's button; an unknown id is ignored. |
+
+## `container-events`
+
+Access: exported by the mod: the game calls it.
+
+Optional API level 22 exports for capability `container`. Each missing function is ignored, including mods built before this interface existed.
+
+### enum `pointer-kind`
+
+| Case | |
+| --- | --- |
+| `down` |  |
+| `up` |  |
+| `drag` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `pointer` | `func(kind: pointer-kind, x: f32, y: f32, button: u32, slot: option<u32>, shift: bool)` | Mouse and touch, synchronously BEFORE vanilla handles the event. Window GUI pixels; button 0 left, 1 right, 2 middle. Slot uses state(). Shift includes physical Shift and every running mod's shift latch. |
+| `scroll` | `func(x: f32, y: f32, steps: f32, slot: option<u32>) -> bool` | Wheel and two-finger touch scroll, before vanilla; positive away from the player. First mod returning true consumes; later mods are not called. |
+| `button` | `func(id: u32)` | The player clicked/tapped one of this mod's screen buttons. |
+| `opened` | `func()` | A survival or container screen opened (never creative inventory). |
+| `closed` | `func()` | The container screen closed; state() is now None. |
 
 ## `render`
 

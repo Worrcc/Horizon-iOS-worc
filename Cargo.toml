@@ -52,6 +52,7 @@ members = [
     "crates/horizon-mod-sdk/examples/beacons",
     "crates/horizon-mod-sdk/examples/mob-orders",
     "crates/horizon-mod-sdk/examples/canvas-test",
+    "crates/horizon-mod-sdk/examples/container-test",
     "mods/official/block-info",
     "mods/official/fps-overlay",
     "mods/official/keystrokes",

@@ -211,6 +211,17 @@ pub(super) fn draw_button(
     draw_button_label(batch, atlas, rect, label);
 }
 
+#[cfg(feature = "mods")]
+pub(super) fn draw_container_frame(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    lit: bool,
+) {
+    draw_button_frame(batch, atlas, rect, SLOT_FRAME, false);
+    draw_button_selection(batch, atlas, rect, SLOT_FRAME, lit);
+}
+
 fn draw_pause(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
     let (x, y) = (x + (w - 6.0) / 2.0, y + (h - 8.0) / 2.0);
     for dx in [0.0, 4.0] {
@@ -590,6 +601,19 @@ impl Game<'_> {
             self.mod_canvas_touch(touch.id, touch.phase, at);
             return;
         }
+        #[cfg(feature = "mods")]
+        if self.screen == Screen::Inventory && self.mods.mods.wants_container() {
+            // Like canvas screens, this surface owns its gesture recognizer.
+            // Release fingers left on the world's controls when it opened.
+            for output in self.touch.controls.release_all() {
+                self.apply_touch(event_loop, output, scale);
+            }
+        }
+        #[cfg(feature = "mods")]
+        if self.mod_container_touch(event_loop, &touch, at, scale) {
+            self.touch.controls.used = true;
+            return;
+        }
         let outputs =
             self.touch
                 .controls
@@ -661,7 +685,12 @@ impl Game<'_> {
         }
     }
 
-    fn apply_touch(&mut self, event_loop: &dyn EventLoopCtl, output: Output, scale: f32) {
+    pub(super) fn apply_touch(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        output: Output,
+        scale: f32,
+    ) {
         let result = match output {
             Output::Key(key, true) => self.control_key_down(key),
             Output::Key(key, false) => {
