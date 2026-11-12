@@ -1355,6 +1355,12 @@ interface %world {
     /// ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the
     /// server has no chunk loaded there.
     get-block: func(dimension: string, x: s32, y: s32, z: s32) -> option<string>;
+    /// The loaded chunk's OCEAN_FLOOR heights, by chunk coordinates (block
+    /// x >> 4, block z >> 4), as of this call: exactly 256 values, indexed
+    /// z * 16 + x for local x, z in 0..16. Each is the first Y above the
+    /// highest opaque block (fluids do not count, leaves do), or the column's
+    /// minimum Y when empty. None for an unloaded chunk or unknown dimension.
+    heightmap: func(dimension: string, x: s32, z: s32) -> option<list<s32>>;
     /// The biome at a position (`minecraft:plains`, ...), as the server
     /// stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded.
     get-biome: func(dimension: string, x: s32, y: s32, z: s32) -> option<string>;

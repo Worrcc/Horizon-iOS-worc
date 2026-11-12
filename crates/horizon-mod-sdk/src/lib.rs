@@ -40,6 +40,8 @@
 //! Level 24 adds [`client_world::harvest`] (the tool and tier a block needs)
 //! and [`input::set_auto_button_shown`]: automatic touch buttons start hidden.
 //! Level 25 adds [`input::set_touch_button_context`] for riding/held-item visibility.
+//! Level 26 adds [`server::world::heightmap`] for a loaded chunk's OCEAN_FLOOR heights,
+//! through the same `server::world` re-export as [`server::world::get_block`].
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.

@@ -1,4 +1,4 @@
-//! Read-only server-mod world queries: vanilla daylight, weather and sky visibility.
+//! Read-only server-mod world queries: vanilla daylight, weather, sky visibility and heights.
 use crate::{
     chunk::MIN_Y,
     chunk_map::ChunkMap,
@@ -6,6 +6,40 @@ use crate::{
     world::World,
 };
 use horizon_mods::WorldTime;
+use horizon_world::{
+    heightmap::{HeightmapState, HeightmapType},
+    registry::BlockStateId,
+    worldgen::terrain::TerrainBlockStates,
+};
+
+/// OCEAN_FLOOR first-available heights in local z * 16 + x order, for chunk coordinates.
+/// Loaded chunks retain WORLD_SURFACE rather than OCEAN_FLOOR: scan down from
+/// that cached map using the level's facts, as the game's `column_height` does.
+pub fn heightmap(
+    chunks: &ChunkMap,
+    x: i32,
+    z: i32,
+    properties: &impl TerrainBlockStates,
+) -> Option<Vec<i32>> {
+    let chunk = chunks.get(&(x, z))?;
+    let mut heights = Vec::with_capacity(256);
+    for z in 0..16 {
+        for x in 0..16 {
+            let surface = chunk.world_surface(x, z, |s| {
+                properties.heightmap_state(BlockStateId(s)).is_air()
+            });
+            let height = (chunk.min_y()..surface)
+                .rev()
+                .find(|&y| {
+                    HeightmapType::OceanFloor
+                        .is_opaque(properties.heightmap_state(chunk.block(x, y, z)))
+                })
+                .map_or(chunk.min_y(), |y| y + 1);
+            heights.push(height);
+        }
+    }
+    Some(heights)
+}
 
 /// All dimensions share the Overworld's clock and weather data. `isBrightOutside`
 /// additionally excludes fixed-time dimensions; rain and thunder use Level's thresholds.
@@ -43,6 +77,51 @@ mod tests {
     use crate::chunk::{Chunk, Light};
     use horizon_world::registry::BlockStateId;
     use std::sync::Arc;
+
+    #[test]
+    fn heightmap_packs_ocean_floor_columns_and_follows_edits() {
+        let properties = crate::assets::Properties::for_tests(&[
+            (true, false, false, false),  // air
+            (false, false, true, true),   // stone
+            (false, true, false, false),  // water
+            (false, false, true, false),  // leaves
+            (false, false, false, false), // grass
+        ]);
+        let mut chunk = Chunk::empty(-2, 3);
+        for z in 0..16 {
+            for x in 0..16 {
+                let y = MIN_Y + z * 16 + x;
+                chunk.set(x, y, z, 1);
+                chunk.set(x, y + 1, z, 2);
+                chunk.set(x, y + 2, z, 4);
+            }
+        }
+        // Leaves count, water and plants do not. Empty columns use min Y.
+        chunk.set(1, 300, 2, 3);
+        for y in MIN_Y..MIN_Y + 3 {
+            chunk.set(0, y, 0, 0);
+        }
+        let mut chunks = ChunkMap::default();
+        chunks.insert((-2, 3), Arc::new(chunk));
+        let heights = heightmap(&chunks, -2, 3, &properties).unwrap();
+        assert_eq!(heights.len(), 256);
+        for (index, &height) in heights.iter().enumerate() {
+            let expected = match index {
+                0 => MIN_Y,
+                33 => 301,
+                _ => MIN_Y + index as i32 + 1,
+            };
+            assert_eq!(height, expected, "column {index}");
+        }
+        assert!(heightmap(&chunks, -32, 48, &properties).is_none());
+        assert!(heightmap(&chunks, 3, -2, &properties).is_none());
+        let chunk = Arc::make_mut(chunks.get_mut(&(-2, 3)).unwrap());
+        chunk.set(1, 300, 2, 0);
+        chunk.set(15, 319, 15, 1);
+        let heights = heightmap(&chunks, -2, 3, &properties).unwrap();
+        assert_eq!(heights[33], -30);
+        assert_eq!(heights[255], 320);
+    }
 
     #[test]
     fn sky_visibility_reads_sky_light_and_dimension_bounds_in_loaded_chunks() {
