@@ -18,7 +18,7 @@ const NAME: u32 = 0xFF_FFFF;
 /// The source line: blue, as tooltips name a mod.
 const SOURCE: u32 = 0x55_55FF;
 const DETAIL: u32 = 0xAA_AAAA;
-/// The harvest line: the held item drops the block, or it does not.
+/// The harvest mark: the held item drops the block, or it does not.
 const CAN_HARVEST: u32 = 0x55_FF55;
 const CANNOT_HARVEST: u32 = 0xFF_5555;
 const PAD: f32 = 4.0;
@@ -38,12 +38,15 @@ const PLACES: [(Place, &str, &str); 3] = [
 /// Targets: survival block reach, or farther.
 const REACHES: [(f32, &str); 3] = [(4.5, "Reach"), (16.0, "16 blocks"), (64.0, "64 blocks")];
 
+const OPACITIES: [u32; 4] = [100, 75, 50, 25];
+
 /// Settings page buttons.
 const PLACE_BUTTON: u32 = 1;
 const REACH_BUTTON: u32 = 2;
 const SOURCE_BUTTON: u32 = 3;
 const COORDS_BUTTON: u32 = 4;
 const TOOL_BUTTON: u32 = 5;
+const OPACITY_BUTTON: u32 = 6;
 
 struct BlockInfo {
     place: usize,
@@ -52,6 +55,7 @@ struct BlockInfo {
     coords: bool,
     /// The tool (and tier) a block needs.
     tool: bool,
+    opacity: usize,
     /// Item names by id, in the player's language: read once in a world.
     names: Option<HashMap<String, String>>,
     /// What the box shows now (and where), to redraw only on a change.
@@ -101,7 +105,35 @@ fn item_for(block: &str, names: &HashMap<String, String>) -> Option<String> {
         .find(|id| names.contains_key(id))
 }
 
+fn with_opacity(color: u32, percent: u32) -> u32 {
+    ((color >> 24) * percent / 100) << 24 | (color & 0x00FF_FFFF)
+}
+
 impl BlockInfo {
+    fn cycle_opacity(&mut self) {
+        self.opacity = (self.opacity + 1) % OPACITIES.len();
+    }
+
+    fn shown_key(
+        &self,
+        item: &Option<String>,
+        lines: &[(String, u32)],
+        harvest: &Option<HarvestRow>,
+    ) -> Vec<String> {
+        item.iter()
+            .cloned()
+            .chain(lines.iter().map(|(t, c)| format!("{c:06X}{t}")))
+            .chain(harvest.iter().filter_map(|row| match row {
+                HarvestRow::Icons(items, frame) => Some(format!("{frame:?}{}", items.join(","))),
+                HarvestRow::Text(..) => None,
+            }))
+            .chain(std::iter::once(format!(
+                "opacity:{}",
+                OPACITIES[self.opacity]
+            )))
+            .collect()
+    }
+
     fn names(&mut self) -> &HashMap<String, String> {
         self.names.get_or_insert_with(|| {
             recipes::items()
@@ -129,7 +161,9 @@ impl BlockInfo {
             .cloned()
             .unwrap_or_else(|| pretty(path));
         let mut lines = vec![(name, NAME)];
-        if coords {
+        if source {
+            lines.push((source_name(namespace), SOURCE));
+        } else if coords {
             lines.push((
                 format!("{}, {}, {}", hit.block_x, hit.block_y, hit.block_z),
                 DETAIL,
@@ -140,9 +174,6 @@ impl BlockInfo {
         } else {
             None
         };
-        if source {
-            lines.push((source_name(namespace), SOURCE));
-        }
         (item, lines, harvest)
     }
 
@@ -162,21 +193,14 @@ impl BlockInfo {
         } else {
             hit.name.clone()
         };
-        let mut lines = vec![
-            (name, NAME),
-            (
-                format!("Health: {} / {}", hit.health, hit.max_health),
-                DETAIL,
-            ),
-        ];
-        if self.coords {
-            lines.push((
-                format!("{}, {}, {}", hit.x.floor(), hit.y.floor(), hit.z.floor()),
-                DETAIL,
-            ));
-        }
+        let mut lines = vec![(name, NAME)];
         if self.source {
             lines.push((source_name(namespace), SOURCE));
+        } else {
+            lines.push((
+                format!("Health: {} / {}", hit.health, hit.max_health),
+                DETAIL,
+            ));
         }
         lines
     }
@@ -186,103 +210,21 @@ impl BlockInfo {
         let target = game::raycast_entity(distance)
             .map(|hit| (None, self.entity_lines(&hit), None))
             .or_else(|| game::raycast(distance).map(|hit| self.lines(&hit)));
-        let Some((item, mut lines, harvest)) = target else {
+        let Some((item, lines, harvest)) = target else {
             self.clear();
             return;
         };
-        // A text harvest row is a line under the name; icons get a row there.
-        let mut icons = None;
-        match harvest {
-            Some(HarvestRow::Text(t, c)) => lines.insert(1.min(lines.len()), (t, c)),
-            Some(HarvestRow::Icons(items, frame)) => icons = Some((items, frame)),
-            None => {}
-        }
-        let key: Vec<String> = item
-            .iter()
-            .cloned()
-            .chain(lines.iter().map(|(t, c)| format!("{c:06X}{t}")))
-            .chain(icons.iter().map(|(i, f)| format!("{f:?}{}", i.join(","))))
-            .collect();
+        let key = self.shown_key(&item, &lines, &harvest);
         if self.shown.as_ref() == Some(&(key.clone(), self.place)) {
             return;
         }
-        let text_x = if item.is_some() {
-            PAD + ICON + PAD
-        } else {
-            PAD
-        };
-        let icons_w = icons.as_ref().map_or(0.0, |(i, f)| {
-            i.len() as f32 * ICON_STEP + if f.is_some() { MARK_W } else { 0.0 }
-        });
-        let icons_h = if icons.is_some() { ICON_STEP } else { 0.0 };
-        let widest = lines
-            .iter()
-            .map(|(t, _)| render::text_width(t))
-            .fold(icons_w, f32::max);
-        let w = text_x + widest + PAD;
-        let h = (PAD * 2.0 + lines.len() as f32 * LINE + icons_h).max(PAD * 2.0 + ICON);
-        let mut shapes = vec![
-            Shape::Fill(FillShape {
-                rect: Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    w,
-                    h,
-                },
-                color: BORDER,
-            }),
-            Shape::Fill(FillShape {
-                rect: Rect {
-                    x: 1.0,
-                    y: 1.0,
-                    w: w - 2.0,
-                    h: h - 2.0,
-                },
-                color: BACKGROUND,
-            }),
-        ];
-        if let Some(item) = item {
-            shapes.push(Shape::Item(ItemShape {
-                item,
-                at: Point {
-                    x: PAD,
-                    y: (h - ICON) / 2.0,
-                },
-                scale: 1.0,
-            }));
-        }
-        let mut y = (h - lines.len() as f32 * LINE - icons_h) / 2.0 + 1.0;
-        for (i, (text, color)) in lines.into_iter().enumerate() {
-            shapes.push(Shape::Text(TextShape {
-                text,
-                at: Point { x: text_x, y },
-                color,
-                centered: false,
-                shadow: true,
-            }));
-            y += LINE;
-            // The tool icons sit right under the name.
-            if i == 0
-                && let Some((items, frame)) = icons.take()
-            {
-                let n = items.len();
-                for (k, item) in items.into_iter().enumerate() {
-                    shapes.push(Shape::Item(ItemShape {
-                        item,
-                        at: Point {
-                            x: text_x + k as f32 * ICON_STEP,
-                            y,
-                        },
-                        scale: 1.0,
-                    }));
-                }
-                if let Some(color) = frame {
-                    let x = text_x + n as f32 * ICON_STEP;
-                    mark(&mut shapes, x, y + (ICON - 6.0) / 2.0, color == CAN_HARVEST);
-                }
-                y += ICON_STEP;
-            }
-        }
+        let (w, h, mut shapes) = box_shapes(
+            item,
+            lines,
+            harvest,
+            OPACITIES[self.opacity],
+            render::text_width,
+        );
         match PLACES[self.place].0 {
             Place::Corner(corner) => {
                 render::set_hud(&[]);
@@ -325,6 +267,10 @@ impl BlockInfo {
                 id: TOOL_BUTTON,
                 label: format!("Tool needed: {}", on(self.tool)),
             }),
+            Widget::Button(ButtonWidget {
+                id: OPACITY_BUTTON,
+                label: format!("Opacity: {}%", OPACITIES[self.opacity]),
+            }),
         ]);
     }
 
@@ -335,10 +281,114 @@ impl BlockInfo {
         let _ = storage::set("source", flag(self.source).as_bytes());
         let _ = storage::set("coords", flag(self.coords).as_bytes());
         let _ = storage::set("tool", flag(self.tool).as_bytes());
+        let _ = storage::set("opacity", OPACITIES[self.opacity].to_string().as_bytes());
     }
 }
 
-/// What a block needs, under its name.
+/// Build the box independently of the host, using its font's measured widths.
+fn box_shapes(
+    item: Option<String>,
+    lines: Vec<(String, u32)>,
+    harvest: Option<HarvestRow>,
+    opacity: u32,
+    text_width: impl Fn(&str) -> f32,
+) -> (f32, f32, Vec<Shape>) {
+    // Text-only harvest hints are omitted to keep the box to two text lines.
+    let icons = match harvest {
+        Some(HarvestRow::Icons(items, frame)) => Some((items, frame)),
+        _ => None,
+    };
+    let text_x = if item.is_some() {
+        PAD + ICON + PAD
+    } else {
+        PAD
+    };
+    let icons_w = icons.as_ref().map_or(0.0, |(items, frame)| {
+        PAD + items.len() as f32 * ICON_STEP + if frame.is_some() { MARK_W } else { 0.0 }
+    });
+    let name_w = text_width(&lines[0].0);
+    let widest = lines
+        .iter()
+        .skip(1)
+        .map(|(text, _)| text_width(text))
+        .fold(name_w + icons_w, f32::max);
+    let w = text_x + widest + PAD;
+    let icon_height = if item.is_some() || icons.is_some() {
+        ICON
+    } else {
+        0.0
+    };
+    let h = PAD * 2.0 + (lines.len() as f32 * LINE).max(icon_height);
+    let mut shapes = vec![
+        Shape::Fill(FillShape {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            },
+            color: with_opacity(BORDER, opacity),
+        }),
+        Shape::Fill(FillShape {
+            rect: Rect {
+                x: 1.0,
+                y: 1.0,
+                w: w - 2.0,
+                h: h - 2.0,
+            },
+            color: with_opacity(BACKGROUND, opacity),
+        }),
+    ];
+    if let Some(item) = item {
+        shapes.push(Shape::Item(ItemShape {
+            item,
+            at: Point {
+                x: PAD,
+                y: (h - ICON) / 2.0,
+            },
+            scale: 1.0,
+        }));
+    }
+    let top = (h - lines.len() as f32 * LINE) / 2.0 + 1.0;
+    if let Some((items, frame)) = icons {
+        let x = text_x + name_w + PAD;
+        let y = top - 1.0 + (LINE - ICON) / 2.0;
+        let n = items.len();
+        for (k, item) in items.into_iter().enumerate() {
+            shapes.push(Shape::Item(ItemShape {
+                item,
+                at: Point {
+                    x: x + k as f32 * ICON_STEP,
+                    y,
+                },
+                scale: 1.0,
+            }));
+        }
+        if let Some(color) = frame {
+            mark(
+                &mut shapes,
+                x + n as f32 * ICON_STEP,
+                y + (ICON - 6.0) / 2.0,
+                color == CAN_HARVEST,
+            );
+        }
+    }
+    for (i, (text, color)) in lines.into_iter().enumerate() {
+        shapes.push(Shape::Text(TextShape {
+            text,
+            at: Point {
+                x: text_x,
+                y: top + i as f32 * LINE,
+            },
+            color,
+            centered: false,
+            shadow: true,
+        }));
+    }
+    (w, h, shapes)
+}
+
+/// What a block needs, shown beside its name when represented by icons.
 #[derive(Clone, Debug, PartialEq)]
 enum HarvestRow {
     /// Tool icons; framed green or red (the held item drops the block or not)
@@ -457,6 +507,10 @@ impl Mod for BlockInfo {
             source: stored("source").is_none_or(|v| v == "true"),
             coords: stored("coords").is_some_and(|v| v == "true"),
             tool: stored("tool").is_none_or(|v| v == "true"),
+            opacity: stored("opacity")
+                .and_then(|v| v.parse::<u32>().ok())
+                .and_then(|v| OPACITIES.iter().position(|&o| o == v))
+                .unwrap_or(0),
             names: None,
             shown: None,
         };
@@ -479,6 +533,7 @@ impl Mod for BlockInfo {
             SOURCE_BUTTON => self.source = !self.source,
             COORDS_BUTTON => self.coords = !self.coords,
             TOOL_BUTTON => self.tool = !self.tool,
+            OPACITY_BUTTON => self.cycle_opacity(),
             _ => return,
         }
         self.save();
@@ -556,6 +611,7 @@ mod tests {
             source: true,
             coords: false,
             tool: true,
+            opacity: 0,
             names: None,
             shown: None,
         };
@@ -570,11 +626,7 @@ mod tests {
         };
         assert_eq!(
             info.entity_lines(&hit),
-            vec![
-                ("Ruby Guardian".into(), NAME),
-                ("Health: 37.5 / 80".into(), DETAIL),
-                ("Ruby".into(), SOURCE),
-            ]
+            vec![("Ruby Guardian".into(), NAME), ("Ruby".into(), SOURCE)]
         );
         hit.health = 12.0;
         hit.name = "entity.ruby.ruby_golem".into();
@@ -585,8 +637,255 @@ mod tests {
             vec![
                 ("Ruby Golem".into(), NAME),
                 ("Health: 12 / 80".into(), DETAIL),
-                ("-1, 64, 3".into(), DETAIL),
             ]
+        );
+        for source in [false, true] {
+            for coords in [false, true] {
+                info.source = source;
+                info.coords = coords;
+                let lines = info.entity_lines(&hit);
+                assert_eq!(lines.len(), 2);
+                assert_eq!(
+                    lines[1],
+                    if source {
+                        ("Ruby".into(), SOURCE)
+                    } else {
+                        ("Health: 12 / 80".into(), DETAIL)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn block_lines_prefer_source_and_cap_text_at_two() {
+        let mut info = BlockInfo {
+            place: 0,
+            reach: 0,
+            source: true,
+            coords: true,
+            tool: false,
+            opacity: 0,
+            names: Some(HashMap::from([("minecraft:stone".into(), "Stone".into())])),
+            shown: None,
+        };
+        let hit = game::Hit {
+            block: "minecraft:stone".into(),
+            block_x: -1,
+            block_y: 64,
+            block_z: 3,
+            x: -0.5,
+            y: 64.0,
+            z: 3.0,
+        };
+        for source in [false, true] {
+            for coords in [false, true] {
+                info.source = source;
+                info.coords = coords;
+                let (item, lines, harvest) = info.lines(&hit);
+                assert_eq!(item.as_deref(), Some("minecraft:stone"));
+                assert_eq!(harvest, None);
+                let mut expected = vec![("Stone".into(), NAME)];
+                if source {
+                    expected.push(("Minecraft".into(), SOURCE));
+                } else if coords {
+                    expected.push(("-1, 64, 3".into(), DETAIL));
+                }
+                assert_eq!(lines, expected);
+                assert!(lines.len() <= 2);
+            }
+        }
+    }
+
+    fn stone_lines() -> Vec<(String, u32)> {
+        vec![("Stone".into(), NAME), ("Minecraft".into(), SOURCE)]
+    }
+
+    // A fixed-width font isolates the layout from the game's host calls.
+    fn measure(text: &str) -> f32 {
+        text.len() as f32 * 6.0
+    }
+
+    #[test]
+    fn harvest_icons_sit_right_of_name_without_adding_a_row() {
+        for frame in [None, Some(CAN_HARVEST), Some(CANNOT_HARVEST)] {
+            let harvest = Some(HarvestRow::Icons(
+                vec!["minecraft:wooden_axe".into(), "minecraft:wooden_hoe".into()],
+                frame,
+            ));
+            let (w, h, shapes) = box_shapes(
+                Some("minecraft:stone".into()),
+                stone_lines(),
+                harvest,
+                100,
+                measure,
+            );
+            assert_eq!(h, 28.0);
+            assert_eq!(w, if frame.is_some() { 107.0 } else { 98.0 });
+            let items: Vec<_> = shapes
+                .iter()
+                .filter_map(|shape| match shape {
+                    Shape::Item(item) => Some(item),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].item, "minecraft:stone");
+            assert_eq!((items[0].at.x, items[0].at.y), (4.0, 6.0));
+            assert_eq!(items[1].item, "minecraft:wooden_axe");
+            assert_eq!((items[1].at.x, items[1].at.y), (58.0, 1.0));
+            assert_eq!(items[2].item, "minecraft:wooden_hoe");
+            assert_eq!((items[2].at.x, items[2].at.y), (76.0, 1.0));
+            let texts: Vec<_> = shapes
+                .iter()
+                .filter_map(|shape| match shape {
+                    Shape::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(texts.len(), 2);
+            assert_eq!((texts[0].at.x, texts[0].at.y), (24.0, 5.0));
+            assert_eq!((texts[1].at.x, texts[1].at.y), (24.0, 15.0));
+            let marks: Vec<_> = shapes
+                .iter()
+                .skip(2)
+                .filter_map(|shape| match shape {
+                    Shape::Fill(fill) => Some(fill),
+                    _ => None,
+                })
+                .collect();
+            if let Some(color) = frame {
+                assert!(marks.iter().any(|fill| fill.color == 0xFF00_0000 | color));
+                assert!(marks.iter().all(|fill| fill.rect.x >= 94.0));
+            } else {
+                assert!(marks.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn box_fits_long_source_and_single_line_icons() {
+        let (w, h, _) = box_shapes(
+            Some("minecraft:stone".into()),
+            vec![
+                ("Stone".into(), NAME),
+                ("A very long mod name".into(), SOURCE),
+            ],
+            harvest_row(&harvest(&["axe"], None, false, true)),
+            100,
+            measure,
+        );
+        assert_eq!((w, h), (148.0, 28.0));
+        for item in [None, Some("minecraft:stone".into())] {
+            let (w, h, shapes) = box_shapes(
+                item.clone(),
+                vec![("Stone".into(), NAME)],
+                harvest_row(&harvest(&["axe"], None, false, true)),
+                100,
+                measure,
+            );
+            assert_eq!(h, 24.0);
+            assert_eq!(w, if item.is_some() { 80.0 } else { 60.0 });
+            for shape in shapes {
+                if let Shape::Item(icon) = shape {
+                    assert!(icon.at.y >= 0.0);
+                    assert!(icon.at.y + 16.0 <= h);
+                    assert!(icon.at.x + 16.0 <= w);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_harvest_hints_do_not_add_a_third_line() {
+        let mut bedrock = harvest(&[], None, false, true);
+        bedrock.hardness = -1.0;
+        for data in [bedrock, harvest(&[], None, true, false)] {
+            let hint = harvest_row(&data);
+            assert!(matches!(hint, Some(HarvestRow::Text(..))));
+            let (w, h, shapes) = box_shapes(
+                Some("minecraft:stone".into()),
+                stone_lines(),
+                hint,
+                100,
+                measure,
+            );
+            assert_eq!((w, h), (82.0, 28.0));
+            let texts: Vec<_> = shapes
+                .iter()
+                .filter_map(|shape| match shape {
+                    Shape::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(texts, ["Stone", "Minecraft"]);
+        }
+    }
+
+    #[test]
+    fn opacity_cycles_scales_box_fills_and_invalidates_cache() {
+        let mut info = BlockInfo {
+            place: 0,
+            reach: 0,
+            source: true,
+            coords: false,
+            tool: true,
+            opacity: 0,
+            names: None,
+            shown: None,
+        };
+        let item = Some("minecraft:stone".into());
+        let hint = harvest_row(&harvest(
+            &["pickaxe"],
+            Some(("stone", "pickaxe")),
+            true,
+            true,
+        ));
+        let first_key = info.shown_key(&item, &stone_lines(), &hint);
+        let mut previous_key = None;
+        for (percent, border, background) in [
+            (100, 0xFF50_00A0, 0xE010_0010),
+            (75, 0xBF50_00A0, 0xA810_0010),
+            (50, 0x7F50_00A0, 0x7010_0010),
+            (25, 0x3F50_00A0, 0x3810_0010),
+            (100, 0xFF50_00A0, 0xE010_0010),
+        ] {
+            assert_eq!(OPACITIES[info.opacity], percent);
+            let key = info.shown_key(&item, &stone_lines(), &hint);
+            assert_ne!(previous_key.as_ref(), Some(&key));
+            previous_key = Some(key.clone());
+            let (_, _, shapes) =
+                box_shapes(item.clone(), stone_lines(), hint.clone(), percent, measure);
+            for (shape, expected) in shapes.iter().take(2).zip([border, background]) {
+                let Shape::Fill(fill) = shape else {
+                    panic!("expected a box fill")
+                };
+                assert_eq!(fill.color, expected);
+            }
+            for shape in shapes.iter().skip(2) {
+                match shape {
+                    Shape::Text(text) => {
+                        assert_eq!(text.color, if text.text == "Stone" { NAME } else { SOURCE })
+                    }
+                    Shape::Fill(fill) => assert_eq!(fill.color >> 24, 255),
+                    _ => {}
+                }
+            }
+            if percent == 100 {
+                assert_eq!(key, first_key);
+            }
+            info.cycle_opacity();
+        }
+        info.opacity = 0;
+        let cannot_harvest = harvest_row(&harvest(
+            &["pickaxe"],
+            Some(("stone", "pickaxe")),
+            true,
+            false,
+        ));
+        assert_ne!(
+            info.shown_key(&item, &stone_lines(), &cannot_harvest),
+            first_key
         );
     }
 
