@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.68",
+          "buildVersion": "0.2.0.68",
+          "date": "2026-11-12T21:44:53Z",
+          "localizedDescription": "Branch claude/essentials-aim-api, commit 163191448.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-68/Horizon.ipa",
+          "size": 34460633,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.67",
           "buildVersion": "0.2.0.67",
           "date": "2026-11-12T09:21:58Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-58/Horizon.ipa",
           "size": 34265077,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.56",
-          "buildVersion": "0.2.0.56",
-          "date": "2026-11-10T22:00:31Z",
-          "localizedDescription": "Branch claude/liteminer-api, commit 38263bdb7.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-56/Horizon.ipa",
-          "size": 34216947,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.67",
-      "versionDate": "2026-11-12T09:21:58Z",
-      "versionDescription": "Branch claude/streams-api, commit 685eac69b.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-67/Horizon.ipa",
-      "size": 34433384
+      "version": "0.2.0.68",
+      "versionDate": "2026-11-12T21:44:53Z",
+      "versionDescription": "Branch claude/essentials-aim-api, commit 163191448.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-68/Horizon.ipa",
+      "size": 34460633
     }
   ],
   "news": []
