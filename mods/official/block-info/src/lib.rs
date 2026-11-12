@@ -34,18 +34,21 @@ const PLACES: [(Place, &str, &str); 3] = [
 ];
 /// Targets: survival block reach, or farther.
 const REACHES: [(f32, &str); 3] = [(4.5, "Reach"), (16.0, "16 blocks"), (64.0, "64 blocks")];
+const OPACITIES: [u32; 4] = [100, 75, 50, 25];
 
 /// Settings page buttons.
 const PLACE_BUTTON: u32 = 1;
 const REACH_BUTTON: u32 = 2;
 const SOURCE_BUTTON: u32 = 3;
 const COORDS_BUTTON: u32 = 4;
+const OPACITY_BUTTON: u32 = 5;
 
 struct BlockInfo {
     place: usize,
     reach: usize,
     source: bool,
     coords: bool,
+    opacity: usize,
     /// Item names by id, in the player's language: read once in a world.
     names: Option<HashMap<String, String>>,
     /// What the box shows now (and where), to redraw only on a change.
@@ -95,7 +98,72 @@ fn item_for(block: &str, names: &HashMap<String, String>) -> Option<String> {
         .find(|id| names.contains_key(id))
 }
 
+/// A simple tool hint from the block's path, independent of its namespace.
+fn tool_for(block: &str) -> Option<&'static str> {
+    let path = block.split_once(':').map_or(block, |(_, path)| path);
+    if path.contains("ore")
+        || [
+            "stone",
+            "cobblestone",
+            "brick",
+            "concrete",
+            "obsidian",
+            "deepslate",
+            "netherrack",
+            "terracotta",
+        ]
+        .iter()
+        .any(|name| path.ends_with(name))
+    {
+        Some("minecraft:iron_pickaxe")
+    } else if [
+        "log",
+        "wood",
+        "planks",
+        "stem",
+        "hyphae",
+        "chest",
+        "crafting_table",
+        "bookshelf",
+        "sign",
+        "fence",
+        "door",
+    ]
+    .iter()
+    .any(|name| path.contains(name))
+    {
+        Some("minecraft:iron_axe")
+    } else if [
+        "dirt",
+        "grass_block",
+        "sand",
+        "gravel",
+        "clay",
+        "soul_sand",
+        "snow",
+        "mud",
+        "podzol",
+        "mycelium",
+        "farmland",
+    ]
+    .iter()
+    .any(|name| path.contains(name))
+    {
+        Some("minecraft:iron_shovel")
+    } else {
+        None
+    }
+}
+
+fn with_opacity(color: u32, percent: u32) -> u32 {
+    ((color >> 24) * percent / 100) << 24 | (color & 0x00FF_FFFF)
+}
+
 impl BlockInfo {
+    fn cycle_opacity(&mut self) {
+        self.opacity = (self.opacity + 1) % OPACITIES.len();
+    }
+
     fn names(&mut self) -> &HashMap<String, String> {
         self.names.get_or_insert_with(|| {
             recipes::items()
@@ -120,14 +188,13 @@ impl BlockInfo {
             .cloned()
             .unwrap_or_else(|| pretty(path));
         let mut lines = vec![(name, NAME)];
-        if coords {
+        if source {
+            lines.push((source_name(namespace), SOURCE));
+        } else if coords {
             lines.push((
                 format!("{}, {}, {}", hit.block_x, hit.block_y, hit.block_z),
                 DETAIL,
             ));
-        }
-        if source {
-            lines.push((source_name(namespace), SOURCE));
         }
         (item, lines)
     }
@@ -148,21 +215,14 @@ impl BlockInfo {
         } else {
             hit.name.clone()
         };
-        let mut lines = vec![
-            (name, NAME),
-            (
-                format!("Health: {} / {}", hit.health, hit.max_health),
-                DETAIL,
-            ),
-        ];
-        if self.coords {
-            lines.push((
-                format!("{}, {}, {}", hit.x.floor(), hit.y.floor(), hit.z.floor()),
-                DETAIL,
-            ));
-        }
+        let mut lines = vec![(name, NAME)];
         if self.source {
             lines.push((source_name(namespace), SOURCE));
+        } else {
+            lines.push((
+                format!("Health: {} / {}", hit.health, hit.max_health),
+                DETAIL,
+            ));
         }
         lines
     }
@@ -170,15 +230,21 @@ impl BlockInfo {
     fn draw(&mut self) {
         let distance = REACHES[self.reach].0;
         let target = game::raycast_entity(distance)
-            .map(|hit| (None, self.entity_lines(&hit)))
-            .or_else(|| game::raycast(distance).map(|hit| self.lines(&hit)));
-        let Some((item, lines)) = target else {
+            .map(|hit| (None, None, self.entity_lines(&hit)))
+            .or_else(|| {
+                game::raycast(distance).map(|hit| {
+                    let (item, lines) = self.lines(&hit);
+                    (item, tool_for(&hit.block), lines)
+                })
+            });
+        let Some((item, tool, lines)) = target else {
             self.clear();
             return;
         };
         let key: Vec<String> = item
             .iter()
             .cloned()
+            .chain(tool.map(str::to_owned))
             .chain(lines.iter().map(|(t, _)| t.clone()))
             .collect();
         if self.shown.as_ref() == Some(&(key.clone(), self.place)) {
@@ -191,10 +257,23 @@ impl BlockInfo {
         };
         let widest = lines
             .iter()
-            .map(|(t, _)| render::text_width(t))
+            .enumerate()
+            .map(|(i, (t, _))| {
+                render::text_width(t)
+                    + if i == 0 && tool.is_some() {
+                        PAD + ICON
+                    } else {
+                        0.0
+                    }
+            })
             .fold(0.0, f32::max);
         let w = text_x + widest + PAD;
-        let h = (PAD * 2.0 + lines.len() as f32 * LINE).max(PAD * 2.0 + ICON);
+        let icon_height = if item.is_some() || tool.is_some() {
+            ICON
+        } else {
+            0.0
+        };
+        let h = PAD * 2.0 + (lines.len() as f32 * LINE).max(icon_height);
         let mut shapes = vec![
             Shape::Fill(FillShape {
                 rect: Rect {
@@ -203,7 +282,7 @@ impl BlockInfo {
                     w,
                     h,
                 },
-                color: BORDER,
+                color: with_opacity(BORDER, OPACITIES[self.opacity]),
             }),
             Shape::Fill(FillShape {
                 rect: Rect {
@@ -212,7 +291,7 @@ impl BlockInfo {
                     w: w - 2.0,
                     h: h - 2.0,
                 },
-                color: BACKGROUND,
+                color: with_opacity(BACKGROUND, OPACITIES[self.opacity]),
             }),
         ];
         if let Some(item) = item {
@@ -226,6 +305,16 @@ impl BlockInfo {
             }));
         }
         let top = (h - lines.len() as f32 * LINE) / 2.0 + 1.0;
+        if let Some(tool) = tool {
+            shapes.push(Shape::Item(ItemShape {
+                item: tool.to_owned(),
+                at: Point {
+                    x: text_x + render::text_width(&lines[0].0) + PAD,
+                    y: top - 1.0 + (LINE - ICON) / 2.0,
+                },
+                scale: 1.0,
+            }));
+        }
         for (i, (text, color)) in lines.into_iter().enumerate() {
             shapes.push(Shape::Text(TextShape {
                 text,
@@ -276,6 +365,10 @@ impl BlockInfo {
                 id: COORDS_BUTTON,
                 label: format!("Coordinates: {}", on(self.coords)),
             }),
+            Widget::Button(ButtonWidget {
+                id: OPACITY_BUTTON,
+                label: format!("Opacity: {}%", OPACITIES[self.opacity]),
+            }),
         ]);
     }
 
@@ -285,6 +378,7 @@ impl BlockInfo {
         let _ = storage::set("distance", REACHES[self.reach].0.to_string().as_bytes());
         let _ = storage::set("source", flag(self.source).as_bytes());
         let _ = storage::set("coords", flag(self.coords).as_bytes());
+        let _ = storage::set("opacity", OPACITIES[self.opacity].to_string().as_bytes());
     }
 }
 
@@ -326,6 +420,10 @@ impl Mod for BlockInfo {
             reach,
             source: stored("source").is_none_or(|v| v == "true"),
             coords: stored("coords").is_some_and(|v| v == "true"),
+            opacity: stored("opacity")
+                .and_then(|v| v.parse::<u32>().ok())
+                .and_then(|v| OPACITIES.iter().position(|&o| o == v))
+                .unwrap_or(0),
             names: None,
             shown: None,
         };
@@ -347,10 +445,12 @@ impl Mod for BlockInfo {
             REACH_BUTTON => self.reach = (self.reach + 1) % REACHES.len(),
             SOURCE_BUTTON => self.source = !self.source,
             COORDS_BUTTON => self.coords = !self.coords,
+            OPACITY_BUTTON => self.cycle_opacity(),
             _ => return,
         }
         self.save();
         self.page();
+        // Settings, including opacity, invalidate the cached shapes.
         self.clear();
         self.draw();
     }
@@ -372,6 +472,7 @@ mod tests {
             reach: 0,
             source: true,
             coords: false,
+            opacity: 0,
             names: None,
             shown: None,
         };
@@ -386,11 +487,7 @@ mod tests {
         };
         assert_eq!(
             info.entity_lines(&hit),
-            vec![
-                ("Ruby Guardian".into(), NAME),
-                ("Health: 37.5 / 80".into(), DETAIL),
-                ("Ruby".into(), SOURCE),
-            ]
+            vec![("Ruby Guardian".into(), NAME), ("Ruby".into(), SOURCE)]
         );
         hit.health = 12.0;
         hit.name = "entity.ruby.ruby_golem".into();
@@ -401,9 +498,129 @@ mod tests {
             vec![
                 ("Ruby Golem".into(), NAME),
                 ("Health: 12 / 80".into(), DETAIL),
-                ("-1, 64, 3".into(), DETAIL),
             ]
         );
+        for source in [false, true] {
+            for coords in [false, true] {
+                info.source = source;
+                info.coords = coords;
+                assert_eq!(info.entity_lines(&hit).len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn block_lines_prefer_source_and_never_exceed_two() {
+        let mut info = BlockInfo {
+            place: 0,
+            reach: 0,
+            source: true,
+            coords: true,
+            opacity: 0,
+            names: Some(HashMap::from([("minecraft:stone".into(), "Stone".into())])),
+            shown: None,
+        };
+        let hit = game::Hit {
+            block: "minecraft:stone".into(),
+            block_x: -1,
+            block_y: 64,
+            block_z: 3,
+            x: -0.5,
+            y: 64.0,
+            z: 3.0,
+        };
+        for source in [false, true] {
+            for coords in [false, true] {
+                info.source = source;
+                info.coords = coords;
+                let (item, lines) = info.lines(&hit);
+                assert_eq!(item.as_deref(), Some("minecraft:stone"));
+                let mut expected = vec![("Stone".into(), NAME)];
+                if source {
+                    expected.push(("Minecraft".into(), SOURCE));
+                } else if coords {
+                    expected.push(("-1, 64, 3".into(), DETAIL));
+                }
+                assert_eq!(lines, expected);
+                assert!(lines.len() <= 2);
+            }
+        }
+    }
+
+    #[test]
+    fn tools_follow_block_name_rules() {
+        for path in [
+            "diamond_ore",
+            "stone",
+            "cobblestone",
+            "brick",
+            "white_concrete",
+            "obsidian",
+            "deepslate",
+            "netherrack",
+            "red_terracotta",
+        ] {
+            assert_eq!(tool_for(path), Some("minecraft:iron_pickaxe"), "{path}");
+        }
+        for path in [
+            "oak_log",
+            "oak_wood",
+            "oak_planks",
+            "crimson_stem",
+            "warped_hyphae",
+            "chest",
+            "crafting_table",
+            "bookshelf",
+            "oak_wall_sign",
+            "oak_fence",
+            "oak_door",
+        ] {
+            assert_eq!(tool_for(path), Some("minecraft:iron_axe"), "{path}");
+        }
+        for path in [
+            "dirt",
+            "grass_block",
+            "sand",
+            "gravel",
+            "clay",
+            "soul_sand",
+            "snow_block",
+            "mud",
+            "podzol",
+            "mycelium",
+            "farmland",
+        ] {
+            assert_eq!(tool_for(path), Some("minecraft:iron_shovel"), "{path}");
+        }
+        assert_eq!(tool_for("ruby:ruby_ore"), Some("minecraft:iron_pickaxe"));
+        assert_eq!(
+            tool_for("minecraft:sandstone"),
+            Some("minecraft:iron_pickaxe")
+        );
+        assert_eq!(tool_for("minecraft:fire"), None);
+        assert_eq!(tool_for("ore_wood:glass"), None);
+        assert_eq!(tool_for("minecraft:stone_bricks"), None);
+    }
+
+    #[test]
+    fn opacity_cycles_and_scales_only_fill_alpha() {
+        let mut info = BlockInfo {
+            place: 0,
+            reach: 0,
+            source: true,
+            coords: false,
+            opacity: 0,
+            names: None,
+            shown: None,
+        };
+        for percent in [100, 75, 50, 25, 100] {
+            assert_eq!(OPACITIES[info.opacity], percent);
+            assert_eq!(with_opacity(BACKGROUND, percent) >> 24, 224 * percent / 100);
+            assert_eq!(with_opacity(BORDER, percent) >> 24, 255 * percent / 100);
+            assert_eq!(with_opacity(BACKGROUND, percent) & 0x00FF_FFFF, 0x10_0010);
+            assert_eq!(with_opacity(BORDER, percent) & 0x00FF_FFFF, 0x50_00A0);
+            info.cycle_opacity();
+        }
     }
 
     #[test]
