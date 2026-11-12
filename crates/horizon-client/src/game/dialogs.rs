@@ -48,6 +48,17 @@ fn warning_texts() -> (Text, Text, [Text; 2]) {
 }
 
 impl Game<'_> {
+    /// A dialog's text field has focus, with no warning/waiting overlay.
+    pub(super) fn dialog_typing(&self) -> bool {
+        !self.dialogs.warning
+            && self.dialogs.waiting.is_none()
+            && self.dialogs.open.as_ref().is_some_and(|o| {
+                o.focus
+                    .and_then(|f| o.fields.get(f))
+                    .is_some_and(Option::is_some)
+            })
+    }
+
     /// Whether a dialog screen takes the input.
     pub(super) fn dialog_open(&self) -> bool {
         let d = &self.dialogs;

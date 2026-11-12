@@ -12643,6 +12643,9 @@ impl ApplicationHandler for Game<'_> {
                 return;
             }
         };
+        if touch::ENABLED {
+            window.set_ime_allowed(false);
+        }
         horizon_client::telemetry::note_display(&window);
         match self.new_renderer(window.clone()) {
             Ok(r) => {
@@ -15140,6 +15143,9 @@ impl Loading {
                 return;
             }
         };
+        if touch::ENABLED {
+            window.set_ime_allowed(false);
+        }
         horizon_client::telemetry::note_display(&window);
         #[cfg(target_os = "ios")]
         ios::log_window(&window);
@@ -15181,9 +15187,16 @@ impl Loading {
             {
                 touch::MenuTouchAction::Account => account::tapped(),
                 touch::MenuTouchAction::ToggleKeyboard => {
-                    self.touch.keyboard = !self.touch.keyboard;
                     if let Some(window) = &self.window {
-                        window.set_ime_allowed(self.touch.keyboard);
+                        window.set_ime_allowed(false);
+                    }
+                    let wants_keyboard = self.menu_touch_typing();
+                    let events = self.touch.toggle_keyboard(size, wants_keyboard);
+                    self.menu_events(event_loop, events);
+                }
+                touch::MenuTouchAction::Keyboard(out) => {
+                    if let Some(out) = out {
+                        self.menu_osk_output(out);
                     }
                 }
                 touch::MenuTouchAction::Events(events) => self.menu_events(event_loop, events),
@@ -15261,6 +15274,10 @@ impl Loading {
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
         {
+            let wants_keyboard = touch::ENABLED && self.menu_touch_typing();
+            let at_top = self.menu_keyboard_at_top(size);
+            let events = self.touch.auto_keyboard(wants_keyboard, at_top, size);
+            self.menu_events(event_loop, events);
             let events = self.touch.update(size);
             self.menu_events(event_loop, events);
         }
@@ -15290,6 +15307,8 @@ impl Loading {
                 pad_menu::draw_arrow(&mut batch, &gui.atlas, x, y);
             }
         }
+        // Touch field focus uses the rectangles drawn by the startup menus.
+        horizon_client::widgets::end_frame(horizon_client::widgets::generation().wrapping_add(1));
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
@@ -15374,6 +15393,7 @@ impl Loading {
         game.fullscreen = self.fullscreen;
         game.panorama_rotation = self.panorama_rotation;
         self.menu.handoff(&mut game);
+        game.take_menu_touch(&mut self.touch);
         // The pads the title read go on in the game (desktop: one gilrs).
         game.pad = std::mem::take(&mut self.pad.pads);
         game.apply_settings();

@@ -1,4 +1,4 @@
-//! The on-screen keyboard a controller types with in focus mode (Horizon's
+//! The on-screen keyboard touch and controller users type with (Horizon's
 //! own; docs/controllers.md, "Text fields"): a QWERTY grid and a symbols
 //! grid in Horizon's design language, moved over with the D-pad or stick.
 //! A types the key, X deletes, Y is a space, Start is Enter, B closes it.
@@ -143,6 +143,39 @@ const SYMBOLS: [Row; 5] = [
     BOTTOM,
 ];
 
+const UNIT: f32 = 50.0;
+const GAP: f32 = 6.0;
+const KEY_H: f32 = 38.0;
+const WIDTH: f32 = 10.0 * UNIT + 9.0 * GAP;
+const HEIGHT: f32 = 5.0 * KEY_H + 4.0 * GAP + 24.0 + 30.0;
+
+fn origin([w, h]: [f32; 2], at_top: bool) -> (f32, f32) {
+    (
+        ((w - WIDTH) / 2.0).round(),
+        if at_top { 16.0 } else { h - HEIGHT - 16.0 },
+    )
+}
+
+fn key_rect(row: Row, r: usize, col: usize, size: [f32; 2], at_top: bool) -> [f32; 4] {
+    let (x, y) = origin(size, at_top);
+    let (left, units) = Keyboard::span(row, col);
+    [
+        x + left * (UNIT + GAP),
+        y + r as f32 * (KEY_H + GAP),
+        units * UNIT + (units - 1.0) * GAP,
+        KEY_H,
+    ]
+}
+
+fn close_rect(size: [f32; 2], at_top: bool) -> [f32; 4] {
+    let (x, y) = origin(size, at_top);
+    [x, y + 5.0 * (KEY_H + GAP), WIDTH, 30.0]
+}
+
+fn contains([x, y, w, h]: [f32; 4], (px, py): (f32, f32)) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
+}
+
 /// The keyboard's state while open.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Keyboard {
@@ -266,16 +299,60 @@ impl Keyboard {
         }
     }
 
+    /// Pure geometry shared with drawing: gaps do not hit a key.
+    fn key_at(&self, size: [f32; 2], at_top: bool, at: (f32, f32)) -> Option<Key> {
+        self.rows().iter().enumerate().find_map(|(r, row)| {
+            row.iter().enumerate().find_map(|(col, (key, _))| {
+                contains(key_rect(row, r, col, size, at_top), at).then_some(*key)
+            })
+        })
+    }
+
+    /// Pure hit test returning the output at a point in the same dp units as
+    /// drawing. Shift/layer keys produce no field output. Use `tap` to also
+    /// apply the key to the keyboard's selection, shift and layer state.
+    pub fn hit_test(&self, size: [f32; 2], at_top: bool, at: (f32, f32)) -> Option<Output> {
+        self.clone().tap(size, at_top, at)
+    }
+
+    /// Tap a key, applying Shift/layer state and returning the field's output.
+    /// This has no window or renderer dependencies; `size` and `at` are in dp.
+    pub fn tap(&mut self, size: [f32; 2], at_top: bool, at: (f32, f32)) -> Option<Output> {
+        if contains(close_rect(size, at_top), at) {
+            return Some(Output::Close);
+        }
+        let key = self.key_at(size, at_top, at)?;
+        let (r, col) = self
+            .rows()
+            .iter()
+            .enumerate()
+            .find_map(|(r, row)| row.iter().position(|(k, _)| *k == key).map(|col| (r, col)))?;
+        self.row = r;
+        self.col = col;
+        self.press()
+    }
+
+    /// The touch keyboard uses the same keys, with a tappable Close footer.
+    pub fn draw_touch(&self, ui: &mut Ui, at_top: bool, glyphs: GlyphStyle) {
+        self.draw(ui, at_top, glyphs);
+        let [x, y, w, h] = close_rect([ui.w, ui.h], at_top);
+        ui.rounded(x, y, w, h, ui_theme::RADIUS, color::BG);
+        ui.text_centered(
+            Face::Regular,
+            ui_theme::SMALL,
+            x + w / 2.0,
+            y + 2.0,
+            color::TEXT,
+            "Close",
+        );
+    }
+
     /// Draw the keyboard across the bottom of the screen, or the top when
     /// the field it types into is in the lower half.
     pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: GlyphStyle) {
-        const UNIT: f32 = 50.0;
-        const GAP: f32 = 6.0;
-        const KEY_H: f32 = 38.0;
-        let width = 10.0 * UNIT + 9.0 * GAP;
-        let height = 5.0 * KEY_H + 4.0 * GAP + 24.0 + 30.0;
-        let x0 = ((ui.w - width) / 2.0).round();
-        let y0 = if at_top { 16.0 } else { ui.h - height - 16.0 };
+        let width = WIDTH;
+        let height = HEIGHT;
+        let (x0, y0) = origin([ui.w, ui.h], at_top);
         ui.rounded(
             x0 - 12.0,
             y0 - 12.0,
@@ -293,11 +370,8 @@ impl Keyboard {
             color::BORDER,
         );
         for (r, row) in self.rows().iter().enumerate() {
-            let y = y0 + r as f32 * (KEY_H + GAP);
-            for (i, (key, units)) in row.iter().enumerate() {
-                let (left, _) = Self::span(row, i);
-                let x = x0 + left * (UNIT + GAP);
-                let w = units * UNIT + (units - 1.0) * GAP;
+            for (i, (key, _)) in row.iter().enumerate() {
+                let [x, y, w, _] = key_rect(row, r, i, [ui.w, ui.h], at_top);
                 let focused = r == self.row && i == self.col;
                 let lit = matches!(key, Key::Shift) && (self.shift || self.caps)
                     || matches!(key, Key::Layer) && self.symbols;
@@ -366,6 +440,67 @@ mod tests {
                 let units: f32 = row.iter().map(|k| k.1).sum();
                 assert_eq!(units, 10.0);
             }
+        }
+    }
+
+    #[test]
+    fn taps_match_drawn_keys_and_ignore_gaps() {
+        let size = [1040.0, 700.0];
+        for top in [false, true] {
+            let mut k = Keyboard::default();
+            for symbols in [false, true] {
+                k.symbols = symbols;
+                for (r, row) in k.rows().iter().enumerate() {
+                    for (col, (key, _)) in row.iter().enumerate() {
+                        let [x, y, w, h] = key_rect(row, r, col, size, top);
+                        assert_eq!(k.key_at(size, top, (x + w / 2.0, y + h / 2.0)), Some(*key));
+                        assert_eq!(k.key_at(size, top, (x + w + GAP / 2.0, y + h / 2.0)), None);
+                        assert_eq!(k.key_at(size, top, (x, y + h + GAP / 2.0)), None);
+                    }
+                }
+            }
+            assert_eq!(k.key_at(size, top, (-1.0, -1.0)), None);
+            let before = k.clone();
+            assert_eq!(k.tap(size, top, (f32::NAN, 0.0)), None);
+            assert_eq!(k, before);
+        }
+    }
+
+    #[test]
+    fn touch_shift_layer_space_delete_done_and_close() {
+        let size = [1040.0, 700.0];
+        for top in [false, true] {
+            let mut k = Keyboard::default();
+            let tap = |k: &mut Keyboard, r, col| {
+                let [x, y, w, h] = key_rect(k.rows()[r], r, col, size, top);
+                let at = (x + w / 2.0, y + h / 2.0);
+                let before = k.clone();
+                let expected = k.hit_test(size, top, at);
+                assert_eq!(*k, before, "hit testing must not change the keyboard");
+                let out = k.tap(size, top, at);
+                assert_eq!(out, expected);
+                out
+            };
+            assert_eq!(tap(&mut k, 4, 0), None);
+            assert_eq!(tap(&mut k, 1, 0), Some(Output::Text("Q".into())));
+            assert_eq!(tap(&mut k, 1, 0), Some(Output::Text("q".into())));
+            tap(&mut k, 4, 0);
+            tap(&mut k, 4, 0);
+            assert_eq!(tap(&mut k, 1, 0), Some(Output::Text("Q".into())));
+            assert_eq!(tap(&mut k, 1, 0), Some(Output::Text("Q".into())));
+            tap(&mut k, 4, 0);
+            tap(&mut k, 4, 1);
+            assert_eq!(tap(&mut k, 1, 0), Some(Output::Text("/".into())));
+            tap(&mut k, 4, 1);
+            assert_eq!(tap(&mut k, 1, 0), Some(Output::Text("q".into())));
+            assert_eq!(tap(&mut k, 4, 2), Some(Output::Text(" ".into())));
+            assert_eq!(tap(&mut k, 4, 3), Some(Output::Backspace));
+            assert_eq!(tap(&mut k, 4, 4), Some(Output::Enter));
+            let [x, y, w, h] = close_rect(size, top);
+            assert_eq!(
+                k.tap(size, top, (x + w / 2.0, y + h / 2.0)),
+                Some(Output::Close)
+            );
         }
     }
 

@@ -583,6 +583,21 @@ impl Game<'_> {
             self.command_block_type(event.text.as_deref().unwrap_or(""));
         }
     }
+    /// The on-screen keyboard uses the same edit and submit paths as hardware keys.
+    pub(super) fn command_block_input(&mut self, key: Option<KeyCode>, text: Option<&str>) {
+        if key == Some(KeyCode::Enter) {
+            if let Some(s) = self.command_block_screen.take() {
+                self.set_command_block(&s);
+            }
+            self.close_command_block();
+        } else if let Some(key) = key {
+            if let Some(s) = self.command_block_screen.as_mut() {
+                s.command.key(key, false, false);
+            }
+        } else if let Some(text) = text {
+            self.command_block_type(text);
+        }
+    }
     /// Characters typed into the command box (`StringUtil.isAllowedChatCharacter`).
     pub(super) fn command_block_type(&mut self, typed: &str) {
         let allowed: String = typed

@@ -661,6 +661,67 @@ impl Loading {
         Ok(())
     }
 
+    pub(super) fn menu_touch_typing(&mut self) -> bool {
+        self.menu.pending.is_none()
+            && self.menu.win.is_none()
+            && if self.menu.options_open {
+                self.menu.options.typing()
+            } else {
+                self.menu
+                    .title
+                    .as_mut()
+                    .is_some_and(|t| t.has_caret_field())
+            }
+    }
+
+    pub(super) fn menu_keyboard_at_top(&self, size: [u32; 2]) -> bool {
+        let batch = HudBatch::new(size);
+        !self.menu.options_open
+            && self
+                .menu
+                .title
+                .as_ref()
+                .and_then(|t| t.focused_rect((batch.width, batch.height)))
+                .is_some_and(|[_, y, _, h]| y + h / 2.0 > batch.height / 2.0)
+    }
+
+    /// Horizon's touch keyboard edits the same title/options fields as hardware keys.
+    pub(super) fn menu_osk_output(&mut self, out: horizon_client::osk::Output) {
+        use horizon_client::osk::Output;
+        if self.gui.is_none() || self.menu.pending.is_some() || self.menu.win.is_some() {
+            self.touch.close_keyboard();
+            return;
+        }
+        let (key, text) = match &out {
+            Output::Close => {
+                self.touch.close_keyboard();
+                return;
+            }
+            Output::Enter => (Some(KeyCode::Enter), None),
+            Output::Backspace => (Some(KeyCode::Backspace), None),
+            Output::Text(text) => (None, Some(text.as_str())),
+        };
+        if self.menu.options_open {
+            let atlas = &self.gui.as_ref().unwrap().atlas;
+            if let Some(key) = key {
+                let events = self.menu.options.key(&mut self.settings, atlas, key, None);
+                self.menu_option_events(events);
+            } else if let Some(text) = text {
+                self.menu.options.type_text(atlas, text);
+            }
+        } else if let Some(title) = &mut self.menu.title {
+            match key {
+                Some(KeyCode::Enter) => title.confirm_edit(),
+                Some(KeyCode::Backspace) => title.backspace(),
+                _ => title.type_text(text.unwrap_or_default()),
+            }
+            self.save_menu_address();
+        }
+        if key == Some(KeyCode::Enter) {
+            self.touch.close_keyboard();
+        }
+    }
+
     /// A controller on the startup title: a pointer, A to click, B to go back.
     pub(super) fn poll_startup_pad(&mut self, event_loop: &ActiveEventLoop) {
         let Some(size) = self

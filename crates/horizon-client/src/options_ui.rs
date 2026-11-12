@@ -2762,6 +2762,20 @@ impl OptionsUi {
         }
         events
     }
+    /// Whether a visible text field has focus (for the touch keyboard).
+    pub fn typing(&self) -> bool {
+        self.resource_error.is_none()
+            && self.selected_key.is_none()
+            && match self.page() {
+                Page::Language => self.language_search.focused,
+                Page::Packs => self
+                    .pack_screen
+                    .as_ref()
+                    .is_some_and(|p| p.search_focused()),
+                _ => self.settings_search_active(),
+            }
+    }
+
     /// Typed text (the language search box).
     pub fn type_text(&mut self, atlas: &HudAtlas, text: &str) {
         if self.resource_error.is_some() {
