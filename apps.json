@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.65",
+          "buildVersion": "0.2.0.65",
+          "date": "2026-11-12T06:00:20Z",
+          "localizedDescription": "Branch claude/keyboard-on-mousetweaks, commit 84258fed7.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-65/Horizon.ipa",
+          "size": 34428312,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.63",
           "buildVersion": "0.2.0.63",
           "date": "2026-11-12T00:52:55Z",
@@ -102,11 +111,11 @@
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.63",
-      "versionDate": "2026-11-12T00:52:55Z",
-      "versionDescription": "Branch claude/mousetweaks-api, commit e198c8060.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-63/Horizon.ipa",
-      "size": 34419796
+      "version": "0.2.0.65",
+      "versionDate": "2026-11-12T06:00:20Z",
+      "versionDescription": "Branch claude/keyboard-on-mousetweaks, commit 84258fed7.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-65/Horizon.ipa",
+      "size": 34428312
     }
   ],
   "news": []
