@@ -45,6 +45,8 @@ impl MountControls {
         };
         let mut paths: Vec<_> = namespaces
             .flatten()
+            // Namespaces are folders; `assets/` also holds files (.mcassetsroot, pack.mcmeta).
+            .filter(|ns| ns.file_type().is_ok_and(|t| t.is_dir()))
             .map(|ns| ns.path().join("horizon/mount_controls.json"))
             .collect();
         paths.sort();
