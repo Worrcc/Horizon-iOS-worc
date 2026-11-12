@@ -1528,8 +1528,8 @@ contains `targets`, `range`, `cone`, `slowdown`, `pull`, `controller`, and `touc
 Targets are exact entity ids, `*` for every non-player mob, or `#hostile` for the
 monster category. An empty list targets nothing. At most 32 entries, each 1..64
 characters; non-finite numbers are errors and leave the old config intact.
-The host clamps range to 2..32 blocks, cone to 1..10 degrees, slowdown to 0..0.8,
-and pull to 0..20 degrees per second. Pull acts only while the player turns.
+The host clamps range to 2..32 blocks, cone to 1..20 degrees, slowdown to 0..0.9,
+and pull to 0..60 degrees per second. Pull acts only while the player turns.
 
 Several mods combine conservatively: every number takes its minimum, a device
 must be enabled by every mod that set a config, and an entity must match every

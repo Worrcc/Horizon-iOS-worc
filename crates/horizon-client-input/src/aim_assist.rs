@@ -15,11 +15,11 @@ pub struct Target {
 pub struct Config {
     /// Range in blocks, clamped to 2..=32.
     pub range: f32,
-    /// Angular radius in degrees, clamped to 1..=10.
+    /// Angular radius in degrees, clamped to 1..=20.
     pub cone: f32,
-    /// Look slowdown at the centre, clamped to 0..=0.8.
+    /// Look slowdown at the centre, clamped to 0..=0.9.
     pub slowdown: f32,
-    /// Pull in degrees per second, clamped to 0..=20.
+    /// Pull in degrees per second, clamped to 0..=60.
     pub pull: f32,
 }
 
@@ -29,9 +29,9 @@ impl Config {
     pub fn clamped(self) -> Self {
         Self {
             range: finite_or_zero(self.range).clamp(2.0, 32.0),
-            cone: finite_or_zero(self.cone).clamp(1.0, 10.0),
-            slowdown: finite_or_zero(self.slowdown).clamp(0.0, 0.8),
-            pull: finite_or_zero(self.pull).clamp(0.0, 20.0),
+            cone: finite_or_zero(self.cone).clamp(1.0, 20.0),
+            slowdown: finite_or_zero(self.slowdown).clamp(0.0, 0.9),
+            pull: finite_or_zero(self.pull).clamp(0.0, 60.0),
         }
     }
 }
@@ -360,16 +360,16 @@ mod tests {
         assert_eq!(
             Config {
                 range: -1.0,
-                cone: 20.0,
+                cone: 30.0,
                 slowdown: -0.5,
-                pull: 30.0
+                pull: 90.0
             }
             .clamped(),
             Config {
                 range: 2.0,
-                cone: 10.0,
+                cone: 20.0,
                 slowdown: 0.0,
-                pull: 20.0
+                pull: 60.0
             }
         );
         assert_eq!(
@@ -383,7 +383,7 @@ mod tests {
             Config {
                 range: 32.0,
                 cone: 1.0,
-                slowdown: 0.8,
+                slowdown: 0.9,
                 pull: 0.0
             }
         );

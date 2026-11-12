@@ -3689,9 +3689,9 @@ impl input::Host for State {
                     return Err("aim assist numbers must be finite".to_owned());
                 }
                 cfg.range = cfg.range.clamp(2.0, 32.0);
-                cfg.cone = cfg.cone.clamp(1.0, 10.0);
-                cfg.slowdown = cfg.slowdown.clamp(0.0, 0.8);
-                cfg.pull = cfg.pull.clamp(0.0, 20.0);
+                cfg.cone = cfg.cone.clamp(1.0, 20.0);
+                cfg.slowdown = cfg.slowdown.clamp(0.0, 0.9);
+                cfg.pull = cfg.pull.clamp(0.0, 60.0);
                 Ok(cfg)
             })
             .transpose()?;

@@ -567,9 +567,9 @@ API level 27: assistance for controller and touch look.
 | --- | --- | --- |
 | `targets` | `list<string>` | Entity ids, "*" (every mob but players) or "#hostile" (monsters); at most 32 entries. |
 | `range` | `f32` | Blocks, clamped by the host to 2..32. |
-| `cone` | `f32` | Degrees from the look direction, clamped to 1..10. |
-| `slowdown` | `f32` | 0..0.8 slowdown inside the cone. |
-| `pull` | `f32` | Degrees per second toward the target, 0..20, only while the player turns. |
+| `cone` | `f32` | Degrees from the look direction, clamped to 1..20. |
+| `slowdown` | `f32` | 0..0.9 slowdown inside the cone. |
+| `pull` | `f32` | Degrees per second toward the target, 0..60, only while the player turns. |
 | `controller` | `bool` | Apply to controller look. |
 | `touch` | `bool` | Apply to touch look (finger on the look area). |
 

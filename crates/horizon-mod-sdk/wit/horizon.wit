@@ -353,11 +353,11 @@ interface input {
         targets: list<string>,
         /// Blocks, clamped by the host to 2..32.
         range: f32,
-        /// Degrees from the look direction, clamped to 1..10.
+        /// Degrees from the look direction, clamped to 1..20.
         cone: f32,
-        /// 0..0.8 slowdown inside the cone.
+        /// 0..0.9 slowdown inside the cone.
         slowdown: f32,
-        /// Degrees per second toward the target, 0..20, only while the player turns.
+        /// Degrees per second toward the target, 0..60, only while the player turns.
         pull: f32,
         /// Apply to controller look.
         controller: bool,

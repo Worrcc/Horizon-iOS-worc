@@ -3352,14 +3352,14 @@ fn api27_aim_assist_validates_atomically_clamps_and_clears_across_the_sandbox() 
                 .any(|o| matches!(o, Output::Feedback { error: true, .. }))
         );
         let c = mods.aim_assists().next().unwrap();
-        assert_eq!((c.range, c.cone, c.slowdown, c.pull), (32.0, 1.0, 0.8, 0.0));
+        assert_eq!((c.range, c.cone, c.slowdown, c.pull), (32.0, 1.0, 0.9, 0.0));
     }
     assert!(mods.command("aim_assist -1 100 -1 100 -"));
     let c = mods.aim_assists().next().unwrap();
     assert!(c.targets.is_empty());
     assert_eq!(
         (c.range, c.cone, c.slowdown, c.pull),
-        (2.0, 10.0, 0.0, 20.0)
+        (2.0, 20.0, 0.0, 60.0)
     );
     assert!(mods.command("aim_assist off"));
     assert!(mods.aim_assists().next().is_none());
