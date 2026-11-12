@@ -1207,6 +1207,12 @@ interface players {
     knockback: func(player: string, strength: f32, dx: f64, dz: f64) -> result<_, string>;
     /// Add velocity in blocks per tick, each axis -4..4; clients receive the motion.
     push: func(player: string, velocity: point) -> result<_, string>;
+    /// Yaw and pitch in degrees as F3 shows them; none keeps the player's current view.
+    record teleport-target { dimension: string, at: point, yaw: option<f32>, pitch: option<f32> }
+    /// Moves an online player like vanilla /tp, including across dimensions,
+    /// resetting fall distance and notifying clients. Errors for an offline player,
+    /// unknown dimension, non-finite coordinates or angles, or outside the world border.
+    teleport: func(player: string, target: teleport-target) -> result<_, string>;
     enum game-mode {
         survival,
         creative,
@@ -1229,6 +1235,9 @@ interface players {
     }
     /// The players online, in the order they joined.
     online: func() -> list<player>;
+    /// Vanilla's op permission level, 0..4; none when offline.
+    /// Single-player with cheats on counts as 4.
+    permission-level: func(player: string) -> option<u8>;
     /// Where a player looks.
     record look {
         /// Degrees, as F3 shows them (0 south, 90 west).
@@ -1309,6 +1318,8 @@ interface %world {
     break-blocks-as: func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>;
     /// A vector or position in blocks, with finite components.
     record point { x: f64, y: f64, z: f64 }
+    /// The overworld's world spawn: dimension id, position, angle in degrees.
+    spawn-point: func() -> tuple<string, point, f32>;
     /// Drop a plain stack in this dimension, count 1..max stack size.
     /// At most 16 successful requests per tick per mod, across all hook calls.
     spawn-item: func(dimension: string, at: point, item: string, count: u32) -> result<_, string>;

@@ -7,13 +7,16 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 25;
+pub const LEVEL: u32 = 26;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 133] = [
+pub const FUNCTIONS: [(&str, u32); 136] = [
+    ("players.teleport", 26),
+    ("players.permission-level", 26),
+    ("world.spawn-point", 26),
     ("input.set-touch-button-context", 25),
     ("client-world.harvest", 24),
     ("input.set-auto-button-shown", 24),
@@ -280,6 +283,10 @@ mod tests {
         assert_eq!(
             needed(["render.set-minimap", "render.set-sky"]),
             (LEVEL + 1, Some("render.set-sky"))
+        );
+        assert_eq!(
+            needed(["players.facing", "players.teleport", "world.spawn-point"]),
+            (26, Some("players.teleport"))
         );
         assert_eq!(too_new(LEVEL, None), None);
         assert_eq!(

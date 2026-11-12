@@ -704,7 +704,7 @@ one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
 |---|---|---|
 | `log` | always | as for client mods |
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
-| `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
+| `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call; API level 26: `teleport(player, target)`, `permission-level(player)` (below) |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
 | `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, texture, rider, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `interactions()`: the last tick's right clicks on content mods' mobs (player UUID, mob id, kind, held item), in order, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
 
@@ -869,6 +869,19 @@ tick's block writes, so a mod can place a spawner with `set-blocks` and give it 
 the same tick, as a Java structure processor rewrites a template spawner's `SpawnData`. The
 spawner keeps its delays, spawn count and ranges; players see the new mob in it. No spawner
 there then, or an unknown type: the write is skipped and logged.
+
+**API level 26: player teleports, permissions and world spawn.**
+`players.teleport(player, teleport-target) -> result<_, string>` moves an online
+player by UUID through vanilla's `/tp` path, including across dimensions, resetting
+fall distance and syncing clients. The target has `dimension`, `at: point`, and
+optional `yaw`/`pitch` in F3 degrees; none preserves that axis of the current view.
+Offline players, unknown dimensions, non-finite coordinates or angles, positions
+outside the world border, and positions outside vanilla's teleport bounds are errors.
+`players.permission-level(player) -> option<u8>` returns vanilla's op level (0..4),
+or none offline; single-player with cheats on is 4. Both require capability `players`.
+`world.spawn-point() -> tuple<string, point, f32>` requires capability `world` and
+returns the overworld's world spawn dimension id, block position and yaw in degrees.
+These reads reflect the server snapshot for the current hook, including commands.
 
 **API level 15: combat, players and world helpers.** All additions are functions;
 existing hooks and records keep their ABI. `entities.strike(mob, hit)` extends hurt-area

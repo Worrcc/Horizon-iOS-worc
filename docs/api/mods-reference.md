@@ -1174,6 +1174,17 @@ Registry ids, none for an empty slot. Distinct name from equipment (WIT).
 | `off-hand` | `option<string>` |  |
 | `hotbar` | `list<option<string>>` | Exactly nine hotbar slots, in order. |
 
+### record `teleport-target`
+
+Yaw and pitch in degrees as F3 shows them; none keeps the player's current view.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `at` | `point` |  |
+| `yaw` | `option<f32>` |  |
+| `pitch` | `option<f32>` |  |
+
 ### enum `game-mode`
 
 | Case | |
@@ -1244,7 +1255,9 @@ The block a player clicked, and its face (down, up, north, south, west, east).
 | `damage-item` | `func(player: string, hand: string, amount: u32) -> result<_, string>` | ItemStack.hurtAndBreak on main_hand or off_hand, including Unbreaking, creative immunity, inventory sync and the item's break sound/particles. |
 | `knockback` | `func(player: string, strength: f32, dx: f64, dz: f64) -> result<_, string>` | LivingEntity knockback; dx/dz point away from the attacker. Strength 0..4. The game applies the player's knockback resistance. |
 | `push` | `func(player: string, velocity: point) -> result<_, string>` | Add velocity in blocks per tick, each axis -4..4; clients receive the motion. |
+| `teleport` | `func(player: string, target: teleport-target) -> result<_, string>` | Moves an online player like vanilla /tp, including across dimensions, resetting fall distance and notifying clients. Errors for an offline player, unknown dimension, non-finite coordinates or angles, or outside the world border. |
 | `online` | `func() -> list<player>` | The players online, in the order they joined. |
+| `permission-level` | `func(player: string) -> option<u8>` | Vanilla's op permission level, 0..4; none when offline. Single-player with cheats on counts as 4. |
 | `facing` | `func(player: string) -> option<look>` | Where an online player looks, by UUID; none when no such player is online. |
 | `item-uses` | `func() -> list<item-use>` | Item right clicks during the last tick, oldest first, at most 256. The game's own use of each item still happens. Reading does not consume them. |
 | `attacks` | `func() -> list<attack>` | Melee hits players landed during the last tick, oldest first, at most 256. |
@@ -1327,6 +1340,7 @@ A plain item stack; components are not carried by this API.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `break-blocks-as` | `func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>` | API level 20: queue real player breaks, applied after hooks with the live game. Unknown/offline players or over 2048 positions/call or 4096/mod/tick error atomically. At apply time skip air, liquids, unloaded blocks, positions beyond 80 blocks, and unbreakable blocks in survival. Stop if the player leaves or keep-tool triggers. Uses the normal player path (protection, border, loot, XP, wear, stats and updates). Creative gives no drops/wear; the caller's block-broken hook is excluded. |
+| `spawn-point` | `func() -> tuple<string, point, f32>` | The overworld's world spawn: dimension id, position, angle in degrees. |
 | `spawn-item` | `func(dimension: string, at: point, item: string, count: u32) -> result<_, string>` | Drop a plain stack in this dimension, count 1..max stack size. At most 16 successful requests per tick per mod, across all hook calls. |
 | `block-has-tag` | `func(block: string, tag: string) -> bool` | Whether a block id or state belongs to a loaded block tag (without #). Unknown blocks and tags return false. |
 | `play-sound` | `func(dimension: string, at: point, name: string, volume: f32, pitch: f32) -> result<_, string>` | A registered vanilla or loaded content sound in this dimension. |

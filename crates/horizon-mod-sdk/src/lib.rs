@@ -40,6 +40,9 @@
 //! Level 24 adds [`client_world::harvest`] (the tool and tier a block needs)
 //! and [`input::set_auto_button_shown`]: automatic touch buttons start hidden.
 //! Level 25 adds [`input::set_touch_button_context`] for riding/held-item visibility.
+//! Level 26 adds [`server::players::teleport`] for vanilla player teleports across dimensions.
+//! [`server::players::permission_level`] reads an online player's vanilla op level.
+//! [`server::world::spawn_point`] reads the overworld's world spawn and angle.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -309,7 +312,7 @@ pub mod server {
     };
     pub use horizon::mods::players::{
         self, Attack, BlockHit, EquipmentSlots, GameMode, ItemUse, Look, Player, PlayerDamage,
-        Point as PlayerPoint,
+        Point as PlayerPoint, TeleportTarget,
     };
     pub use horizon::mods::world::{
         self, BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack, Point as WorldPoint,

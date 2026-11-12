@@ -3168,3 +3168,146 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
             .is_none()
     );
 }
+
+fn api26_server() -> (Mods, ServerPlayer, Snapshot) {
+    let mut mods = load("horizon_mods_test_api20_server_guest.hmod");
+    let player = ServerPlayer {
+        id: "alice".into(),
+        name: "Alex".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    let snapshot = Snapshot {
+        players: vec![player.clone()],
+        player_permissions: vec![("alice".into(), 2)].into(),
+        teleport_borders: ["minecraft:overworld", "minecraft:the_nether"]
+            .map(|d| (d.into(), [-100.0, -100.0, 100.0, 100.0]))
+            .into(),
+        world_spawn: Some((
+            "minecraft:overworld".into(),
+            horizon_mods::WorldPoint {
+                x: -16.0,
+                y: 80.0,
+                z: 32.0,
+            },
+            135.0,
+        )),
+        ..Snapshot::default()
+    };
+    mods.set_snapshot(snapshot.clone());
+    (mods, player, snapshot)
+}
+
+#[test]
+fn api26_teleport_crosses_the_sandbox_and_rejects_invalid_requests_atomically() {
+    let (mut mods, player, _) = api26_server();
+    for (args, error) in [
+        ("unknown", "unknown dimension test:missing"),
+        ("offline", "no online player offline"),
+        ("nan", "teleport needs finite coordinates and angles"),
+        ("infinite", "teleport needs finite coordinates and angles"),
+        ("angle", "teleport needs finite coordinates and angles"),
+        ("border", "outside the world border"),
+        ("height", "outside teleport coordinate bounds"),
+    ] {
+        assert!(mods.server_command(&player, &format!("api26_teleport {args}")));
+        let out = mods.drain();
+        assert!(
+            !out.iter()
+                .any(|o| matches!(o, Output::PlayerTeleport { .. })),
+            "{args}"
+        );
+        assert!(
+            out.iter()
+                .any(|o| matches!(o, Output::Reply { text, error: true, .. } if text == error)),
+            "{args}: {out:?}"
+        );
+    }
+    for (args, dimension, yaw, pitch) in [
+        ("", "minecraft:overworld", None, None),
+        ("yaw", "minecraft:overworld", Some(45.0), None),
+        ("cross", "minecraft:the_nether", Some(90.0), Some(-30.0)),
+    ] {
+        assert!(mods.server_command(&player, &format!("api26_teleport {args}")));
+        let teleports: Vec<_> = mods
+            .drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::PlayerTeleport { player, target } => Some((player, target)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(teleports.len(), 1);
+        let (id, target) = &teleports[0];
+        assert_eq!(id, "alice");
+        assert_eq!(target.dimension, dimension);
+        assert_eq!([target.at.x, target.at.y, target.at.z], [12.0, 70.25, -4.5]);
+        assert_eq!((target.yaw, target.pitch), (yaw, pitch));
+    }
+}
+
+#[test]
+fn api26_permission_level_reads_the_current_online_players_snapshot() {
+    let (mut mods, player, mut snapshot) = api26_server();
+    for (level, expected) in [(2, "Some(2)"), (4, "Some(4)"), (0, "Some(0)")] {
+        snapshot.player_permissions = vec![("alice".into(), level)].into();
+        mods.set_snapshot(snapshot.clone());
+        assert!(mods.server_command(&player, "api26_permission"));
+        assert!(
+            mods.drain()
+                .iter()
+                .any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == expected))
+        );
+    }
+    assert!(mods.server_command(&player, "api26_permission offline"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "None"))
+    );
+    snapshot.players.clear();
+    mods.set_snapshot(snapshot);
+    assert!(mods.server_command(&player, "api26_permission"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "None"))
+    );
+}
+
+#[test]
+fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
+    let (mut mods, player, mut snapshot) = api26_server();
+    assert!(mods.server_command(&player, "api26_spawn"));
+    assert!(mods.drain().iter().any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "minecraft:overworld -16 80 32 135")));
+    snapshot.world_spawn = Some((
+        "minecraft:overworld".into(),
+        horizon_mods::WorldPoint {
+            x: 10.0,
+            y: 65.0,
+            z: -20.0,
+        },
+        -45.0,
+    ));
+    mods.set_snapshot(snapshot);
+    assert!(mods.server_command(&player, "api26_spawn"));
+    assert!(mods.drain().iter().any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "minecraft:overworld 10 65 -20 -45")));
+    let package =
+        Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod")).unwrap();
+    let imports = horizon_mods::api_level::imports(package.wasm.as_ref().unwrap()).unwrap();
+    for name in [
+        "players.teleport",
+        "players.permission-level",
+        "world.spawn-point",
+    ] {
+        assert!(imports.iter().any(|i| i == name), "{name}");
+    }
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        26
+    );
+}

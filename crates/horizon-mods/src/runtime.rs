@@ -73,7 +73,7 @@ pub use server_bindings::{
     horizon::mods::players::{
         Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
         ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer, PlayerDamage,
-        Point as PlayerPoint,
+        Point as PlayerPoint, TeleportTarget,
     },
     horizon::mods::world::{
         BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
@@ -302,6 +302,12 @@ pub struct Snapshot {
     pub effect_ids: Arc<std::collections::HashSet<String>>,
     /// Where each online server player looks, by UUID, for `players.facing`.
     pub player_looks: Arc<[(String, PlayerLook)]>,
+    /// The current vanilla op levels, by online player's UUID.
+    pub player_permissions: Arc<[(String, u8)]>,
+    /// Available dimensions and their current world border [min x, min z, max x, max z].
+    pub teleport_borders: std::collections::BTreeMap<String, [f64; 4]>,
+    /// Overworld level.dat spawn data, shared across the server's dimensions.
+    pub world_spawn: Option<(String, WorldPoint, f32)>,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
     pub generated_chunks: Arc<[ChunkPos]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
@@ -485,6 +491,10 @@ pub enum Output {
         strength: f32,
         dx: f64,
         dz: f64,
+    },
+    PlayerTeleport {
+        player: String,
+        target: TeleportTarget,
     },
     PlayerPush {
         player: String,
@@ -2540,6 +2550,19 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn spawn_point(&mut self) -> (String, WorldPoint, f32) {
+        self.snapshot.world_spawn.clone().unwrap_or_else(|| {
+            (
+                "minecraft:overworld".into(),
+                WorldPoint {
+                    x: 0.0,
+                    y: 64.0,
+                    z: 0.0,
+                },
+                0.0,
+            )
+        })
+    }
     fn break_blocks_as(
         &mut self,
         player: String,
@@ -3309,6 +3332,40 @@ impl State {
     }
 }
 impl players::Host for State {
+    fn teleport(&mut self, player: String, target: TeleportTarget) -> Result<(), String> {
+        self.online_player(&player)?;
+        let [min_x, min_z, max_x, max_z] = self
+            .snapshot
+            .teleport_borders
+            .get(&target.dimension)
+            .ok_or_else(|| format!("unknown dimension {}", target.dimension))?;
+        let at = &target.at;
+        if ![at.x, at.y, at.z].iter().all(|v| v.is_finite())
+            || target.yaw.is_some_and(|v| !v.is_finite())
+            || target.pitch.is_some_and(|v| !v.is_finite())
+        {
+            return Err("teleport needs finite coordinates and angles".into());
+        }
+        if at.x < *min_x || at.x >= *max_x || at.z < *min_z || at.z >= *max_z {
+            return Err("outside the world border".into());
+        }
+        if !(-30_000_000.0..30_000_000.0).contains(&at.x)
+            || !(-30_000_000.0..30_000_000.0).contains(&at.z)
+            || !(-20_000_000.0..20_000_000.0).contains(&at.y)
+        {
+            return Err("outside teleport coordinate bounds".into());
+        }
+        self.out.push(Output::PlayerTeleport { player, target });
+        Ok(())
+    }
+    fn permission_level(&mut self, player: String) -> Option<u8> {
+        self.online_player(&player).ok()?;
+        self.snapshot
+            .player_permissions
+            .iter()
+            .find(|(id, _)| *id == player)
+            .map(|(_, level)| *level)
+    }
     fn damage_taken(&mut self) -> Vec<PlayerDamage> {
         self.snapshot
             .player_damage
