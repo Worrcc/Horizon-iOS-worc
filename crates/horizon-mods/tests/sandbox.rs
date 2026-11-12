@@ -401,8 +401,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest exercises API 25 touch contexts as well as the container calls.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 25);
+    // The UI guest exercises API 27 aim assistance as well as the container calls.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 27);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -3112,7 +3112,7 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
-        25
+        27
     );
     let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
     assert!(
@@ -3310,4 +3310,86 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
         26
     );
+}
+
+#[test]
+fn api27_aim_assist_validates_atomically_clamps_and_clears_across_the_sandbox() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.aim_assists().next().is_none());
+    assert!(mods.command("aim_assist 16 6 0.5 8 minecraft:zombie,#hostile,*"));
+    let good = mods.aim_assists().next().unwrap().clone();
+    assert_eq!(good.targets, ["minecraft:zombie", "#hostile", "*"]);
+    assert!(good.controller && good.touch);
+    mods.drain();
+    let mut bad = vec![
+        format!("16 6 0.5 8 {}", ["*"; 33].join(",")),
+        "16 6 0.5 8 ,".into(),
+        format!("16 6 0.5 8 {}", "x".repeat(65)),
+    ];
+    for i in 0..4 {
+        for value in ["NaN", "inf", "-inf"] {
+            let mut numbers = ["16", "6", "0.5", "8"];
+            numbers[i] = value;
+            bad.push(format!("{} *", numbers.join(" ")));
+        }
+    }
+    for args in bad {
+        assert!(mods.command(&format!("aim_assist {args}")));
+        assert!(
+            mods.drain().iter().any(|o| matches!(o,
+                Output::Feedback { text, error: true, .. } if !text.is_empty()
+            )),
+            "{args}"
+        );
+        assert_eq!(mods.aim_assists().next(), Some(&good));
+    }
+    for targets in ["-".to_owned(), "x".repeat(64), ["*"; 32].join(",")] {
+        assert!(mods.command(&format!("aim_assist 100 0 1 -5 {targets}")));
+        assert!(
+            !mods
+                .drain()
+                .iter()
+                .any(|o| matches!(o, Output::Feedback { error: true, .. }))
+        );
+        let c = mods.aim_assists().next().unwrap();
+        assert_eq!((c.range, c.cone, c.slowdown, c.pull), (32.0, 1.0, 0.8, 0.0));
+    }
+    assert!(mods.command("aim_assist -1 100 -1 100 -"));
+    let c = mods.aim_assists().next().unwrap();
+    assert!(c.targets.is_empty());
+    assert_eq!(
+        (c.range, c.cone, c.slowdown, c.pull),
+        (2.0, 10.0, 0.0, 20.0)
+    );
+    assert!(mods.command("aim_assist off"));
+    assert!(mods.aim_assists().next().is_none());
+}
+
+#[test]
+fn api27_look_device_defaults_to_mouse_and_reads_the_current_snapshot() {
+    use horizon_mods::LookDeviceKind;
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let read = |mods: &mut Mods| {
+        mods.drain();
+        assert!(mods.command("look_device"));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(read(&mut mods), ["mouse"]);
+    for (device, expected) in [
+        (LookDeviceKind::Controller, "controller"),
+        (LookDeviceKind::Touch, "touch"),
+        (LookDeviceKind::Mouse, "mouse"),
+    ] {
+        mods.set_snapshot(Snapshot {
+            look_device: device,
+            ..Snapshot::default()
+        });
+        assert_eq!(read(&mut mods), [expected]);
+    }
 }

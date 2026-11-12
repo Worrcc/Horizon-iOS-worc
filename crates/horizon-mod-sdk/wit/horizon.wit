@@ -347,6 +347,31 @@ interface container-events {
 /// the mod's own keys. Events wait for `poll`, at most 256.
 interface input {
     use render.{corner};
+    /// API level 27: assistance for controller and touch look.
+    record aim-assist {
+        /// Entity ids, "*" (every mob but players) or "#hostile" (monsters); at most 32 entries.
+        targets: list<string>,
+        /// Blocks, clamped by the host to 2..32.
+        range: f32,
+        /// Degrees from the look direction, clamped to 1..10.
+        cone: f32,
+        /// 0..0.8 slowdown inside the cone.
+        slowdown: f32,
+        /// Degrees per second toward the target, 0..20, only while the player turns.
+        pull: f32,
+        /// Apply to controller look.
+        controller: bool,
+        /// Apply to touch look (finger on the look area).
+        touch: bool,
+    }
+    /// API level 27: replaces this mod's aim assist; none turns it off. Several mods: each field
+    /// takes its weakest value (enabled only if every mod that set it enabled it).
+    /// Targets must match every mod's list. Errors leave the previous config intact.
+    set-aim-assist: func(config: option<aim-assist>) -> result<_, string>;
+    enum look-device-kind { mouse, controller, touch }
+    /// API level 27: the device that turned the view last frame, so a settings page can show
+    /// the right preview text. Defaults to mouse; unchanged until another look movement.
+    look-device: func() -> look-device-kind;
     /// API level 20: a square button above the game's touch controls.
     record touch-button {
         /// Up to four characters; also the fallback for an unknown icon item.

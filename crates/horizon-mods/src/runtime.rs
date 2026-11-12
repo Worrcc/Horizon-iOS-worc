@@ -137,7 +137,7 @@ mod render_bindings {
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
 pub use render_bindings::horizon::mods::input::{
-    Event as InputEvent, HeldItem, ItemUse, TouchButton, TouchContext,
+    AimAssist, Event as InputEvent, HeldItem, ItemUse, LookDeviceKind, TouchButton, TouchContext,
 };
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
@@ -254,6 +254,8 @@ pub struct Snapshot {
     pub tick: u64,
     /// Whether the game is showing its touch controls.
     pub touch_active: bool,
+    /// The device of the most recent applied look movement.
+    pub look_device: LookDeviceKind,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -1988,6 +1990,10 @@ impl Mods {
             }
         }
     }
+    /// Per-mod aim assistance, borrowed without allocating; removed with its runtime.
+    pub fn aim_assists(&self) -> impl Iterator<Item = &AimAssist> {
+        self.inputs().filter_map(|i| i.aim_assist.as_ref())
+    }
     /// Some running mod holds the mouse wheel.
     pub fn wheel_claimed(&self) -> bool {
         self.inputs().any(|i| i.wheel)
@@ -3552,6 +3558,7 @@ struct InputState {
     down: Vec<String>,
     /// It holds the mouse wheel.
     wheel: bool,
+    aim_assist: Option<AimAssist>,
     /// The keys the player chose, `name → key`: they win over
     /// `register-key`'s.
     bindings: Vec<(String, String)>,
@@ -3655,7 +3662,46 @@ impl InputState {
     }
 }
 
+impl Default for LookDeviceKind {
+    fn default() -> Self {
+        Self::Mouse
+    }
+}
+
 impl input::Host for State {
+    fn set_aim_assist(&mut self, config: Option<AimAssist>) -> Result<(), String> {
+        let config = config
+            .map(|mut cfg| {
+                if cfg.targets.len() > 32 {
+                    return Err("aim assist accepts at most 32 targets".to_owned());
+                }
+                if cfg
+                    .targets
+                    .iter()
+                    .any(|id| id.is_empty() || id.chars().count() > 64)
+                {
+                    return Err("aim assist targets need 1..64 characters".to_owned());
+                }
+                if ![cfg.range, cfg.cone, cfg.slowdown, cfg.pull]
+                    .iter()
+                    .all(|v| v.is_finite())
+                {
+                    return Err("aim assist numbers must be finite".to_owned());
+                }
+                cfg.range = cfg.range.clamp(2.0, 32.0);
+                cfg.cone = cfg.cone.clamp(1.0, 10.0);
+                cfg.slowdown = cfg.slowdown.clamp(0.0, 0.8);
+                cfg.pull = cfg.pull.clamp(0.0, 20.0);
+                Ok(cfg)
+            })
+            .transpose()?;
+        self.input.aim_assist = config;
+        Ok(())
+    }
+    fn look_device(&mut self) -> LookDeviceKind {
+        self.snapshot.look_device
+    }
+
     fn touch_active(&mut self) -> bool {
         self.snapshot.touch_active
     }

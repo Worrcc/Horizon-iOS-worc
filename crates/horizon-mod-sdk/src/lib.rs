@@ -43,6 +43,7 @@
 //! Level 26 adds [`server::players::teleport`] for vanilla player teleports across dimensions.
 //! [`server::players::permission_level`] reads an online player's vanilla op level.
 //! [`server::world::spawn_point`] reads the overworld's world spawn and angle.
+//! Level 27 adds [`input::set_aim_assist`] for controller/touch look and [`input::look_device`].
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.

@@ -820,6 +820,9 @@ impl Game<'_> {
                     .and_then(|()| self.touch_mouse(button, false))
             }
             Output::Look(dx, dy) => {
+                if dx != 0.0 || dy != 0.0 {
+                    self.touch_look_frame = Some(self.frames);
+                }
                 let s = f64::from(scale) * LOOK_SCALE;
                 self.mouse
                     .on_move(0.0, 0.0, f64::from(dx) * s, f64::from(dy) * s, true, true);

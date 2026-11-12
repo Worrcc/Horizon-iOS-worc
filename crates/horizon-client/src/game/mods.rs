@@ -948,6 +948,13 @@ impl Game<'_> {
         Snapshot {
             tick: self.ticks,
             touch_active: self.mod_touch_active(),
+            look_device: match self.look_device {
+                super::aim_assist::LookDevice::Mouse => horizon_mods::LookDeviceKind::Mouse,
+                super::aim_assist::LookDevice::Controller => {
+                    horizon_mods::LookDeviceKind::Controller
+                }
+                super::aim_assist::LookDevice::Touch => horizon_mods::LookDeviceKind::Touch,
+            },
             player,
             clock,
             gui_size: self.gui_size(),

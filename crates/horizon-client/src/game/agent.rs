@@ -1932,6 +1932,7 @@ impl Game<'_> {
         let due = (g.total.0 * f, g.total.1 * f);
         let step = (due.0 - g.fed.0, due.1 - g.fed.1);
         if step != (0.0, 0.0) {
+            self.mouse_look_moved = true;
             self.mouse.add_motion(step.0, step.1);
             self.agent_pointer = true;
             g.fed = due;

@@ -559,6 +559,28 @@ Capability `input` (experimental: the manifest needs `experimental = ["input"]`)
 
 `type corner = corner`
 
+### record `aim-assist`
+
+API level 27: assistance for controller and touch look.
+
+| Field | Type | |
+| --- | --- | --- |
+| `targets` | `list<string>` | Entity ids, "*" (every mob but players) or "#hostile" (monsters); at most 32 entries. |
+| `range` | `f32` | Blocks, clamped by the host to 2..32. |
+| `cone` | `f32` | Degrees from the look direction, clamped to 1..10. |
+| `slowdown` | `f32` | 0..0.8 slowdown inside the cone. |
+| `pull` | `f32` | Degrees per second toward the target, 0..20, only while the player turns. |
+| `controller` | `bool` | Apply to controller look. |
+| `touch` | `bool` | Apply to touch look (finger on the look area). |
+
+### enum `look-device-kind`
+
+| Case | |
+| --- | --- |
+| `mouse` |  |
+| `controller` |  |
+| `touch` |  |
+
 ### record `touch-button`
 
 API level 20: a square button above the game's touch controls.
@@ -620,6 +642,8 @@ A mapping as the player has bound it.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `set-aim-assist` | `func(config: option<aim-assist>) -> result<_, string>` | API level 27: replaces this mod's aim assist; none turns it off. Several mods: each field takes its weakest value (enabled only if every mod that set it enabled it). Targets must match every mod's list. Errors leave the previous config intact. |
+| `look-device` | `func() -> look-device-kind` | API level 27: the device that turned the view last frame, so a settings page can show the right preview text. Defaults to mouse; unchanged until another look movement. |
 | `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. Player touch-layout overrides win over the anchor/offset. Removing an explicit button restores the key's automatic button. |
 | `set-auto-button-shown` | `func(name: string, shown: bool) -> result<_, string>` | API level 24: whether a registered key's automatic touch button (one for a key with no `set-touch-button`) starts shown. Automatic buttons start hidden unless the mod asks; the player's own choice (the mod's settings page or Edit Touch Layout) always wins. |
 | `set-touch-button-context` | `func(name: string, context: option<touch-context>) -> result<_, string>` | API level 25: set/clear the registered key's default touch visibility context. Both nonempty lists must match; none clears it. The player's Show choice (Always/Riding/Never) wins. Automatic buttons still start hidden unless opted in with set-auto-button-shown. Errors leave the previous context intact. |

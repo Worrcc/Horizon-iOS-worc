@@ -173,6 +173,12 @@ impl Default for MouseLook {
 }
 
 impl MouseLook {
+    /// Discard cinematic look history when entering or leaving assisted touch.
+    pub fn reset_smoothing(&mut self) {
+        self.smooth_turn_x.reset();
+        self.smooth_turn_y.reset();
+    }
+
     /// `setIgnoreFirstMove`.
     pub fn set_ignore_first_move(&mut self) {
         self.ignore_first_move = true;
