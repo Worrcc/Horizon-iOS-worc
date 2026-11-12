@@ -396,8 +396,9 @@ impl Game<'_> {
         if activity && self.pad_focused() {
             self.last_input = Instant::now();
             self.pad.in_use = true;
-            #[cfg(target_os = "ios")]
-            self.touch_hide(event_loop);
+            if super::touch::enabled() {
+                self.touch_hide(event_loop);
+            }
         }
         self.pad.state = state;
         self.pad_output_frame();

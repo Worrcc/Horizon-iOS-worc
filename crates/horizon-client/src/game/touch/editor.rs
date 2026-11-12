@@ -124,7 +124,7 @@ impl Game<'_> {
         self.physical_keys.clear();
         self.left = false;
         self.right = false;
-        self.show_keyboard(false);
+        self.touch.keyboard.keyboard = None;
         self.touch.editor = Some(Editor::default());
         Ok(())
     }

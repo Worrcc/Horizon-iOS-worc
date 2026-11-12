@@ -1916,6 +1916,17 @@ impl Game<'_> {
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
             || self.recipe_search_focused()
             || self.station_typing()
+            || self.mod_browser_typing()
+            || self.screen == Screen::CommandBlock
+            || self.dialog_typing()
+            || self.screen == Screen::Social
+            || (self.screen == Screen::DebugOptions
+                && self
+                    .debug_options
+                    .as_ref()
+                    .is_some_and(|s| s.search_focused()))
+            || (self.screen == Screen::BlockEditor
+                && self.block_editor.as_ref().is_some_and(|s| s.text_focused()))
     }
 
     /// Open the on-screen keyboard over the focused field: Horizon's, or
@@ -1958,19 +1969,52 @@ impl Game<'_> {
     /// What a key of the on-screen keyboard does: the same as a typed key in
     /// the field that has focus.
     fn pad_osk_output(&mut self, out: osk::Output) {
+        let dismissed = out == osk::Output::Close;
+        if self.osk_output(out) {
+            self.pad.menu.osk = None;
+        }
+        if dismissed {
+            self.pad.menu.osk_dismissed = true;
+        }
+    }
+
+    /// Shared by controller and touch keyboards. Returns whether to close it.
+    pub(super) fn osk_output(&mut self, out: osk::Output) -> bool {
         use osk::Output;
         let (key, text) = match &out {
             Output::Text(t) => (None, Some(t.as_str())),
             Output::Backspace => (Some(KeyCode::Backspace), None),
             Output::Enter => (Some(KeyCode::Enter), None),
-            Output::Close => {
-                self.pad.menu.osk = None;
-                self.pad.menu.osk_dismissed = true;
-                return;
-            }
+            Output::Close => return true,
         };
         let backspace = key == Some(KeyCode::Backspace);
-        if self.screen == Screen::Chat && self.title.is_none() {
+        if self.dialog_open() {
+            if let Some(text) = text {
+                self.dialog_type(text);
+            } else if let Err(e) = self.dialog_key(key.expect("a key"), None, None) {
+                log::warn!("Horizon: on-screen keyboard: {e}");
+            }
+        } else if self.screen == Screen::CommandBlock {
+            self.command_block_input(key, text);
+        } else if self.screen == Screen::Social {
+            if backspace {
+                self.social_backspace();
+            } else if let Some(text) = text {
+                self.social_type(text);
+            }
+        } else if self.screen == Screen::DebugOptions {
+            if backspace {
+                self.debug_options_backspace();
+            } else if let Some(text) = text {
+                self.debug_options_type(text);
+            }
+        } else if self.screen == Screen::BlockEditor {
+            if let Some(key) = key {
+                self.block_editor_key_code(key, None, None);
+            } else if let Some(text) = text {
+                self.block_editor_type(text);
+            }
+        } else if self.screen == Screen::Chat && self.title.is_none() {
             match text {
                 Some(t) => self.chat_type(t),
                 None => self.chat_key_code(key.expect("a key"), None),
@@ -1984,6 +2028,10 @@ impl Game<'_> {
                 self.creative_search_backspace(false);
             } else if key != Some(KeyCode::Enter) {
                 self.creative_search_edit(text);
+            }
+        } else if self.mod_browser_typing() {
+            if key != Some(KeyCode::Enter) {
+                self.mod_browser_text(text, backspace);
             }
         } else if self.recipe_search_focused() {
             if key != Some(KeyCode::Enter) {
@@ -2020,13 +2068,10 @@ impl Game<'_> {
             }
         }
         // Enter ends the typing; a field that closed with it closes the keyboard.
-        if key == Some(KeyCode::Enter)
+        key == Some(KeyCode::Enter)
             || (!self.pad_typing()
                 && self.title.is_none()
                 && !matches!(self.screen, Screen::Options | Screen::WorldOptions))
-        {
-            self.pad.menu.osk = None;
-        }
     }
 
     // ---- drawing ----
