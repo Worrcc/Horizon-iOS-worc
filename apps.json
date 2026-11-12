@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.66",
+          "buildVersion": "0.2.0.66",
+          "date": "2026-11-12T06:34:05Z",
+          "localizedDescription": "Branch ios-64, commit 84258fed7.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-66/Horizon.ipa",
+          "size": 34428300,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.65",
           "buildVersion": "0.2.0.65",
           "date": "2026-11-12T06:00:20Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-55/Horizon.ipa",
           "size": 34169569,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.54",
-          "buildVersion": "0.2.0.54",
-          "date": "2026-11-10T16:24:28Z",
-          "localizedDescription": "Branch claude/liteminer-api, commit b7dcccb0f.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-54/Horizon.ipa",
-          "size": 34132526,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.65",
-      "versionDate": "2026-11-12T06:00:20Z",
-      "versionDescription": "Branch claude/keyboard-on-mousetweaks, commit 84258fed7.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-65/Horizon.ipa",
-      "size": 34428312
+      "version": "0.2.0.66",
+      "versionDate": "2026-11-12T06:34:05Z",
+      "versionDescription": "Branch ios-64, commit 84258fed7.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-66/Horizon.ipa",
+      "size": 34428300
     }
   ],
   "news": []
