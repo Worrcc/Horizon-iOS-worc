@@ -343,6 +343,7 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::Strike { mob, .. } => format!("strike from mob {mob}"),
             Output::PlayerKnockback { player, .. } => format!("knockback on {player}"),
             Output::PlayerPush { player, .. } => format!("pushed {player}"),
+            Output::PlayerTeleport { player, .. } => format!("teleported {player}"),
             Output::PlaySound { sound, .. } => format!("played {}", sound.name),
             Output::Ride { rider, vehicle } => match vehicle {
                 Some(v) => format!("seated mob {rider} on mob {v}"),
