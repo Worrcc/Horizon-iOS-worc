@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.72",
+          "buildVersion": "0.2.0.72",
+          "date": "2026-11-13T22:56:10Z",
+          "localizedDescription": "Branch claude/api-expansion, commit 889608c43.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-72/Horizon.ipa",
+          "size": 34612273,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.71",
           "buildVersion": "0.2.0.71",
           "date": "2026-11-13T21:52:16Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-62/Horizon.ipa",
           "size": 34400326,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.61",
-          "buildVersion": "0.2.0.61",
-          "date": "2026-11-11T10:22:29Z",
-          "localizedDescription": "Branch claude/mousetweaks-api, commit 2144749f0.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-61/Horizon.ipa",
-          "size": 34389233,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.71",
-      "versionDate": "2026-11-13T21:52:16Z",
-      "versionDescription": "Branch claude/storage-api, commit 9299745fb.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-71/Horizon.ipa",
-      "size": 34549382
+      "version": "0.2.0.72",
+      "versionDate": "2026-11-13T22:56:10Z",
+      "versionDescription": "Branch claude/api-expansion, commit 889608c43.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-72/Horizon.ipa",
+      "size": 34612273
     }
   ],
   "news": []
