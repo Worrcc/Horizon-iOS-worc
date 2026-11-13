@@ -35,7 +35,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
  ───────────────                          ───────
  impl Mod for MyMod { ... }               horizon-mods::Mods
  export_mod!(MyMod)                         ├─ Engine (cranelift), made on first mod
-        │ cargo horizon-mod build           ├─ one Store per mod: 64 MiB, fuel per call
+        │ cargo horizon-mod build           ├─ one Store per mod: 64 MiB, deadline per call
         ▼                                   ├─ Linker: log, game, chat, hud (WIT imports)
  my_mod.hmod = zip {                        └─ calls the events export: init, tick,
    horizon-mod.toml,                             frame, command, chat
@@ -78,7 +78,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows). API level 20: `run-mod-quiet(lines)` runs registered server-mod commands quietly (16 a call, 64 a tick per mod); vanilla and unknown names are dropped |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box (Ctrl+F, or Cmd+F on macOS, focuses it while the panel is shown), and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. `browser-ext` (level 19) adds a paged bookmark panel left of the window, hidden while the recipe book is open, and `keep-empty` to keep the browser and search box visible with no results; `set-item-lines` adds grey tooltip lines to items in either panel; `browser-ext.set-recipes` mixes standard recipes with custom boxes of placed slots, text and GUI sprites. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
-| `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 1024, 1024 × 1024 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 1 MiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default), or 4000 µs while that mod's own canvas screen is open; `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. The game measures how fast the mod burns fuel on this device (Pulley on iOS is slower) and sets each call's budget from it. **Experimental:** `experimental = ["render"]` |
+| `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 1024, 1024 × 1024 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 1 MiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default), or 4000 µs while that mod's own canvas screen is open; `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. Epoch mode measures elapsed wall time, including host calls; fuel mode estimates the allowance from the mod's measured instruction rate on this device. **Experimental:** `experimental = ["render"]` |
 | `client-world` | `world-read` | API level 17. What this game has loaded, in single player and on any server (only what the server sent): `columns(chunks, layer, depth)`: up to 16 chunks a call, each column's top block in the layer (the surface, or the floor below a height as the game's minimap maps caves and the Nether) and up to 16 state ids down from it, its water depth, the light above it and its biome's grass, foliage and water colours; `changes(since, radius)`: the chunks changed, loaded or unloaded since a counter, nearest first; `block-table()`: every block state's block, facts (air, water, see-through, ...), the texture its model shows up and south with its tint source, and its map colour, from the loaded packs (its `version` changes on a resource reload; `table-version()` reads it alone, cheap enough every tick); `texture(name)`: a block texture's RGBA from the loaded packs, so a mod averages its own colours; `dimension()`, `light(x, y, z)`, `biome(x, y, z)`. **Experimental:** `experimental = ["world-read"]` |
 | `container` | `container` | API level 22: live container slots/cursor, real clicks, drag takeover, per-mod Shift latch and up to eight slot-style buttons; synchronous optional `container-events`. Excludes creative inventory. **Experimental:** `experimental = ["container"]` |
 | `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
@@ -161,12 +161,12 @@ an explicit environment override takes precedence.
 If native engine creation, linker setup, or compilation of the first code
 mod fails, Horizon warns with the reason and rebuilds the engine and linker
 once for Pulley. A Pulley failure is reported as a mod error. The finalized
-engine is shared by client/server mods and retained across world and dev-mod
-reloads; later compilation errors fail that mod without switching engines.
-Look in the game log for the single selection line, emitted when the first
-code mod is loaded: `Horizon: mods run on native (<reason>)` or
-`Horizon: mods run on pulley (<reason>)`. Changing the override or enabling
-JIT after that requires restarting the game. Native code still depends on
+engine is shared by live client/server mods and retained across dev-mod reloads;
+later compilation errors fail that mod without switching engines. Dropping the
+last `Mods` releases the engine and joins its epoch ticker; the backend selection
+remains finalized for the process. Look for the startup line:
+`Horizon: mods run on <native|pulley>, limit <epoch|fuel>`. Changing the engine
+override or enabling JIT after selection requires restarting the game. Native code still depends on
 wasmtime being allowed to map executable memory on that iOS installation.
 
 ### Performance
@@ -195,30 +195,59 @@ At 20 ticks per second coords-hud costs 46 µs per second of game time: well
 under 0.01 ms per frame. The frame-time medians differ by less than the
 run-to-run spread.
 
-**Budgets.** Each call gets fuel (about one unit per WebAssembly instruction):
-2 billion for `init`, 50 million for `tick`, 10 million for `frame`, 100
-million for a command or chat line. A runaway loop ends in a fraction of a
-second (the sandbox test's endless `/spin` is cut well within its 5 s limit)
-instead of hanging the game. The target budgets a mod should stay under are
-tighter: **1 ms per tick and 0.1 ms per frame**; a mod with heavy `frame` work
-(a minimap baking chunks) asks for up to 0.5 ms, or 4 ms while its own
-fullscreen canvas screen is open, with `canvas.request-frame-budget` and
-stops when `canvas.work-left` says it is
-spent (`the_frame_budget_converges` in the sandbox tests: a 300 µs budget
-holds to within a few percent, with Cranelift and on Pulley,
-`--features force-pulley`, as iOS runs mods without JIT). The runtime keeps each mod's
-average call time (`Entry::cost`); the Mods page will show it, and a mod over
-budget for long will be flagged, then paused.
+**Budgets.** `HORIZON_MODS_LIMIT=epoch|fuel` selects the engine's limit mode;
+**fuel is the default** (every mod's budgets were sized for it), epoch is opt-in and
+experimental, and unknown values warn and use fuel. In a benchmark of the real
+Diorama mod on Pulley, epoch stopped the mod during its joining frames ("it took too long"):
+time spent in host calls counts against an epoch deadline but costs no fuel. On the storage
+terminal mod epoch was about 7% faster, in a tight loop about 12-17% slower. Both modes
+work with native code, Pulley, `HORIZON_MODS_ENGINE`, and `force-pulley`.
+Tests and embedders can choose explicitly with `Mods::with_limit(LimitMode::Epoch)`
+or `LimitMode::Fuel`, then `load_into`.
+
+Each call gets 2 billion work units for `init`, 50 million for `tick`,
+10 million for `frame`, and 100 million for commands, chat and other events.
+In epoch mode **1,000,000 work units = 1 ms**: these hard limits are about
+2 s, 50 ms, 10 ms and 100 ms of elapsed wall time. Deadlines use
+`max(1, units / 1_000_000)` integer ticks. One `horizon-mod-epoch` thread per
+engine advances the epoch every 1 ms and is stopped and joined when the
+engine's last owner drops. There is no per-block fuel accounting. Checks at
+loop back-edges and function entries trap overruns through the same
+“it took too long” path as fuel exhaustion; only that mod stops. Epoch ticks
+are approximate: scheduling, long straight-line code and host calls can delay
+a trap. Host calls cannot be preempted, but their elapsed time counts.
+A slow or busy device completes less guest work within the same wall-clock
+budget. Fuel mode retains the previous instruction accounting and those same
+numeric limits (about one unit per WebAssembly instruction).
+
+The cooperative targets are tighter: **1 ms per tick and 0.1 ms per frame**.
+A mod with heavy `frame` work asks for up to 0.5 ms, or 4 ms while its own
+fullscreen canvas screen is open, with `canvas.request-frame-budget`.
+`canvas.work-left` still returns a normalized value, about **1,000,000 at
+call start and zero when spent**; mods can keep using
+`while work-left() > reserve`. Epoch mode computes the remaining work as
+`max(0, deadline_ms - elapsed_ms) * 1_000_000`, preserving fractional
+milliseconds (one internal work unit is one nanosecond), then normalizes it
+against the soft grant as before. Frame grants use `microseconds * 1000`
+internal units, so even sub-millisecond grants count down smoothly. Host time
+is included once. Fuel mode measures the instruction rate on this device
+and charges expensive host calls at that rate. The runtime keeps average
+call time in `Entry::cost`; `last_fuel_used` reports consumed instructions in
+fuel mode and elapsed work units in epoch mode, capped at the hard limit
+(all of it on an overrun).
 
 The runtime remembers the requested microseconds. `request-frame-budget`
 returns the current grant: clamped to 1–500 µs normally, or 1–4000 µs while
 that mod's canvas screen is open. Closing it (including Esc/Done or replacing
 it with a widget screen) immediately restores the 500 µs maximum; reopening
-reapplies the stored request. Stopping a mod discards its screen and budget.
-The measured soft fuel allowance stays below the frame hook's 10 million fuel
-cap, leaving 50,000 fuel for the final work batch and return. On fast devices,
-this hard cap may prevent a full 4 ms of work; mods must still check
-`work-left` regularly and leave a reserve for their final batch.
+reapplies the stored request. The next frame uses the new soft allowance in
+both modes; requests never reset or extend the current hook's hard limit.
+Stopping a mod discards its screen and budget. Fuel mode reserves 50,000
+instructions below the frame's 10 million hard cap for the final work batch
+and return. Epoch mode uses the requested wall time directly, below its
+10 ms hard frame deadline. Mods should check `work-left` regularly and leave
+a reserve for the final batch. `the_frame_budget_converges` exercises a
+300 µs grant on native and Pulley engines (`--features force-pulley`).
 
 Hosts can call `Mods::limit_canvas_screen_budget(true)` under thermal pressure
 (for example iOS Serious/Critical) to immediately clamp open screens to
@@ -229,7 +258,7 @@ No WIT signatures or API levels change.
 
 ### Crash isolation
 
-A trap (panic, out-of-bounds access, `unreachable`), running out of fuel or
+A trap (panic, out-of-bounds access, `unreachable`), exceeding a deadline, running out of fuel or
 hitting the 64 MiB memory cap stops **that mod only**. The game says so in
 chat (`Mod Test Guest stopped: it took too long (an endless loop?)`), marks it
 on the Mods page and carries on; the other mods keep running. Host functions

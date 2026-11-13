@@ -15,8 +15,10 @@ use wasmtime::{
     component::{HasSelf, Instance, Linker, TypedFunc, Val},
 };
 
+mod budget;
 mod container_host;
 mod engine;
+pub use budget::LimitMode;
 pub use container_host::{
     ContainerButton, ContainerPart, ContainerPointerKind, ContainerReply, ContainerRequest,
     ContainerShift, ContainerSlot, ContainerStack, ContainerState,
@@ -199,7 +201,7 @@ pub use client_world_host::{
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
-/// Fuel (about one unit per WebAssembly instruction) per call: a bound on
+/// Work units per call (1,000,000 = 1 ms with epochs; instructions with fuel): a bound on
 /// runaway loops, far above the hooks' time budgets.
 const FUEL_INIT: u64 = 2_000_000_000;
 const FUEL_TICK: u64 = 50_000_000;
@@ -656,8 +658,7 @@ pub struct Entry {
     pub status: Status,
     /// The mod's average time per call of its busiest hook.
     pub cost: Duration,
-    /// Fuel the last call used (all of it when it ran out): a diagnostic
-    /// for benches (`Mods::last_fuel_used`).
+    /// Work used by the last call (all of it on overrun); see `last_fuel_used`.
     last_fuel: u64,
     run: Option<Running>,
     modified: Option<SystemTime>,
@@ -860,6 +861,7 @@ impl BrowserExtState {
 }
 
 struct State {
+    call_budget: budget::CallBudget,
     name: String,
     id: String,
     snapshot: Arc<Snapshot>,
@@ -913,6 +915,7 @@ struct State {
 /// the state with none: no engine, and every hook a no-op.
 #[derive(Default)]
 pub struct Mods {
+    engine_cache: Option<Arc<engine::Cache>>,
     container_bridge: container_host::Bridge,
     container_shift: ContainerShift,
     entries: Vec<Entry>,
@@ -934,6 +937,14 @@ pub struct Mods {
 }
 
 impl Mods {
+    /// An isolated engine with an explicit limit mode (especially for tests).
+    /// Engine backend selection still respects HORIZON_MODS_ENGINE/force-pulley.
+    pub fn with_limit(limit: LimitMode) -> Self {
+        Self {
+            engine_cache: Some(Arc::new(engine::Cache::new(limit))),
+            ..Self::default()
+        }
+    }
     /// Lines disappear with their owning runtime, or when the player leaves.
     pub fn world_lines(&self) -> impl Iterator<Item = &ModWorldLines> {
         self.entries
@@ -1179,11 +1190,13 @@ impl Mods {
         let container_shift = self.container_shift.clone();
         let mut canvas = canvas_host::CanvasState::new(page);
         canvas.limit_screen_budget(self.canvas_screen_budget_limited);
+        let cache = self.engine_cache.get_or_insert_with(engine::shared);
+        let budget = cache.limit;
         let engine::Compiled {
             engine,
             linker,
             component,
-        } = engine::compile(wasm)?;
+        } = cache.compile_env(wasm)?;
         let ty = component.component_type();
         let imports: Vec<String> = ty
             .imports(engine)
@@ -1214,6 +1227,7 @@ impl Mods {
             .join(crate::manifest::STORAGE_DIR)
             .join(&m.id);
         let state = State {
+            call_budget: budget::CallBudget::default(),
             name: m.name.clone(),
             id: m.id.clone(),
             snapshot,
@@ -1255,7 +1269,9 @@ impl Mods {
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
-        store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+        budget
+            .start(&mut store, FUEL_INIT)
+            .map_err(|e| e.to_string())?;
         store.data_mut().canvas.work = canvas_host::Work {
             start: FUEL_INIT,
             soft: FUEL_INIT,
@@ -1361,8 +1377,9 @@ impl Mods {
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
-    /// The fuel mod `index`'s last hook call used, all of it when it ran
-    /// out: a diagnostic for benches, not part of the mods' API.
+    /// Work units used by the last hook: instructions in Fuel mode, elapsed
+    /// nanoseconds in Epoch mode, capped at the call budget. The historical
+    /// name is retained for bench callers; this is outside the guest API.
     pub fn last_fuel_used(&self, index: usize) -> Option<u64> {
         self.entries.get(index).map(|e| e.last_fuel)
     }
@@ -1433,10 +1450,13 @@ impl Mods {
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
         run.store.data_mut().container.reset_budget();
-        // A `frame` call's soft budget is the granted time in fuel at the
-        // rate the mod burned it here so far; other hooks' is their fuel.
+        // Epoch grants use wall time directly; Fuel grants use the measured
+        // instruction rate. Other hooks share their hard work allowance.
+        let budget = run.store.data().call_budget.mode;
         let canvas = &mut run.store.data_mut().canvas;
-        let soft = if self.framing {
+        let soft = if self.framing && budget == LimitMode::Epoch {
+            u64::from(canvas.budget.granted) * 1000
+        } else if self.framing {
             canvas.budget.allowance(fuel)
         } else {
             fuel
@@ -1447,13 +1467,22 @@ impl Mods {
             ..canvas_host::Work::default()
         };
         let started = Instant::now();
-        let result = run.store.set_fuel(fuel).and_then(|()| f(run));
+        let result = budget.start(&mut run.store, fuel).and_then(|()| f(run));
         let took = started.elapsed();
-        entry.last_fuel = fuel.saturating_sub(run.store.get_fuel().unwrap_or(0));
+        entry.last_fuel = if result.as_ref().err().is_some_and(|e| {
+            matches!(
+                e.downcast_ref::<Trap>(),
+                Some(Trap::OutOfFuel | Trap::Interrupt)
+            )
+        }) {
+            fuel
+        } else {
+            fuel.saturating_sub(budget.remaining(&run.store))
+        };
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + took) / 64;
-        if self.framing && result.is_ok() {
-            let used = fuel.saturating_sub(run.store.get_fuel().unwrap_or(0));
+        if self.framing && result.is_ok() && budget == LimitMode::Fuel {
+            let used = fuel.saturating_sub(budget.remaining(&run.store));
             let canvas = &mut run.store.data_mut().canvas;
             let own = took.saturating_sub(canvas.work.host_time);
             canvas.budget.observe(used, own);
@@ -2166,7 +2195,7 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
         .map_err(|e| e.to_string())?;
     RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
         .map_err(|e| e.to_string())?;
-    // `work-left` reads the store's fuel, which a plain host
+    // `work-left` reads the store's call budget, which a plain host
     // function has no way to.
     linker.allow_shadowing(true);
     linker
@@ -2175,8 +2204,8 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
         .func_wrap(
             "work-left",
             |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
-                let fuel = store.get_fuel()?;
-                Ok((canvas_host::work_left(store.data().canvas.work, fuel),))
+                let budget = store.data().call_budget.mode;
+                Ok((budget.work_left(&store),))
             },
         )
         .map_err(|e| e.to_string())?;
@@ -2231,7 +2260,7 @@ fn modified(path: &Path) -> Option<SystemTime> {
 /// A trap or error, as the player reads it.
 fn reason(e: &wasmtime::Error) -> String {
     match e.downcast_ref::<Trap>() {
-        Some(Trap::OutOfFuel) => "it took too long (an endless loop?)".into(),
+        Some(Trap::OutOfFuel | Trap::Interrupt) => "it took too long (an endless loop?)".into(),
         Some(Trap::UnreachableCodeReached) => "it crashed (a panic)".into(),
         Some(trap) => format!("it crashed: {trap}"),
         None => format!("{e:#}"),
@@ -4220,6 +4249,7 @@ mod entity_tests {
 
     pub(super) fn state() -> State {
         State {
+            call_budget: budget::CallBudget::default(),
             name: "Mob Orders".into(),
             id: "mob_orders".into(),
             snapshot: Arc::new(Snapshot::default()),
@@ -4417,13 +4447,14 @@ mod entity_tests {
                 )
                 .0 < level
             );
+            let cache = engine::Cache::new(LimitMode::Fuel);
             let engine::Compiled {
                 engine,
                 linker,
                 component,
-            } = engine::compile(&wasm).unwrap();
+            } = cache.compile_env(&wasm).unwrap();
             let mut store = Store::new(engine, state());
-            store.set_fuel(FUEL_INIT).unwrap();
+            LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
             linker.instantiate(&mut store, &component).unwrap();
         }
     }
@@ -4809,13 +4840,14 @@ mod entity_tests {
             crate::api_level::needed(functions.iter().map(String::as_str)).0,
             17
         );
+        let cache = engine::Cache::new(LimitMode::Fuel);
         let engine::Compiled {
             engine,
             linker,
             component,
-        } = engine::compile(&wasm).unwrap();
+        } = cache.compile_env(&wasm).unwrap();
         let mut store = Store::new(engine, state());
-        store.set_fuel(FUEL_INIT).unwrap();
+        LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
         let result = linker.instantiate(&mut store, &component);
         if remove_case {
             let error = format!("{:#}", result.unwrap_err());
@@ -4869,13 +4901,14 @@ mod entity_tests {
             crate::api_level::needed(functions.iter().map(String::as_str)).0,
             2
         );
+        let cache = engine::Cache::new(LimitMode::Fuel);
         let engine::Compiled {
             engine,
             linker,
             component,
-        } = engine::compile(&wasm).unwrap();
+        } = cache.compile_env(&wasm).unwrap();
         let mut store = Store::new(engine, state());
-        store.set_fuel(FUEL_INIT).unwrap();
+        LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
         linker.instantiate(&mut store, &component).unwrap();
     }
 
@@ -4994,13 +5027,14 @@ mod entity_tests {
             .unwrap()
             .encode()
             .unwrap();
+        let cache = engine::Cache::new(LimitMode::Fuel);
         let engine::Compiled {
             engine,
             linker,
             component,
-        } = engine::compile(&wasm).unwrap();
+        } = cache.compile_env(&wasm).unwrap();
         let mut store = Store::new(engine, state());
-        store.set_fuel(FUEL_INIT).unwrap();
+        LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
         let instance = linker.instantiate(&mut store, &component).unwrap();
         // Dummy exports trap if called; binding them still checks every old
         // server-events signature against the current generated bindings.

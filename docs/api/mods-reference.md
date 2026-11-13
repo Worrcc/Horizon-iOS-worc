@@ -646,6 +646,8 @@ Access: capability `render`.
 
 Capability `render` (experimental), API level 17: the mod's own pixels on the HUD. Images live on one shared atlas page the game draws from; a mod fills them with `update-image` and shows them in a corner box with `set-corner`, beside the `render` shapes. Also the frame budget a mod with heavy `frame` work asks for, and how much of it is left.
 
+The default epoch mode uses elapsed wall time (host calls included); `HORIZON_MODS_LIMIT=fuel` retains instruction accounting. Internally 1,000,000 epoch work units represent 1 ms, while `work-left` stays normalized to about 1,000,000 at call start in both modes. Frame grants retain microsecond precision; requests affect subsequent frame calls and never extend the current hard limit. See [the budget guide](../mods.md).
+
 ### type `corner`
 
 `type corner = corner`
@@ -722,8 +724,8 @@ What a canvas corner box holds.
 | `set-box-items` | `func(items: list<item-shape>)` | API level 26: same item layer for the existing corner/placed box, in GUI pixels from its top left. First 256; same sanitizing and draw order as set-screen-items. Placed boxes clip items too. Ignored without a box; set-corner, set-placed and clear-corner clear its items. Needs render only. |
 | `close-canvas-screen` | `func()` | Closes the mod's canvas screen without a closed event. |
 | `clear-corner` | `func()` | Removes the mod's canvas box. |
-| `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500, or 4000 while this mod's canvas screen is open. Remembers the request: closing the screen immediately restores the 500 maximum; reopening reapplies a larger request. Thermal pressure may limit screens to 500 too. Returns what is granted now (the Mods page shows it). The frame hook's hard fuel cap always wins, with headroom to return. The mod has no clock: `work-left` says how much of the soft budget is left. |
-| `work-left` | `func() -> u64` | How much of this hook call's budget is left, about 1000000 at its start and 0 once it is spent: a mod that works `while work-left() > reserve` keeps to its budget. In `frame` calls the budget is the granted one, measured on this device as the mod runs (host calls included); in other hooks it is the hook's own fuel. Spending past it is allowed up to the hook's fuel, past which the mod is stopped. |
+| `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500, or 4000 while this mod's canvas screen is open. Remembers the request: closing the screen immediately restores the 500 maximum; reopening reapplies a larger request. Thermal pressure may limit screens to 500 too. Returns what is granted now (the Mods page shows it). The frame hook's hard call limit always wins, with headroom to return. The mod has no clock: `work-left` says how much of the soft budget is left. |
+| `work-left` | `func() -> u64` | How much of this hook call's budget is left, about 1000000 at its start and 0 once it is spent: a mod that works `while work-left() > reserve` keeps to its budget. In `frame` calls the budget is the granted one, measured on this device as the mod runs (host calls included); in other hooks it is the hook's own work limit. Spending past it is allowed up to the hook's hard limit, past which the mod is stopped. |
 
 ## `client-world`
 

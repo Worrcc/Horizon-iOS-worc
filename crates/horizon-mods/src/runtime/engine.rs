@@ -1,6 +1,13 @@
-//! One engine for the process, finalized before any mod can run.
-use super::{State, linker};
-use std::sync::OnceLock;
+//! A shared engine for live worlds, finalized before any mod can run.
+use super::{LimitMode, State, linker};
+use std::{
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 use wasmtime::{
     Config, Engine,
     component::{Component, Linker},
@@ -103,14 +110,59 @@ fn initialize<T>(
     }
 }
 
+struct Ticker {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    #[cfg(test)]
+    finished: Arc<AtomicBool>,
+}
+impl Ticker {
+    fn new(engine: &Engine) -> Result<Self, String> {
+        let engine = engine.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        #[cfg(test)]
+        let finished = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let ended = finished.clone();
+        let thread = thread::Builder::new()
+            .name("horizon-mod-epoch".into())
+            .spawn(move || {
+                while !stopped.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                    engine.increment_epoch();
+                }
+                #[cfg(test)]
+                ended.store(true, Ordering::Release);
+            })
+            .map_err(|e| format!("epoch ticker: {e}"))?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+            #[cfg(test)]
+            finished,
+        })
+    }
+}
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 struct Runtime {
+    _ticker: Option<Ticker>,
     engine: Engine,
     linker: Linker<State>,
 }
 impl Runtime {
-    fn new(kind: Kind) -> Result<Self, String> {
+    fn new(kind: Kind, limit: LimitMode) -> Result<Self, String> {
         let mut config = Config::new();
-        config.wasm_component_model(true).consume_fuel(true);
+        config.wasm_component_model(true);
+        limit.configure(&mut config);
         if kind == Kind::Pulley {
             config
                 .target("pulley64")
@@ -126,7 +178,16 @@ impl Runtime {
         }
         let engine = Engine::new(&config).map_err(|e| format!("Engine::new: {e:#}"))?;
         let linker = linker(&engine).map_err(|e| format!("creating linker: {e}"))?;
-        Ok(Self { engine, linker })
+        let ticker = if limit == LimitMode::Epoch {
+            Some(Ticker::new(&engine)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            _ticker: ticker,
+            engine,
+            linker,
+        })
     }
 
     fn compile(&self, wasm: &[u8]) -> Result<Component, String> {
@@ -143,8 +204,22 @@ pub(super) struct Compiled<'a> {
 }
 
 #[derive(Default)]
-struct Cache(OnceLock<Result<Runtime, String>>);
+pub(super) struct Cache {
+    runtime: OnceLock<Result<Runtime, String>>,
+    pub limit: LimitMode,
+    selection: Option<&'static OnceLock<Kind>>,
+}
+
 impl Cache {
+    pub fn new(limit: LimitMode) -> Self {
+        Self {
+            limit,
+            ..Self::default()
+        }
+    }
+    pub fn compile_env(&self, wasm: &[u8]) -> Result<Compiled<'_>, String> {
+        self.compile(wasm, environment_choice)
+    }
     fn compile(
         &self,
         wasm: &[u8],
@@ -152,13 +227,35 @@ impl Cache {
     ) -> Result<Compiled<'_>, String> {
         let mut first = None;
         let runtime = self
-            .0
+            .runtime
             .get_or_init(|| {
-                let (runtime, kind, reason) = initialize(choice(), Runtime::new, |runtime| {
-                    first = Some(runtime.compile(wasm)?);
-                    Ok(())
-                })?;
-                log::info!("Horizon: mods run on {} ({reason})", kind.name());
+                if let Some(&kind) = self.selection.and_then(OnceLock::get) {
+                    let runtime = Runtime::new(kind, self.limit)?;
+                    log::info!(
+                        "Horizon: mods run on {}, limit {}",
+                        kind.name(),
+                        self.limit.name()
+                    );
+                    return Ok(runtime);
+                }
+                let choice = choice();
+                let (runtime, kind, reason) = initialize(
+                    choice,
+                    |kind| Runtime::new(kind, self.limit),
+                    |runtime| {
+                        first = Some(runtime.compile(wasm)?);
+                        Ok(())
+                    },
+                )?;
+                if let Some(selection) = self.selection {
+                    let _ = selection.set(kind);
+                }
+                log::info!(
+                    "Horizon: mods run on {}, limit {}",
+                    kind.name(),
+                    self.limit.name()
+                );
+                log::debug!("Horizon: mods engine selection: {reason}");
                 Ok(runtime)
             })
             .as_ref()
@@ -175,25 +272,39 @@ impl Cache {
     }
 }
 
-pub(super) fn compile(wasm: &[u8]) -> Result<Compiled<'static>, String> {
-    // Shared by client/server instances and dev/world reloads: only one
-    // selection log and at most one native-to-Pulley transition per process.
-    static CACHE: Cache = Cache(OnceLock::new());
-    CACHE.compile(wasm, || {
-        let preference = std::env::var_os("HORIZON_MODS_ENGINE");
-        let preference = preference.as_ref().map(|v| v.to_string_lossy());
-        let preference = preference.as_deref().unwrap_or("auto");
-        let choice = choose(
-            cfg!(target_os = "ios"),
-            platform_jit(),
-            cfg!(feature = "force-pulley"),
-            preference,
-        );
-        if choice.unknown {
-            log::warn!("Horizon: unknown HORIZON_MODS_ENGINE={preference:?}; using auto");
-        }
-        choice
-    })
+/// Weak ownership shares the engine across live worlds without keeping its
+/// ticker alive after the last Mods is dropped. Selection stays finalized.
+pub(super) fn shared() -> Arc<Cache> {
+    static SELECTION: OnceLock<Kind> = OnceLock::new();
+    static CACHE: Mutex<Weak<Cache>> = Mutex::new(Weak::new());
+    let mut slot = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(cache) = slot.upgrade() {
+        return cache;
+    }
+    let cache = Arc::new(Cache {
+        selection: Some(&SELECTION),
+        ..Cache::new(LimitMode::from_env())
+    });
+    *slot = Arc::downgrade(&cache);
+    cache
+}
+
+fn environment_choice() -> Choice {
+    let preference = std::env::var_os("HORIZON_MODS_ENGINE");
+    let preference = preference.as_ref().map(|v| v.to_string_lossy());
+    let preference = preference.as_deref().unwrap_or("auto");
+    let choice = choose(
+        cfg!(target_os = "ios"),
+        platform_jit(),
+        cfg!(feature = "force-pulley"),
+        preference,
+    );
+    if choice.unknown {
+        log::warn!("Horizon: unknown HORIZON_MODS_ENGINE={preference:?}; using auto");
+    }
+    choice
 }
 
 #[cfg(test)]
@@ -343,5 +454,135 @@ mod tests {
             .linker
             .instantiate(&mut store, &reloaded.component)
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::super::{Mods, entity_tests::state, reason};
+    use super::*;
+    use std::time::Instant;
+
+    // Independent core Wasm fixtures: a decrementing loop returning zero,
+    // or an unconditional back-edge that can never return.
+    fn loop_module(engine: &Engine, infinite: bool) -> wasmtime::Module {
+        let mut bytes =
+            b"\0asm\x01\0\0\0\x01\x06\x01\x60\x01\x7f\x01\x7f\x03\x02\x01\0\x07\x07\x01\x03run\0\0"
+                .to_vec();
+        let body: &[u8] = if infinite {
+            &[0, 0x03, 0x40, 0x0c, 0, 0x0b, 0x41, 0, 0x0b]
+        } else {
+            &[
+                0, 0x03, 0x40, 0x20, 0, 0x41, 1, 0x6b, 0x22, 0, 0x0d, 0, 0x0b, 0x20, 0, 0x0b,
+            ]
+        };
+        bytes.extend([10, (body.len() + 2) as u8, 1, body.len() as u8]);
+        bytes.extend_from_slice(body);
+        wasmtime::Module::new(engine, bytes).unwrap()
+    }
+
+    #[test]
+    fn dropping_mods_joins_its_ticker_even_if_an_engine_clone_survives() {
+        let mods = Mods::with_limit(LimitMode::Epoch);
+        let cache = mods.engine_cache.as_ref().unwrap();
+        let compiled = cache.compile_env(b"\0asm\x0d\0\x01\0").unwrap();
+        let engine = compiled.engine.clone();
+        let finished = cache
+            .runtime
+            .get()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            ._ticker
+            .as_ref()
+            .unwrap()
+            .finished
+            .clone();
+        let weak = Arc::downgrade(cache);
+        drop(compiled);
+        drop(mods);
+        assert!(weak.upgrade().is_none());
+        assert!(
+            finished.load(Ordering::Acquire),
+            "drop joined the epoch thread"
+        );
+        drop(engine);
+    }
+
+    #[test]
+    fn limits_trap_runaway_loops_but_allow_finite_work_and_rearm() {
+        for kind in [Kind::Native, Kind::Pulley] {
+            for mode in [LimitMode::Epoch, LimitMode::Fuel] {
+                let runtime = Runtime::new(kind, mode).unwrap();
+                let units = if mode == LimitMode::Epoch {
+                    50_000_000
+                } else {
+                    1_000_000
+                };
+                let module = loop_module(&runtime.engine, false);
+                let mut store = wasmtime::Store::new(&runtime.engine, state());
+                mode.start(&mut store, 2_000_000_000).unwrap();
+                let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+                let run = instance
+                    .get_typed_func::<i32, i32>(&mut store, "run")
+                    .unwrap();
+                assert_eq!(run.call(&mut store, 10_000).unwrap(), 0);
+                let spin_module = loop_module(&runtime.engine, true);
+                let spin_instance = wasmtime::Instance::new(&mut store, &spin_module, &[]).unwrap();
+                let spin = spin_instance
+                    .get_typed_func::<i32, i32>(&mut store, "run")
+                    .unwrap();
+                let started = Instant::now();
+                mode.start(&mut store, units).unwrap();
+                let error = spin.call(&mut store, 0).unwrap_err();
+                assert_eq!(reason(&error), "it took too long (an endless loop?)");
+                if mode == LimitMode::Epoch {
+                    assert!(
+                        started.elapsed() <= Duration::from_millis(550),
+                        "epoch overrun: {:?}",
+                        started.elapsed()
+                    );
+                    assert!(
+                        store.get_fuel().is_err(),
+                        "epoch engines have no fuel accounting"
+                    );
+                } else {
+                    assert_eq!(mode.remaining(&store), 0);
+                }
+                mode.start(&mut store, units).unwrap();
+                assert_eq!(run.call(&mut store, 10_000).unwrap(), 0);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "timing comparison: run alone with --nocapture"]
+    fn pulley_loop_throughput() {
+        for mode in [LimitMode::Fuel, LimitMode::Epoch] {
+            let runtime = Runtime::new(Kind::Pulley, mode).unwrap();
+            let module = loop_module(&runtime.engine, false);
+            let mut store = wasmtime::Store::new(&runtime.engine, state());
+            mode.start(&mut store, 2_000_000_000).unwrap();
+            let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+            let run = instance
+                .get_typed_func::<i32, i32>(&mut store, "run")
+                .unwrap();
+            let mut times = Vec::new();
+            for i in 0..25 {
+                mode.start(&mut store, 2_000_000_000).unwrap();
+                let started = Instant::now();
+                assert_eq!(run.call(&mut store, 1_000_000).unwrap(), 0);
+                if i >= 5 {
+                    times.push(started.elapsed());
+                }
+            }
+            times.sort();
+            let median = times[times.len() / 2];
+            println!(
+                "pulley limit {}: 1M iterations in {median:?}, {:.0} iterations/s",
+                mode.name(),
+                1_000_000.0 / median.as_secs_f64()
+            );
+        }
     }
 }

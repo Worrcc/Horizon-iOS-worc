@@ -2,8 +2,8 @@
 //! examples and a guest
 //! that misbehaves on command. Needs `rustup target add wasm32-unknown-unknown`.
 use horizon_mods::{
-    BlockPos, Clock, Corner, GameMode, HeldItem, Hit, Mods, Output, Package, Player, Runs,
-    ServerPlayer, Shape, Snapshot, Status,
+    BlockPos, Clock, Corner, GameMode, HeldItem, Hit, LimitMode, Mods, Output, Package, Player,
+    Runs, ServerPlayer, Shape, Snapshot, Status,
     manifest::componentize,
     testing::{Script, TestGame},
 };
@@ -440,31 +440,43 @@ fn vanilla_commands_win() {
 
 #[test]
 fn a_misbehaving_mod_is_stopped_alone() {
-    for (command, reason) in [
-        ("spin", "it took too long (an endless loop?)"),
-        ("panic", "it crashed (a panic)"),
-        ("grow", "it crashed (a panic)"),
-    ] {
-        let paths = [
-            mods_dir().join("coords_hud.hmod"),
-            mods_dir().join("horizon_mods_test_guest.hmod"),
-        ];
-        let mut mods = Mods::load(&paths, |_| true, |_| false);
-        let started = Instant::now();
-        assert!(mods.command(command));
-        assert!(started.elapsed().as_secs() < 5, "/{command} was cut short");
-        let stopped = Output::Stopped {
-            name: "Test Guest".into(),
-            reason: reason.into(),
-        };
-        assert_eq!(mods.drain(), [stopped], "/{command}");
-        assert_eq!(mods.entries()[1].status, Status::Failed(reason.into()));
-        // The other mod runs on, and the stopped one's command is gone.
-        assert!(mods.is_running());
-        assert!(!mods.command("hello"));
-        mods.set_snapshot(player());
-        mods.tick(1);
-        assert_eq!(mods.panels().count(), 1);
+    for mode in [LimitMode::Epoch, LimitMode::Fuel] {
+        for (command, reason) in [
+            ("spin", "it took too long (an endless loop?)"),
+            ("panic", "it crashed (a panic)"),
+            ("grow", "it crashed (a panic)"),
+        ] {
+            let paths = [
+                mods_dir().join("coords_hud.hmod"),
+                mods_dir().join("horizon_mods_test_guest.hmod"),
+            ];
+            let mut mods = Mods::with_limit(mode);
+            mods.load_into(Runs::Both, &paths, |_| true, |_| false);
+            let started = Instant::now();
+            assert!(mods.command(command));
+            assert!(started.elapsed().as_secs() < 5, "/{command} was cut short");
+            let stopped = Output::Stopped {
+                name: "Test Guest".into(),
+                reason: reason.into(),
+            };
+            assert_eq!(mods.drain(), [stopped], "/{command}");
+            assert_eq!(mods.entries()[1].status, Status::Failed(reason.into()));
+            if command == "spin" {
+                assert_eq!(mods.last_fuel_used(1), Some(100_000_000));
+                if mode == LimitMode::Epoch {
+                    assert!(
+                        started.elapsed().as_millis() <= 600,
+                        "100 ms budget plus scheduler slack"
+                    );
+                }
+            }
+            // The other mod runs on, and the stopped one's command is gone.
+            assert!(mods.is_running());
+            assert!(!mods.command("hello"));
+            mods.set_snapshot(player());
+            mods.tick(1);
+            assert_eq!(mods.panels().count(), 1);
+        }
     }
 }
 
@@ -1362,7 +1374,14 @@ fn browser_reads_component_facts_and_other_recipe_files() {
 #[test]
 fn recipes_reads_the_tables() {
     use horizon_mods::{Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes};
-    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    // Pins a large table's instruction budget, rather than device throughput.
+    let mut mods = Mods::with_limit(LimitMode::Fuel);
+    mods.load_into(
+        Runs::Both,
+        &[mods_dir().join("horizon_mods_test_ui_guest.hmod")],
+        |_| true,
+        |_| false,
+    );
     let stack = |item| RecipeStack {
         item,
         count: 1,
@@ -2416,48 +2435,50 @@ fn the_frame_budget_converges() {
 
 #[test]
 fn canvas_screen_budget_tracks_close_reopen_and_thermal_pressure() {
-    let mut mods = Mods::default();
-    mods.limit_canvas_screen_budget(true);
-    mods.load_into(
-        Runs::Both,
-        &[mods_dir().join("horizon_mods_test_canvas_guest.hmod")],
-        |_| true,
-        |_| false,
-    );
-    assert!(mods.command("budget 9999"));
-    assert!(mods.drain().iter().any(|o| matches!(o,
-        Output::Feedback { text, error: false } if text == "granted 500"
-    )));
-    assert!(mods.command("screen 1"));
-    assert_eq!(mods.frame_budget(0), Some(500));
-    mods.limit_canvas_screen_budget(false);
-    assert_eq!(mods.frame_budget(0), Some(4000));
-    assert!(mods.command("budget 9999"));
-    assert!(mods.drain().iter().any(|o| matches!(o,
-        Output::Feedback { text, error: false } if text == "granted 4000"
-    )));
-    assert!(mods.command("work on"));
-    // Exercise cooperative work at the larger grant, including rate updates.
-    for _ in 0..64 {
-        mods.frame(1.0 / 60.0);
+    for mode in [LimitMode::Epoch, LimitMode::Fuel] {
+        let mut mods = Mods::with_limit(mode);
+        mods.limit_canvas_screen_budget(true);
+        mods.load_into(
+            Runs::Both,
+            &[mods_dir().join("horizon_mods_test_canvas_guest.hmod")],
+            |_| true,
+            |_| false,
+        );
+        assert!(mods.command("budget 9999"));
+        assert!(mods.drain().iter().any(|o| matches!(o,
+            Output::Feedback { text, error: false } if text == "granted 500"
+        )));
+        assert!(mods.command("screen 1"));
+        assert_eq!(mods.frame_budget(0), Some(500));
+        mods.limit_canvas_screen_budget(false);
+        assert_eq!(mods.frame_budget(0), Some(4000));
+        assert!(mods.command("budget 9999"));
+        assert!(mods.drain().iter().any(|o| matches!(o,
+            Output::Feedback { text, error: false } if text == "granted 4000"
+        )));
+        assert!(mods.command("work on"));
+        // Exercise cooperative work at the larger grant, including rate updates.
+        for _ in 0..64 {
+            mods.frame(1.0 / 60.0);
+        }
+        assert_eq!(mods.entries()[0].status, Status::Running);
+        assert!(mods.command("screen_close"));
+        assert_eq!(mods.frame_budget(0), Some(500));
+        assert!(mods.command("screen 1"));
+        assert_eq!(mods.frame_budget(0), Some(4000));
+        mods.ui_closed(0); // The game uses this for both Esc and Done.
+        assert_eq!(mods.frame_budget(0), Some(500));
+        assert!(mods.command("screen 1"));
+        assert_eq!(mods.frame_budget(0), Some(4000));
+        mods.limit_canvas_screen_budget(true);
+        assert_eq!(mods.frame_budget(0), Some(500));
+        mods.limit_canvas_screen_budget(false);
+        assert_eq!(mods.frame_budget(0), Some(4000));
+        assert!(mods.command("budget 300"));
+        assert!(mods.command("screen_close"));
+        assert!(mods.command("screen 1"));
+        assert_eq!(mods.frame_budget(0), Some(300));
     }
-    assert_eq!(mods.entries()[0].status, Status::Running);
-    assert!(mods.command("screen_close"));
-    assert_eq!(mods.frame_budget(0), Some(500));
-    assert!(mods.command("screen 1"));
-    assert_eq!(mods.frame_budget(0), Some(4000));
-    mods.ui_closed(0); // The game uses this for both Esc and Done.
-    assert_eq!(mods.frame_budget(0), Some(500));
-    assert!(mods.command("screen 1"));
-    assert_eq!(mods.frame_budget(0), Some(4000));
-    mods.limit_canvas_screen_budget(true);
-    assert_eq!(mods.frame_budget(0), Some(500));
-    mods.limit_canvas_screen_budget(false);
-    assert_eq!(mods.frame_budget(0), Some(4000));
-    assert!(mods.command("budget 300"));
-    assert!(mods.command("screen_close"));
-    assert!(mods.command("screen 1"));
-    assert_eq!(mods.frame_budget(0), Some(300));
 }
 
 /// Placed boxes replace corner boxes, retain offsets through a resize and

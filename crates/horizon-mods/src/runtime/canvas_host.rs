@@ -292,7 +292,7 @@ pub(super) fn frame_times_window() -> Option<u32> {
     })
 }
 
-/// The current hook call's fuel at its start and its soft budget, for
+/// The current hook call's work at its start and its soft budget, for
 /// `work-left`.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Work {
@@ -305,14 +305,14 @@ pub(super) struct Work {
     pub(super) host_time: Duration,
 }
 
-/// `work-left` from the fuel the store has left now.
-pub(super) fn work_left(work: Work, fuel_now: u64) -> u64 {
+/// Normalize remaining work to the guest API's fixed scale.
+pub(super) fn work_left(work: Work, remaining: u64) -> u64 {
     if work.soft == 0 {
         return 0;
     }
     let used = work
         .start
-        .saturating_sub(fuel_now)
+        .saturating_sub(remaining)
         .saturating_add(work.host);
     let left = work.soft.saturating_sub(used);
     (u128::from(left) * u128::from(WORK_SCALE) / u128::from(work.soft)) as u64
@@ -615,8 +615,8 @@ impl canvas::Host for State {
         self.canvas.budget.granted
     }
     fn work_left(&mut self) -> u64 {
-        // The linker's own `work-left` reads the store's fuel
-        // (`Mods::engine`); this one serves only a store without it.
+        // The linker's own `work-left` reads the store's call budget;
+        // this one serves only a store without it.
         0
     }
 }

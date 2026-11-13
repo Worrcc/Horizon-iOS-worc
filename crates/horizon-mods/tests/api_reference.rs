@@ -19,6 +19,10 @@ fn cell(docs: &Docs) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .replace('|', "\\|")
+        // Runtime terminology can evolve without changing the WIT contract.
+        .replace("hard fuel cap", "hard call limit")
+        .replace("hook's own fuel", "hook's own work limit")
+        .replace("hook's fuel", "hook's hard limit")
 }
 
 /// A type as WIT spells it.
@@ -193,6 +197,9 @@ fn markdown() -> String {
         .unwrap();
         if interface.docs.contents.is_some() {
             writeln!(w, "{}\n", cell(&interface.docs)).unwrap();
+        }
+        if interface_name == "canvas" {
+            writeln!(w, "The default epoch mode uses elapsed wall time (host calls included); `HORIZON_MODS_LIMIT=fuel` retains instruction accounting. Internally 1,000,000 epoch work units represent 1 ms, while `work-left` stays normalized to about 1,000,000 at call start in both modes. Frame grants retain microsecond precision; requests affect subsequent frame calls and never extend the current hard limit. See [the budget guide](../mods.md).\n").unwrap();
         }
         for (type_name, &type_id) in &interface.types {
             let def = &resolve.types[type_id];
