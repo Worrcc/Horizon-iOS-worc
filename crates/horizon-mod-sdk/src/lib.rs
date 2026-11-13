@@ -39,6 +39,7 @@
 //! [`client_world::prepared_columns`] to prepare columns natively.
 //! Level 24 adds [`client_world::harvest`] (the tool and tier a block needs)
 //! and [`input::set_auto_button_shown`]: automatic touch buttons start hidden.
+//! Level 26 adds server block-use hooks, scoped mod channels and component-preserving container moves.
 //! Level 25 adds [`input::set_touch_button_context`] for riding/held-item visibility.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
@@ -55,14 +56,15 @@ wit_bindgen::generate!({
     default_bindings_module: "horizon_mod_sdk",
 });
 
+pub use exports::horizon::mods::channel_events::Guest as __ChannelEventsGuest;
 pub use exports::horizon::mods::container_events::{
     Guest as __ContainerEventsGuest, PointerKind as ContainerPointerKind,
 };
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::{Guest as __UiEventsGuest, PointerKind};
 pub use horizon::mods::{
-    browser, browser_ext, canvas, chat, client_world, command, container, game, hud, input, log,
-    recipes, render, storage, ui,
+    browser, browser_ext, canvas, channel, chat, client_world, command, container, game, hud,
+    input, log, recipes, render, storage, ui,
 };
 
 /// `client_world::BlockStates::state_flags`' bits (capability `world-read`).
@@ -97,6 +99,8 @@ pub trait Mod: Sized + 'static {
     fn init() -> Result<(Self, Registration), String>;
     /// Every game tick, when [`Registration::tick`] is set.
     fn tick(&mut self, _tick: u64) {}
+    /// API 26: a message from this mod id on the server.
+    fn channel_message(&mut self, _name: &str, _data: &[u8]) {}
     /// Every rendered frame, when [`Registration::frame`] is set.
     fn frame(&mut self, _seconds: f32) {}
     /// `/name args` for a command the mod registered. `Ok(Some(text))` is
@@ -222,6 +226,11 @@ macro_rules! export_mod {
                     with(|m| $crate::Mod::chat(m, &text))
                 }
             }
+            impl $crate::__ChannelEventsGuest for Export {
+                fn message(name: String, data: Vec<u8>) {
+                    with(|m| $crate::Mod::channel_message(m, &name, &data))
+                }
+            }
             impl $crate::__UiEventsGuest for Export {
                 fn pointer(kind: $crate::PointerKind, x: f32, y: f32, button: u32) {
                     with(|m| $crate::Mod::ui_pointer(m, kind, x, y, button))
@@ -313,8 +322,9 @@ pub mod server {
     };
     pub use horizon::mods::world::{
         self, BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack, Point as WorldPoint,
-        WorldTime,
+        StackInfo, WorldTime,
     };
+    pub use horizon::mods::{channel, server_hooks};
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks
     /// for are called; the others may stay as their defaults.
@@ -343,6 +353,17 @@ pub mod server {
         /// When [`Registration::blocks`] is set: `state` is what was there.
         fn block_broken(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
         fn block_placed(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
+        /// API 26: opt in with server_hooks::set_block_uses during init.
+        fn block_used(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+            _sneaking: bool,
+        ) -> bool {
+            false
+        }
+        fn channel_message(&mut self, _player: &Player, _name: &str, _data: &[u8]) {}
     }
 
     impl Registration {
@@ -545,6 +566,19 @@ macro_rules! export_server_mod {
                     let args = Args::new(args, values);
                     with(|m| out = m.command(&player, &name, &args));
                     out
+                }
+                fn block_used(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                    sneaking: bool,
+                ) -> bool {
+                    let mut consumed = false;
+                    with(|m| consumed = m.block_used(&player, pos, &state, sneaking));
+                    consumed
+                }
+                fn channel_message(player: Player, name: String, data: Vec<u8>) {
+                    with(|m| m.channel_message(&player, &name, &data))
                 }
                 fn block_broken(player: Player, pos: BlockPos, state: String) {
                     with(|m| m.block_broken(&player, pos, &state))

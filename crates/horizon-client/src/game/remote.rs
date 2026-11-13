@@ -486,6 +486,7 @@ pub(super) struct Remote {
     pub mod_quiet_commands: bool,
     /// The server announced it carries mod messages.
     pub mod_net: bool,
+    pub(super) wasm_channel: super::mod_channel::Peer,
     /// The synced attachments the server sent, by holder.
     pub attachments: HashMap<Holder, Attachments>,
     /// The server samples far terrain for us, this far at most (`lod_net`).
@@ -1063,6 +1064,7 @@ impl Game<'_> {
             quiet_commands: false,
             mod_quiet_commands: false,
             mod_net: false,
+            wasm_channel: Default::default(),
             attachments: HashMap::new(),
             far_terrain: None,
             builtin,
@@ -1970,6 +1972,11 @@ impl Game<'_> {
                 Event::ModQuietCommands => {
                     if let Some(remote) = &mut self.remote {
                         remote.mod_quiet_commands = true;
+                    }
+                }
+                Event::WasmChannel => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.wasm_channel.supported = true;
                     }
                 }
                 Event::ModNet => {
@@ -3192,6 +3199,9 @@ impl Game<'_> {
             // thread, after all preceding packets (especially teleports).
             C::Ping(p) => self.send(S::Pong(p)),
             // A native mod's server half to its client half.
+            C::CustomPayload(p) if p.channel == horizon_protocol::mod_channel::CHANNEL => {
+                self.remote_wasm_channel(&p.data);
+            }
             C::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.remote_native_net(&p.data);
             }

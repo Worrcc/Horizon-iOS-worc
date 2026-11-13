@@ -9,7 +9,7 @@ use std::{collections::HashMap, path::Path};
 type Pos = (i32, i32, i32);
 pub(super) type ContainerSnapshot = HashMap<(String, Pos), Vec<Option<ContainerItemStack>>>;
 
-fn slots(entity: &BlockEntity) -> &[Option<ItemStack>] {
+pub(super) fn slots(entity: &BlockEntity) -> &[Option<ItemStack>] {
     match entity {
         BlockEntity::Lectern(l) => std::slice::from_ref(&l.book),
         _ => entity.slots(),

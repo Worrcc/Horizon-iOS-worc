@@ -986,6 +986,13 @@ fn login_and_configure(
                 data: Vec::new(),
             }),
         )?;
+        send(
+            c,
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: horizon_protocol::mod_channel::CHANNEL.into(),
+                data: Vec::new(),
+            }),
+        )?;
         // And that it carries native mods' messages (horizon_protocol::mod_net).
         send(
             c,

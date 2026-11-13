@@ -2292,6 +2292,7 @@ impl Game<'_> {
                     .border
                     .contains(f64::from(p.pos[0]), f64::from(p.pos[2]))
                 {
+                    let mod_consumed = self.guest_mod_block_used(host, conn, p.pos, hand);
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                     let used = self.as_guest(host, conn, |g| {
@@ -2302,7 +2303,8 @@ impl Game<'_> {
                         // InteractionResult.consumesAction: a FAIL (`use_failed`,
                         // as BlockItem.place's failed placement) does not count,
                         // even though the click ended on it.
-                        let consumed = matches!(g.use_item(), Ok(Some(_))) && !g.use_failed;
+                        let consumed =
+                            mod_consumed || (matches!(g.use_item(), Ok(Some(_))) && !g.use_failed);
                         // handleUseItemOn: a consuming useItemOn triggers
                         // ANY_BLOCK_USE with the hand's stack as it now is.
                         if consumed {
@@ -2347,6 +2349,9 @@ impl Game<'_> {
             }
             S::UseItem(p) => {
                 host.hub.ack(conn, p.sequence);
+                if self.mod_use_consumed(conn) {
+                    return;
+                }
                 if spectator {
                     return;
                 }
@@ -2646,6 +2651,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_protocol::quiet::CHANNEL => {
                 self.guest_quiet_commands(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_protocol::mod_channel::CHANNEL => {
+                self.guest_wasm_channel(host, conn, &p.data);
             }
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(host, conn, &p.data)

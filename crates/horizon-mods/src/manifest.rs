@@ -116,9 +116,11 @@ pub enum Capability {
     WorldRead,
     /// Inspect and click the local player's open container screen (experimental).
     Container,
+    /// Sandboxed messages between the same mod id on client and server.
+    Channel,
 }
 impl Capability {
-    pub const ALL: [Capability; 15] = [
+    pub const ALL: [Capability; 16] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -134,12 +136,17 @@ impl Capability {
         Capability::Entities,
         Capability::WorldRead,
         Capability::Container,
+        Capability::Channel,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
         matches!(
             self,
-            Capability::Storage | Capability::Players | Capability::World | Capability::Entities
+            Capability::Storage
+                | Capability::Players
+                | Capability::World
+                | Capability::Entities
+                | Capability::Channel
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -160,6 +167,7 @@ impl Capability {
             Capability::Entities => "entities",
             Capability::WorldRead => "client-world",
             Capability::Container => "container",
+            Capability::Channel => "channel",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -174,6 +182,7 @@ impl Capability {
                 | Capability::Entities
                 | Capability::WorldRead
                 | Capability::Container
+                | Capability::Channel
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -200,6 +209,7 @@ impl Capability {
             Capability::Entities => {
                 "see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them"
             }
+            Capability::Channel => "exchange mod messages with the server and its players",
             Capability::Container => "inspect and click your open inventory and container screens",
             Capability::WorldRead => {
                 "see the blocks, biomes and light your game has loaded around you"
@@ -234,6 +244,9 @@ impl Capability {
         if interface == "canvas" {
             return Ok(Some(Capability::Render));
         }
+        if name.split('@').next() == Some("horizon:mods/server-hooks") {
+            return Ok(Some(Capability::World));
+        }
         Capability::ALL
             .into_iter()
             .filter(|c| *c != Capability::Registries)
@@ -260,6 +273,7 @@ impl fmt::Display for Capability {
             Capability::Entities => "entities",
             Capability::WorldRead => "world-read",
             Capability::Container => "container",
+            Capability::Channel => "channel",
         };
         f.write_str(name)
     }
@@ -305,11 +319,9 @@ impl Manifest {
                 "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
             ));
         }
-        if let Some(c) = m
-            .capabilities
-            .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
-        {
+        if let Some(c) = m.capabilities.iter().find(|c| {
+            c.on_server() != server && !matches!(**c, Capability::Storage | Capability::Channel)
+        }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }
@@ -788,5 +800,32 @@ experimental = ["ui", "recipes"]
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+    #[test]
+    fn channel_needs_opt_in_on_both_sides_and_imports_require_permission() {
+        for (api, side) in [("0.1", "client"), ("0.3", "server")] {
+            let base = format!(
+                "id = \"channel_test\"\nname = \"Channel test\"\nversion = \"1.0.0\"\napi = \"{api}\"\nside = \"{side}\"\n"
+            );
+            let text = format!("{base}capabilities = [\"channel\"]\n");
+            assert!(Manifest::parse(&text).unwrap_err().contains("experimental"));
+            let manifest =
+                Manifest::parse(&format!("{text}experimental = [\"channel\"]\n")).unwrap();
+            manifest
+                .check_code_imports(["horizon:mods/channel@0.1.0"], &["channel.send".into()])
+                .unwrap();
+            let denied = Manifest::parse(&base).unwrap();
+            assert!(
+                denied
+                    .check_imports(["horizon:mods/channel@0.1.0"])
+                    .unwrap_err()
+                    .contains("channel")
+            );
+        }
     }
 }

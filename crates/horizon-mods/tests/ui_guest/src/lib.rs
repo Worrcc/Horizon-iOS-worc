@@ -16,7 +16,8 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    ContainerPointerKind, Mod, Registration, browser, browser_ext, chat, command, container, game,
+    ContainerPointerKind, Mod, Registration, browser, browser_ext, channel, chat, command,
+    container, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -107,6 +108,7 @@ impl Mod for Guest {
             "container_take",
             "container_latch",
             "container_buttons",
+            "channel26",
             "ui_screen",
             "chat_open",
             "ui_settings",
@@ -158,6 +160,12 @@ impl Mod for Guest {
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {
+            "channel26" => {
+                assert!(channel::send("bad:scope", &[]).is_err());
+                assert!(channel::send_to_player("Alice", "state", &[]).is_err());
+                channel::send("state", args.as_bytes())?;
+            }
+
             "container_trap" => panic!("container test trap"),
             "container_state" => match container::state() {
                 Some(state) => chat::show(&format!(
@@ -767,6 +775,9 @@ impl Mod for Guest {
             _ => {}
         }
         Ok(None)
+    }
+    fn channel_message(&mut self, name: &str, data: &[u8]) {
+        chat::show(&format!("channel {name} {}", data.len()));
     }
     fn tick(&mut self, _tick: u64) {
         if let Some((book, all, id)) = self.pending.take() {

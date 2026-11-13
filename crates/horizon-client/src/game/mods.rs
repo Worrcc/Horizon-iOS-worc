@@ -37,6 +37,10 @@ use {
 
 #[derive(Default)]
 pub(super) struct ModsState {
+    #[cfg(feature = "mods")]
+    pub(super) consumed_uses: std::collections::HashMap<u32, u64>,
+    #[cfg(feature = "mods")]
+    pub(super) channel: super::mod_channel::Channels,
     pub(super) import: super::modpack_import::Job,
     #[cfg(feature = "mods")]
     pub(super) mods: Mods,
@@ -709,7 +713,9 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
-    pub(super) fn tick_mods(&mut self) {}
+    pub(super) fn tick_mods(&mut self) {
+        self.announce_wasm_channels();
+    }
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
         false
@@ -946,6 +952,7 @@ impl Game<'_> {
         }
         let (recipes, known_recipes) = self.mod_recipes();
         Snapshot {
+            channel_peers: self.wasm_channel_peers(None),
             tick: self.ticks,
             touch_active: self.mod_touch_active(),
             player,
@@ -1242,6 +1249,21 @@ impl Game<'_> {
     pub(super) fn route_mod_output(&mut self, mut host: Option<&mut LanHost>) {
         for output in self.mods.mods.drain() {
             let line = match output {
+                Output::Channel {
+                    mod_id,
+                    player,
+                    name,
+                    data,
+                } => {
+                    self.send_wasm_channel(
+                        host.as_deref_mut(),
+                        &mod_id,
+                        player.as_deref(),
+                        &name,
+                        &data,
+                    );
+                    continue;
+                }
                 Output::Chat { name, text } => {
                     let mut line = Text::literal(format!("[{name}] ")).with_color(text::GRAY);
                     line.push(Text::literal(text));
@@ -1287,6 +1309,7 @@ impl Game<'_> {
                 | Output::SetBlocks { .. }
                 | Output::BreakBlocksAs { .. }
                 | Output::SetLootTable { .. }
+                | Output::StorageMove(_)
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
                 | Output::SetSpawner { .. }

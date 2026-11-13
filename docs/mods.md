@@ -1506,3 +1506,33 @@ order; the last entry for an entity wins. Labels are clipped to six Unicode
 characters. Malformed/unknown file formats are ignored with a log warning;
 unlisted mounts use the translated Sprint/Attack labels. These files require no
 code mod or input capability.
+
+## API level 26: storage, block use and mod channels
+
+Level 26 adds the three pieces described in [storage-api.md](storage-api.md):
+
+- Server mods with `world` opt into main-hand `server-events.block-used` using
+  `server-hooks.set-block-uses(enabled, including-sneaking-item)`. Returning true
+  consumes the use before vanilla or placement. The separate opt-in preserves the
+  existing registration record; older server guests keep loading. Sneaking with
+  an item bypasses the hook unless explicitly opted in; 32 calls per mod per tick.
+- Experimental capability `channel`, available on client and server, requires
+  `experimental = ["channel"]`. Client `channel.send(name, data)` and server
+  `channel.send-to-player(player, name, data)` communicate only between running
+  mods with the same id. Callbacks are client `channel-events.message` and server
+  `server-events.channel-message`. Payloads are at most 64 KiB; send and receive
+  budgets are each 32 messages per mod per tick. Unknown/offline players and
+  unnegotiated/missing peer mods are errors. Custom payloads work over dedicated,
+  LAN and integrated-server connections.
+- `world.container-stacks` distinguishes saved component variants with item id,
+  count, stable SHA-256 `display-key` and optional plain custom-name text.
+  `container-move`, `container-to-player` and `player-to-container` reserve real
+  component-preserving transfers. Bulk storage containers are supported; special
+  machine/native mod slots remain read-only. Reservations check capacity first,
+  apply after hooks on the server thread and cancel entirely if either endpoint
+  changed. Counts returned are reserved counts; reread next tick for completion.
+  Open viewers and player inventories are synchronized, with no overflow drops.
+
+The WIT changes are additive. In Rust, implement `ServerMod::block_used` and
+`ServerMod::channel_message`, or client `Mod::channel_message`; the SDK export
+macros provide the callbacks. No extraction handles are exposed.

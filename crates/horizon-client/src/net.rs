@@ -50,6 +50,8 @@ pub enum Event {
     ModQuietCommands,
     /// The server carries mod messages (`horizon_protocol::mod_net`).
     ModNet,
+    /// API 26 sandboxed mod messages.
+    WasmChannel,
     /// The server samples far terrain for this client (`lod_net`).
     FarTerrain(crate::lod_net::Offer),
     /// ClientConfigurationPacketListenerImpl.handleEnabledFeatures.
@@ -1181,6 +1183,8 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
         let _ = send.send(Event::QuietCommands);
     } else if payload.channel == horizon_protocol::quiet::MOD_CHANNEL {
         let _ = send.send(Event::ModQuietCommands);
+    } else if payload.channel == horizon_protocol::mod_channel::CHANNEL {
+        let _ = send.send(Event::WasmChannel);
     } else if payload.channel == horizon_protocol::mod_net::CHANNEL {
         let _ = send.send(Event::ModNet);
     } else if payload.channel == crate::lod_net::CHANNEL

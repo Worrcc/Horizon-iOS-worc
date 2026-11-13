@@ -7,13 +7,20 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 25;
+pub const LEVEL: u32 = 26;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 133] = [
+pub const FUNCTIONS: [(&str, u32); 140] = [
+    ("world.container-stacks", 26),
+    ("world.container-move", 26),
+    ("world.container-to-player", 26),
+    ("world.player-to-container", 26),
+    ("server-hooks.set-block-uses", 26),
+    ("channel.send", 26),
+    ("channel.send-to-player", 26),
     ("input.set-touch-button-context", 25),
     ("client-world.harvest", 24),
     ("input.set-auto-button-shown", 24),

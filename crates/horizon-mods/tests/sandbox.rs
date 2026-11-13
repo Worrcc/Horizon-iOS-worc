@@ -26,8 +26,8 @@ id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "container"]
-experimental = ["ui", "render", "input", "recipes", "container"]
+capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "container", "channel"]
+experimental = ["ui", "render", "input", "recipes", "container", "channel"]
 "#;
 const CANVAS_MANIFEST: &str = r#"
 id = "test_canvas_guest"
@@ -114,8 +114,8 @@ name = "API20 Server"
 version = "0.1.0"
 api = "0.3"
 side = "server"
-capabilities = ["players", "world"]
-experimental = ["players", "world"]
+capabilities = ["players", "world", "channel"]
+experimental = ["players", "world", "channel"]
 "#
                 .into(),
             ),
@@ -182,6 +182,27 @@ experimental = ["players", "world"]
                 }
             }
             if name == "horizon_mods_test_api20_server_guest" {
+                let (stripped, mut metadata) = wit_component::metadata::decode(&core).unwrap();
+                for (_, interface) in metadata.resolve.interfaces.iter_mut() {
+                    if interface.name.as_deref() == Some("server-events") {
+                        interface.functions.retain(|name, _| {
+                            !matches!(name.as_str(), "block-used" | "channel-message")
+                        });
+                    }
+                }
+                let mut legacy = stripped.unwrap();
+                wit_component::embed_component_metadata(
+                    &mut legacy,
+                    &metadata.resolve,
+                    metadata.world,
+                    wit_component::StringEncoding::UTF8,
+                )
+                .unwrap();
+                std::fs::write(
+                    dir.join("legacy_server25.hmod"),
+                    Package::write(&manifest, &componentize(&legacy).unwrap()).unwrap(),
+                )
+                .unwrap();
                 let other = manifest
                     .replace("test_api20_server", "test_api20_other")
                     .replace("API20 Server", "API20 Other");
@@ -387,8 +408,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read", "container"]
-experimental = ["ui", "render", "input", "recipes", "world-read", "container"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read", "container", "channel"]
+experimental = ["ui", "render", "input", "recipes", "world-read", "container", "channel"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -401,8 +422,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest exercises API 25 touch contexts as well as the container calls.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 25);
+    // The UI guest also exercises API 26 channels.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 26);
     // canvas-test uses a placed box and a canvas screen (level 18).
     assert_eq!(level("canvas_test.hmod"), 18);
 }
@@ -3112,7 +3133,7 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
-        25
+        26
     );
     let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
     assert!(
@@ -3166,5 +3187,221 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
             .unwrap()
             .touch_context
             .is_none()
+    );
+}
+
+#[test]
+fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
+    use horizon_mods::{StorageLocation as L, StorageStack, StorageView, WorldView};
+    struct View(StorageView);
+    impl WorldView for View {
+        fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn has_dimension(&self, _: &str) -> bool {
+            true
+        }
+        fn check_state(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn storage(&mut self) -> Option<&mut StorageView> {
+            Some(&mut self.0)
+        }
+    }
+    let mut mods = load("horizon_mods_test_api20_server_guest.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let p = ServerPlayer {
+        id: "alice".into(),
+        name: "Alice".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    let loc = |x| L::Container {
+        dimension: p.dimension.clone(),
+        pos: (x, 64, 0),
+    };
+    let stack = StorageStack {
+        info: horizon_mods::StackInfo {
+            item: "minecraft:stone".into(),
+            count: 12,
+            display_key: "named-enchanted".into(),
+            custom_name: Some("Named".into()),
+        },
+        max: 64,
+    };
+    let view = StorageView {
+        slots: [
+            (loc(0), vec![Some(stack)]),
+            (loc(1), vec![None]),
+            (L::Player(p.id.clone()), vec![None; 36]),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    mods.lend_world(Box::new(View(view)));
+    mods.set_snapshot(Snapshot {
+        tick: 3,
+        players: vec![p.clone()],
+        channel_peers: [("test_api20_server".into(), vec![p.id.clone()])].into(),
+        ..Default::default()
+    });
+    assert!(mods.server_command(&p, "storage26"));
+    let out = mods.drain();
+    assert!(
+        !out.iter().any(|o| matches!(
+            o,
+            Output::Stopped { .. } | Output::Reply { error: true, .. }
+        )),
+        "{out:?}"
+    );
+    let moves: Vec<_> = out
+        .iter()
+        .filter_map(|o| {
+            if let Output::StorageMove(plan) = o {
+                Some(plan.count)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(moves, [4, 2, 1]);
+    assert!(out.iter().any(|o| matches!(o, Output::Channel {mod_id, player: Some(id), data, ..} if mod_id == "test_api20_server" && id == "alice" && data == &[7,8,9])));
+    let pos = BlockPos { x: 0, y: 64, z: 0 };
+    assert!(!mods.block_used(&p, pos, "test:terminal", true, true));
+    assert!(mods.drain().is_empty());
+    assert!(mods.block_used(&p, pos, "test:terminal", false, true));
+    mods.drain();
+    assert!(mods.server_command(&p, "sneak26"));
+    assert!(mods.block_used(&p, pos, "test:terminal", true, true));
+    mods.drain();
+    // Two calls used this tick; exactly thirty more hooks may run.
+    for _ in 0..30 {
+        assert!(mods.block_used(&p, pos, "test:terminal", false, false));
+    }
+    assert!(!mods.block_used(&p, pos, "test:terminal", false, false));
+    assert_eq!(
+        mods.drain()
+            .iter()
+            .filter(|o| matches!(o, Output::Tell { .. }))
+            .count(),
+        30
+    );
+    let data = vec![255; 65536];
+    mods.channel_message("another_mod", Some(&p), "state", &data);
+    assert!(mods.drain().is_empty());
+    mods.channel_message("test_api20_server", Some(&p), "state", &data);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o,Output::Channel {data: sent,..} if *sent == data))
+    );
+}
+
+#[test]
+fn api26_client_channel_checks_peers_size_scope_and_tick_budget() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    mods.drain();
+    mods.command("channel26 missing");
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Feedback { error: true, .. }))
+    );
+    let snapshot = |tick| Snapshot {
+        tick,
+        channel_peers: [("test_ui_guest".into(), vec![String::new()])].into(),
+        ..Default::default()
+    };
+    mods.set_snapshot(snapshot(4));
+    for _ in 0..32 {
+        mods.command("channel26 data");
+    }
+    assert_eq!(mods.drain().iter().filter(|o| matches!(o,Output::Channel {mod_id,player:None,data,..} if mod_id == "test_ui_guest" && data == b"data")).count(),32);
+    mods.command("channel26 excess");
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Feedback { error: true, .. }))
+    );
+    mods.set_snapshot(snapshot(5));
+    mods.command("channel26 next");
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Channel { .. }))
+    );
+    mods.command(&format!("channel26 {}", "x".repeat(65537)));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Feedback { error: true, .. }))
+    );
+    mods.channel_message("test_ui_guest", None, "state", &vec![0; 65536]);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o,Output::Chat {text,..} if text == "channel state 65536"))
+    );
+    mods.channel_message("other", None, "state", &[0]);
+    assert!(mods.drain().is_empty());
+    for _ in 0..31 {
+        mods.channel_message("test_ui_guest", None, "state", &[0]);
+    }
+    assert_eq!(
+        mods.drain()
+            .iter()
+            .filter(|o| matches!(o, Output::Chat { .. }))
+            .count(),
+        31
+    );
+    mods.channel_message("test_ui_guest", None, "state", &[0]);
+    assert!(mods.drain().is_empty());
+    mods.set_snapshot(snapshot(6));
+    mods.channel_message("test_ui_guest", None, "state", &[0]);
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Chat { .. }))
+    );
+}
+
+#[test]
+fn api26_optional_server_exports_leave_level25_guests_loadable() {
+    let mut mods = load("legacy_server25.hmod");
+    assert_eq!(mods.entries()[0].status, Status::Running);
+    let p = ServerPlayer {
+        id: "alice".into(),
+        name: "Alice".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    mods.set_snapshot(Snapshot {
+        players: vec![p.clone()],
+        ..Default::default()
+    });
+    assert!(!mods.block_used(
+        &p,
+        BlockPos { x: 0, y: 64, z: 0 },
+        "test:terminal",
+        false,
+        false
+    ));
+    mods.block_broken(&p, BlockPos { x: 0, y: 64, z: 0 }, "minecraft:stone");
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Tell { .. }))
     );
 }

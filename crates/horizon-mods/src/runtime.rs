@@ -1,7 +1,6 @@
 //! Loading and calling mods with wasmtime's component model.
 use crate::manifest::{Manifest, Package, Side};
 use server_bindings::{
-    HorizonServerMod,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
     horizon::mods::{entities, players, world as mod_world},
 };
@@ -77,11 +76,17 @@ pub use server_bindings::{
     },
     horizon::mods::world::{
         BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
-        Point as WorldPoint, WorldTime,
+        Point as WorldPoint, StackInfo, WorldTime,
     },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
-type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
+mod server_callbacks;
+use server_callbacks::ServerCallbacks as HorizonServerMod;
+type ServerEvents = HorizonServerMod;
+mod storage_api;
+pub use storage_api::*;
+mod channel_host;
+pub use channel_host::{CHANNEL_DATA, CHANNEL_MESSAGES, ChannelPeers};
 /// Canvas-screen pointer actions (API level 18).
 pub use ui_bindings::exports::horizon::mods::ui_events::PointerKind;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
@@ -250,6 +255,8 @@ pub struct EntityResources {
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
+    /// API 26: negotiated channel peers for running mod ids.
+    pub channel_peers: ChannelPeers,
     /// Simulation tick, including on servers without a window player.
     pub tick: u64,
     /// Whether the game is showing its touch controls.
@@ -424,6 +431,15 @@ pub enum Output {
         dimension: String,
         blocks: Vec<BlockChange>,
     },
+    /// API 26: a validated reservation, checked again against live endpoints on apply.
+    StorageMove(StorageMove),
+    /// API 26: scoped bytes, delivered over negotiated custom payloads after hooks.
+    Channel {
+        mod_id: String,
+        player: Option<String>,
+        name: String,
+        data: Vec<u8>,
+    },
     /// `world.set-loot-table`: a container's loot table, after the tick's block writes.
     SetLootTable {
         dimension: String,
@@ -576,6 +592,10 @@ pub trait WorldView: std::any::Any + Send {
     ) -> Option<Vec<Option<ContainerItemStack>>> {
         None
     }
+    /// API 26: shared reservation view; never exposes components to the guest.
+    fn storage(&mut self) -> Option<&mut StorageView> {
+        None
+    }
     /// Check the item registry and that a nonempty stack fits its maximum size.
     fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
         if resource_id(item) && (1..=99).contains(&count) {
@@ -669,6 +689,7 @@ struct Running {
     canvas: bool,
     /// It imports capability `world-read`.
     reads_client_world: bool,
+    storage_api: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -872,6 +893,13 @@ struct State {
     item_spawn_budget: (Option<u64>, u32),
     break_budget: (Option<u64>, usize),
     mod_command_budget: (Option<u64>, usize),
+    uses: (bool, bool),
+    use_budget: (Option<u64>, usize),
+    channel_budget: (Option<u64>, usize),
+    channel_receive_budget: (Option<u64>, usize),
+    channel_callback: Option<TypedFunc<(String, Vec<u8>), ()>>,
+    server: bool,
+    storage_move_budget: (Option<u64>, usize),
     limits: StoreLimits,
     world: WorldSlot,
     inventories: InventoriesSlot,
@@ -971,6 +999,12 @@ impl Mods {
     /// Changes whenever the running mods (so their commands) change.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    /// Only storage API users need component descriptions in the world loan.
+    pub fn wants_storage(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.storage_api))
     }
     /// Whether a running mod may use capability `world`: only then is a
     /// view worth lending.
@@ -1124,6 +1158,7 @@ impl Mods {
             let mut linker = Linker::new(&engine);
             HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            channel_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
             players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -1279,6 +1314,13 @@ impl Mods {
             item_spawn_budget: (None, 0),
             break_budget: (None, 0),
             mod_command_budget: (None, 0),
+            uses: (false, false),
+            use_budget: (None, 0),
+            channel_budget: (None, 0),
+            channel_receive_budget: (None, 0),
+            channel_callback: None,
+            server,
+            storage_move_budget: (None, 0),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -1304,6 +1346,8 @@ impl Mods {
         } else {
             ContainerCallbacks::default()
         };
+        let channel_callback = channel_host::callback(&mut store, &instance);
+        store.data_mut().channel_callback = channel_callback;
         let (mut hooks, ui) = if server {
             let exports = HorizonServerMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             let r = exports
@@ -1368,6 +1412,15 @@ impl Mods {
             }),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
+            storage_api: functions.iter().any(|f| {
+                matches!(
+                    f.as_str(),
+                    "world.container-stacks"
+                        | "world.container-move"
+                        | "world.container-to-player"
+                        | "world.player-to-container"
+                )
+            }),
         }))
     }
 
@@ -2540,6 +2593,45 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn container_stacks(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Option<Vec<Option<StackInfo>>> {
+        self.storage_stacks(dimension, pos)
+    }
+    fn container_move(
+        &mut self,
+        dimension: String,
+        from: BlockChangePos,
+        from_slot: u32,
+        to: BlockChangePos,
+        to_slot: Option<u32>,
+        count: u32,
+    ) -> Result<u32, String> {
+        self.storage_container_move(dimension, from, from_slot, to, to_slot, count)
+    }
+    fn container_to_player(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        slot: u32,
+        count: u32,
+        player: String,
+    ) -> Result<u32, String> {
+        self.storage_to_player(dimension, pos, slot, count, player)
+    }
+    fn player_to_container(
+        &mut self,
+        player: String,
+        inv_slot: u32,
+        dimension: String,
+        pos: BlockChangePos,
+        count: u32,
+    ) -> Result<u32, String> {
+        self.storage_from_player(player, inv_slot, dimension, pos, count)
+    }
+
     fn break_blocks_as(
         &mut self,
         player: String,
@@ -4162,6 +4254,13 @@ mod entity_tests {
             item_spawn_budget: (None, 0),
             break_budget: (None, 0),
             mod_command_budget: (None, 0),
+            uses: (false, false),
+            use_budget: (None, 0),
+            channel_budget: (None, 0),
+            channel_receive_budget: (None, 0),
+            channel_callback: None,
+            server: false,
+            storage_move_budget: (None, 0),
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
             inventories: InventoriesSlot::default(),

@@ -35,6 +35,18 @@ pub(super) enum ModEvent {
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
     pub(super) fn tick_server_mods(&mut self) {}
+    pub(super) fn guest_mod_block_used(
+        &mut self,
+        _host: &mut LanHost,
+        _conn: u32,
+        _pos: [i32; 3],
+        _hand: horizon_client::first_person::Hand,
+    ) -> bool {
+        false
+    }
+    pub(super) fn mod_use_consumed(&mut self, _conn: u32) -> bool {
+        false
+    }
     pub(super) fn mod_block_event(&mut self, _pos: [i32; 3], _state: BlockStateId, _placed: bool) {}
     pub(super) fn mod_player_chat(&mut self, _who: Who, _text: &str) {}
     pub(super) fn local_server_mod_command(&mut self, _line: &str) -> bool {
@@ -155,11 +167,15 @@ pub(super) mod run {
         biomes: std::sync::Arc<horizon_client::biome::Biomes>,
         dims: Vec<(&'static str, ChunkMap)>,
         containers: super::super::server_mod_world::ContainerSnapshot,
+        storage: horizon_mods::StorageView,
         items: std::sync::Arc<std::collections::HashMap<String, u32>>,
         resources: std::path::PathBuf,
         world_root: std::path::PathBuf,
     }
     impl WorldView for LentWorld {
+        fn storage(&mut self) -> Option<&mut horizon_mods::StorageView> {
+            Some(&mut self.storage)
+        }
         fn block_has_tag(&self, block: &str, tag: &str) -> bool {
             let Ok(state) = crate::game::render_control::parse_state(self.registry, block) else {
                 return false;
@@ -400,6 +416,84 @@ pub(super) mod run {
             self.mods.server && self.remote.is_none()
         }
 
+        pub(in crate::game) fn mod_use_consumed(&mut self, conn: u32) -> bool {
+            self.mods
+                .consumed_uses
+                .retain(|_, tick| *tick == self.ticks);
+            self.mods.consumed_uses.contains_key(&conn)
+        }
+        pub(in crate::game) fn guest_mod_block_used(
+            &mut self,
+            host: &mut LanHost,
+            conn: u32,
+            at: [i32; 3],
+            hand: horizon_client::first_person::Hand,
+        ) -> bool {
+            if self.mod_use_consumed(conn) {
+                return true;
+            }
+            if !self.hears_players() || hand != horizon_client::first_person::Hand::Main {
+                return false;
+            }
+            let Some(g) = host.hub.guest(conn) else {
+                return false;
+            };
+            if g.spectator() {
+                return false;
+            }
+            let sneaking = g.sneaking;
+            let holding = g
+                .inventory
+                .get(g.selected)
+                .and_then(Option::as_ref)
+                .is_some_and(|s| s.count > 0);
+            if !self
+                .mods
+                .mods
+                .wants_block_uses(self.ticks, sneaking, holding)
+            {
+                return false;
+            }
+            let id = uuid_string(g.uuid);
+            let Some(chunk) = self.world.chunks.get(&(at[0] >> 4, at[2] >> 4)) else {
+                return false;
+            };
+            let state = state_string(
+                self.pack.assets.registry,
+                chunk.block(at[0] & 15, at[1], at[2] & 15),
+            );
+            let players = self.server_players(Some(host));
+            let Some(player) = players.iter().find(|p| p.id == id).cloned() else {
+                return false;
+            };
+            let mut snapshot = self.server_snapshot(players);
+            snapshot.channel_peers = self.wasm_channel_peers(Some(host));
+            self.mods.mods.set_snapshot(snapshot);
+            self.lend_world(Some(host));
+            self.lend_mod_inventories(Some(host));
+            let used = self.mods.mods.block_used(
+                &player,
+                BlockPos {
+                    x: at[0],
+                    y: at[1],
+                    z: at[2],
+                },
+                &state,
+                sneaking,
+                holding,
+            );
+            self.return_world();
+            self.return_mod_inventories(Some(host));
+            self.route_mod_output(Some(host));
+            self.apply_mod_block_changes();
+            self.apply_mod_loot_tables();
+            self.apply_mod_world_operations(Some(host));
+            if used {
+                self.mods.consumed_uses.insert(conn, self.ticks);
+            }
+            used
+        }
+
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
         pub(in crate::game) fn tick_server_mods(&mut self) {
             if !self.options.execution_role.is_client() {
@@ -407,6 +501,7 @@ pub(super) mod run {
                 self.reload_dev_mods();
             }
             self.send_server_mod_commands();
+            self.announce_wasm_channels();
             if !self.mods.server {
                 self.mods.interactions.clear();
                 self.mods.item_uses.clear();
@@ -436,7 +531,7 @@ pub(super) mod run {
             snapshot.interactions = self.take_mod_interactions();
             snapshot.generated_chunks = std::mem::take(&mut self.mods.generated_chunks).into();
             self.mods.mods.set_snapshot(snapshot);
-            self.lend_world();
+            self.lend_world(None);
             self.lend_mod_inventories(None);
             let before = std::mem::take(&mut self.mods.players);
             for p in before
@@ -493,6 +588,7 @@ pub(super) mod run {
                     }
                 }
             }
+            self.run_wasm_channels(&players);
             self.mods.mods.server_tick(self.ticks);
             self.return_world();
             self.return_mod_inventories(None);
@@ -518,11 +614,16 @@ pub(super) mod run {
 
         /// Lends the levels' chunks to capability `world` for the calls up to
         /// [`Game::return_world`], when a running server mod has it.
-        fn lend_world(&mut self) {
+        fn lend_world(&mut self, host: Option<&LanHost>) {
             if !self.mods.world {
                 return;
             }
             let containers = self.mod_container_snapshot();
+            let storage = if self.mods.mods.wants_storage() {
+                self.mod_storage_snapshot(host)
+            } else {
+                Default::default()
+            };
             let items = self
                 .mods
                 .item_limits
@@ -553,6 +654,7 @@ pub(super) mod run {
                 biomes,
                 dims,
                 containers,
+                storage,
                 items,
                 resources: self.options.resources.clone(),
                 world_root: self.world_root.clone(),
@@ -1240,6 +1342,14 @@ pub(super) mod run {
             let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.world_operations)
                 .into_iter()
                 .partition(|op| match op {
+                    Output::StorageMove(plan) => {
+                        [&plan.from, &plan.to].iter().all(|loc| match loc {
+                            horizon_mods::StorageLocation::Container { dimension, .. } => {
+                                dimension == dim
+                            }
+                            _ => true,
+                        })
+                    }
                     Output::SetContainer { dimension, .. }
                     | Output::PlaceStructure { dimension, .. }
                     | Output::SetSpawner { dimension, .. }
@@ -1281,6 +1391,9 @@ pub(super) mod run {
                     Output::PlaySound { at, sound, .. } => {
                         self.mod_play_sound([at.x, at.y, at.z], &sound);
                         Ok(())
+                    }
+                    Output::StorageMove(plan) => {
+                        self.apply_mod_storage_move(plan, host.as_deref_mut())
                     }
                     Output::SetContainer { pos, slots, .. } => self.apply_mod_container(pos, slots),
                     Output::PlaceStructure {
@@ -1443,7 +1556,7 @@ pub(super) mod run {
             };
             let snapshot = self.server_snapshot(players);
             self.mods.mods.set_snapshot(snapshot);
-            self.lend_world();
+            self.lend_world(None);
             self.lend_mod_inventories(None);
             let owned = if quiet {
                 self.mods.mods.server_command_quiet(&me, line)
@@ -1509,9 +1622,10 @@ pub(super) mod run {
             let Some(me) = players.iter().find(|p| p.id == id).cloned() else {
                 return false;
             };
-            let snapshot = self.server_snapshot(players);
+            let mut snapshot = self.server_snapshot(players);
+            snapshot.channel_peers = self.wasm_channel_peers(Some(host));
             self.mods.mods.set_snapshot(snapshot);
-            self.lend_world();
+            self.lend_world(Some(host));
             self.lend_mod_inventories(Some(host));
             let owned = if quiet {
                 self.mods.mods.server_command_quiet(&me, line)
@@ -1668,7 +1782,8 @@ pub(super) mod run {
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
-                operation @ (Output::BreakBlocksAs { .. }
+                operation @ (Output::StorageMove(_)
+                | Output::BreakBlocksAs { .. }
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }
                 | Output::SetSpawner { .. }

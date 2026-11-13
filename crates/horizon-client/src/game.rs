@@ -203,6 +203,7 @@ mod mob_sounds;
 mod mod_api_host;
 mod mod_canvas;
 mod mod_canvas_screen;
+mod mod_channel;
 mod mod_client_world;
 mod mod_container;
 mod mod_input;
@@ -334,6 +335,8 @@ mod sculk_fixture;
 mod server_links;
 #[cfg(feature = "mods")]
 mod server_mod_actions;
+#[cfg(feature = "mods")]
+mod server_mod_storage;
 #[cfg(feature = "mods")]
 mod server_mod_world;
 mod server_mods;

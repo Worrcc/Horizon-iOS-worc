@@ -1291,6 +1291,31 @@ interface players {
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    /// API level 26: one slot, including the identity of all saved components.
+    record stack-info {
+        item: string,
+        count: u32,
+        /// Stable SHA-256 of item id and saved components, excluding count.
+        /// A display/grouping key, never an item handle or proof of equality.
+        display-key: string,
+        /// Plain text of the custom name, when present.
+        custom-name: option<string>,
+    }
+    /// API level 26: one loaded block's slots (one half of a double chest).
+    container-stacks: func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>;
+    /// API level 26: reserve a component-preserving transfer after hooks return.
+    /// Moves min(count, source count), all or nothing if capacity is insufficient.
+    /// None selects matching stacks then empty slots. Same-slot moves return zero.
+    /// Revalidated on apply; a changed endpoint cancels the entire transfer.
+    /// Bulk storage containers only; special machine slots are read-only.
+    /// The result is the reserved count; reread next tick to observe completion.
+    container-move: func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>;
+    /// API level 26: as container-move, into the online player's main inventory.
+    /// No creative exemption, overflow drops, armor or offhand slots.
+    container-to-player: func(dimension: string, pos: block-change-pos, slot: u32, count: u32, player: string) -> result<u32, string>;
+    /// API level 26: main inventory slot 0..35 (hotbar first) into a container.
+    player-to-container: func(player: string, inv-slot: u32, dimension: string, pos: block-change-pos, count: u32) -> result<u32, string>;
+
     record block-change-pos { x: s32, y: s32, z: s32 }
     record break-options {
         /// Stop before a break that could use the tool's last durability point.
@@ -1752,8 +1777,44 @@ interface server-events {
     /// A player broke the block at `pos` in their dimension: `state` is what
     /// was there, as `minecraft:oak_log[axis=y]`.
     block-broken: func(player: player, pos: block-pos, state: string);
+    /// API level 26: main-hand block use before vanilla/placement. True consumes it.
+    /// Opt in through server-hooks.set-block-uses; at most 32 calls/mod/tick.
+    block-used: func(player: player, pos: block-pos, state: string, sneaking: bool) -> bool;
+    /// API level 26: channel capability, only this mod id's messages (32/tick).
+    channel-message: func(player: player, name: string, data: list<u8>);
     /// A player placed `state` at `pos` in their dimension.
     block-placed: func(player: player, pos: block-pos, state: string);
+}
+
+/// API level 26: additive server hook opt-in, capability `world`.
+/// Leaves the original server-events.registration record unchanged.
+interface server-hooks {
+    /// Disabled initially. Sneaking with a nonempty main hand bypasses the hook
+    /// unless including-sneaking-item is true. May be set during init.
+    set-block-uses: func(enabled: bool, including-sneaking-item: bool);
+}
+
+/// API level 26: experimental capability `channel`, on either side.
+interface channel {
+    /// Client to the same mod id on the server. Name [a-z0-9_./-]{1,64}.
+    /// Data at most 65536 bytes, 32 messages/mod/tick across all hooks.
+    /// Err when disconnected, unnegotiated, missing peer mod, or over a limit.
+    send: func(name: string, data: list<u8>) -> result<_, string>;
+    /// Server to an online player by UUID or exact name, with the same limits.
+    send-to-player: func(player: string, name: string, data: list<u8>) -> result<_, string>;
+}
+
+/// API level 26: optional client export, gated by capability `channel`.
+interface channel-events {
+    /// A complete message from the same mod id on the server, at most 32/tick.
+    message: func(name: string, data: list<u8>);
+}
+
+/// The game's additive channel imports and optional exports.
+world channel-host {
+    import channel;
+    import server-hooks;
+    export channel-events;
 }
 
 /// A client mod: runs in the player's game.
@@ -1776,6 +1837,8 @@ world horizon-server-mod {
     import players;
     import %world;
     import entities;
+    import server-hooks;
+    import channel;
     export server-events;
 }
 
@@ -1795,6 +1858,8 @@ world horizon-ui-mod {
     export ui-events;
     import container;
     export container-events;
+    import channel;
+    export channel-events;
 }
 
 /// The game's side of `horizon-ui-mod` beyond `horizon-mod`.

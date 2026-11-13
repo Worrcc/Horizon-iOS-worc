@@ -22,6 +22,14 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `entities` | [`entities`](#entities) | see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them |
 | `world-read` | [`client-world`](#client-world) | see the blocks, biomes and light your game has loaded around you |
 | `container` | [`container`](#container) | inspect and click your open inventory and container screens |
+| `channel` | [`channel`](#channel) | exchange mod messages with the server and its players |
+
+## World `channel-host`
+
+The game's additive channel imports and optional exports.
+
+- Imports (what the game offers): `channel`, `server-hooks`
+- Exports (what the mod provides): `channel-events`
 
 ## World `horizon-mod`
 
@@ -34,15 +42,15 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`, `entities`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `entities`, `server-hooks`, `channel`
 - Exports (what the mod provides): `server-events`
 
 ## World `horizon-ui-mod`
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `container`, `log`, `game`, `chat`, `hud`, `storage`, `command`
-- Exports (what the mod provides): `ui-events`, `container-events`, `events`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `container`, `channel`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Exports (what the mod provides): `ui-events`, `container-events`, `channel-events`, `events`
 
 ## World `ui-host`
 
@@ -1260,6 +1268,17 @@ Access: capability `world`.
 
 Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the blocks of the server's loaded chunks, and changes to them through the server's own block updates.
 
+### record `stack-info`
+
+API level 26: one slot, including the identity of all saved components.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+| `display-key` | `string` | Stable SHA-256 of item id and saved components, excluding count. A display/grouping key, never an item handle or proof of equality. |
+| `custom-name` | `option<string>` | Plain text of the custom name, when present. |
+
 ### record `block-change-pos`
 
 | Field | Type | |
@@ -1326,6 +1345,10 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `container-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>` | API level 26: one loaded block's slots (one half of a double chest). |
+| `container-move` | `func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>` | API level 26: reserve a component-preserving transfer after hooks return. Moves min(count, source count), all or nothing if capacity is insufficient. None selects matching stacks then empty slots. Same-slot moves return zero. Revalidated on apply; a changed endpoint cancels the entire transfer. Bulk storage containers only; special machine slots are read-only. The result is the reserved count; reread next tick to observe completion. |
+| `container-to-player` | `func(dimension: string, pos: block-change-pos, slot: u32, count: u32, player: string) -> result<u32, string>` | API level 26: as container-move, into the online player's main inventory. No creative exemption, overflow drops, armor or offhand slots. |
+| `player-to-container` | `func(player: string, inv-slot: u32, dimension: string, pos: block-change-pos, count: u32) -> result<u32, string>` | API level 26: main inventory slot 0..35 (hotbar first) into a container. |
 | `break-blocks-as` | `func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>` | API level 20: queue real player breaks, applied after hooks with the live game. Unknown/offline players or over 2048 positions/call or 4096/mod/tick error atomically. At apply time skip air, liquids, unloaded blocks, positions beyond 80 blocks, and unbreakable blocks in survival. Stop if the player leaves or keep-tool triggers. Uses the normal player path (protection, border, loot, XP, wear, stats and updates). Creative gives no drops/wear; the caller's block-broken hook is excluded. |
 | `spawn-item` | `func(dimension: string, at: point, item: string, count: u32) -> result<_, string>` | Drop a plain stack in this dimension, count 1..max stack size. At most 16 successful requests per tick per mod, across all hook calls. |
 | `block-has-tag` | `func(block: string, tag: string) -> bool` | Whether a block id or state belongs to a loaded block tag (without #). Unknown blocks and tags return false. |
@@ -1636,4 +1659,37 @@ An argument's value, parsed as its kind says.
 | `chat` | `func(player: player, text: string)` | A chat message a player sent, as plain text. |
 | `command` | `func(player: player, name: string, args: string, values: list<tuple<string, argument-value>>) -> result<option<string>, string>` | `/name args` typed by `player`: ok(some(text)) is their feedback, err(text) their error in red. `values` holds each argument given, by name, in order (an optional one left out isn't there); a line that doesn't parse never reaches the mod: the player gets vanilla's error. |
 | `block-broken` | `func(player: player, pos: block-pos, state: string)` | A player broke the block at `pos` in their dimension: `state` is what was there, as `minecraft:oak_log[axis=y]`. |
+| `block-used` | `func(player: player, pos: block-pos, state: string, sneaking: bool) -> bool` | API level 26: main-hand block use before vanilla/placement. True consumes it. Opt in through server-hooks.set-block-uses; at most 32 calls/mod/tick. |
+| `channel-message` | `func(player: player, name: string, data: list<u8>)` | API level 26: channel capability, only this mod id's messages (32/tick). |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
+
+## `server-hooks`
+
+Access: capability `world`.
+
+API level 26: additive server hook opt-in, capability `world`. Leaves the original server-events.registration record unchanged.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-block-uses` | `func(enabled: bool, including-sneaking-item: bool)` | Disabled initially. Sneaking with a nonempty main hand bypasses the hook unless including-sneaking-item is true. May be set during init. |
+
+## `channel`
+
+Access: capability `channel`.
+
+API level 26: experimental capability `channel`, on either side.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `send` | `func(name: string, data: list<u8>) -> result<_, string>` | Client to the same mod id on the server. Name [a-z0-9_./-]{1,64}. Data at most 65536 bytes, 32 messages/mod/tick across all hooks. Err when disconnected, unnegotiated, missing peer mod, or over a limit. |
+| `send-to-player` | `func(player: string, name: string, data: list<u8>) -> result<_, string>` | Server to an online player by UUID or exact name, with the same limits. |
+
+## `channel-events`
+
+Access: exported by the mod: the game calls it.
+
+API level 26: optional client export, gated by capability `channel`.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `message` | `func(name: string, data: list<u8>)` | A complete message from the same mod id on the server, at most 32/tick. |

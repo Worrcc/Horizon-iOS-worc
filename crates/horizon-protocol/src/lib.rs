@@ -15,6 +15,7 @@ pub mod hash_ops;
 pub mod ids;
 pub mod item;
 pub mod menu_extra;
+pub mod mod_channel;
 pub mod mod_list;
 pub mod mod_net;
 pub mod packets;
