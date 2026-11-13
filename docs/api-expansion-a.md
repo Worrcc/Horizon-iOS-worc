@@ -1,4 +1,4 @@
-# Phase A-1: API level 29 behaviour hooks
+# Phase A: API level 29 behaviour hooks and stack data
 
 API level 29 adds optional server exports and four host imports. Existing WIT
 records, functions and export signatures are unchanged, including level 28's
@@ -126,16 +126,91 @@ observes a stack already removed from its origin. Refusal needs origin-aware
 changes across hotbar, creative, menu and overflow paths to preserve components
 and inventory conservation. Neither unsupported flag/export is advertised.
 
-Per-stack custom data, mixins, vanilla scheduled-tick interception, synchronous
+Mixins, vanilla scheduled-tick interception, synchronous
 neighbour mutation/replacement, persistence for timers, menus, command filtering,
 and later phases of the expansion plan are outside A-1.
+
+## A-2: per-stack custom data (also level 29)
+
+Server mods use capability `world` and the generated SDK functions in
+`horizon_mod_sdk::server::world`. `api_level::LEVEL` remains **29**. Existing
+records and callbacks retain their exact shapes. `stack-info-with-data` wraps
+`stack-info` with `data: option<string>`; `player-stacks-with-data` and
+`container-stacks-with-data` return these records without changing level 28 reads.
+
+Values live in the stack's vanilla `minecraft:custom_data` compound as
+`{ "<calling manifest id>": "<value>" }`. The host supplies the manifest id;
+there is no guest argument for selecting another key or component. Other mods'
+keys and unrelated vanilla tags/components are preserved. Values are UTF-8
+strings of **0..1024 bytes** (not characters); mods may encode JSON or base64.
+`Some("")` stores an empty string; `None` removes the key and removes an empty
+`custom_data` component. An all-default component box is then discarded, so
+otherwise identical plain stacks merge again. Air/zero-count stacks cannot carry
+components. Malformed non-compound custom data and non-string/invalid UTF-8 or
+oversized existing values return errors on reads; they never panic.
+
+- `player-stack-data(player, inv-slot)` / `set-player-stack-data`: UUID or exact
+  online name, main inventory **0..35**, hotbar first. No armor/offhand.
+- `container-stack-data(dimension, pos, slot)` / `set-container-stack-data`: one
+  loaded block, including each half of a double chest separately. Reads support
+  the same containers as `container-stacks`; writes require the bulk containers
+  supported by `container-move`, keeping special machine slots read-only.
+- `player-held-data(player)` / `set-player-held-data`: the selected main-hand
+  slot. Empty slots read as `None`; writing an empty slot is an error. These
+  reads also work inside the part-1 item callbacks through the active actor's
+  inventory snapshot. Callback signatures remain unchanged. The read is always
+  the **main hand**, even in an offhand callback; finish-use observes the current
+  slot after consumption, rather than the consumed item's former data. Pickup
+  does not expose the ground stack's data.
+
+Data writes queue after hooks, alongside storage moves, and share their
+**64 requests per mod per server tick**, across hooks and dimensions. Requests
+that reach the write budget check count even if a later slot check fails;
+oversized strings fail before that check. Creation with data shares this budget.
+Reads see the storage snapshot including earlier move reservations; pending
+data writes/creation do not alter that snapshot. Repeated writes to the same
+unchanged preimage are accepted but only the first effective change applies.
+
+At apply time the server checks that the container remains loaded and writable,
+the player remains online, and the slot's item, count and saved component hash
+match the captured preimage. A changed/emptied slot cancels the write and logs a
+conflict. Held writes also cancel if the selected hotbar slot changes. Re-read
+next tick to observe completion; success is a queue receipt. These are not
+transactions spanning multiple requests. Modified containers invalidate saved
+loot, mark chunks/comparators and update open viewers; player inventories sync.
+Creative players still mutate the actual stack, without exemptions or copies.
+
+`give-item-with-data(player, item, count, data)` creates real stacks after hooks,
+using the existing give limit of **100 stacks per call**, legal stack splitting,
+component-aware merging and overflow drops at the receiving player.
+`spawn-item-with-data(dimension, at, item, count, data)` shares `spawn-item`'s
+**16 successful spawns per mod per tick**, count **1..item maximum**, dimension,
+registry and finite-coordinate checks. Both use only the calling mod's key;
+`None` creates plain stacks. Tagged stacks merge only with equal components,
+including equal data; different values never merge. Inventory/container moves
+clone and split the original stacks, carrying every mod's data without guest
+reconstruction. Components already persist through the save codecs, travel in
+inventory/item packets, and contribute to level 28's `display-key` hash.
+
+A mod importing none of the stack-data functions causes no data extraction or
+extra inventory snapshots. Only importing running mods' own values are decoded
+for data reads. The component codec accepts components on every nonempty item,
+including content items; there is no item-specific unsupported component model.
+
+Block-entity custom data, arbitrary NBT access, changing other components,
+armor/offhand data access and generic persistent world data are **not included**;
+block-entity data belongs to Phase B.
 
 ## Demo and validation
 
 `mods/official/behaviour-demo` is a server-only guest. It refuses breaking obsidian,
 placing TNT and using ender pearls. Interacting with a lectern schedules a tick
 20 later, sets gold above the still-unchanged lectern with world.set-blocks, and
-logs it. Chat replaces the whole lowercase word `heck` with `hmm`.
+logs it. A main-hand stick click on a lectern also queues an incremented decimal
+counter under `behaviour_demo` in that stick's custom data and logs the queued
+counter. It changes no name or other visible item component. `/stickdata` reports
+the held stack's current value; use it on the following tick to see an applied
+write. Chat replaces the whole lowercase word `heck` with `hmm`.
 
 Build offline with the worktree's release cargo-horizon-mod from that directory:
 
@@ -150,3 +225,10 @@ the acting client and server, wait 20 ticks after a lectern click, try an ender
 pearl, and send `oh heck!`. Do not use real player data. Live-game and phone tests
 are manual; this implementation's automated checks use sandbox guests and pure
 engine/validator tests without networking.
+
+A-2 automated coverage includes all ten imports and invalid slots/players/values,
+creation and shared budgets through a real sandbox guest; real-stack transfer,
+merge and cancellation checks; and binary NBT slot-list encode/decode for both
+27-slot containers and 36-slot player inventories. The NBT test covers the shared
+item/component codec, not a complete world-folder save/reload or live client
+packet delivery. Live gameplay remains a manual check.

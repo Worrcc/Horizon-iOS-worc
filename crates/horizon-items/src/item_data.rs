@@ -288,6 +288,66 @@ impl ItemStack {
     pub fn data_mut(&mut self) -> &mut StackData {
         self.extra.get_or_insert_with(Box::default)
     }
+    /// A sandbox mod's own UTF-8 value in vanilla custom_data. All nonempty
+    /// ItemStacks can carry components; air and empty stacks cannot.
+    pub fn mod_data(&self, mod_id: &str) -> Result<Option<String>, String> {
+        if self.count == 0 || &*self.item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        let Some(tag) = self.data().and_then(|d| d.other("minecraft:custom_data")) else {
+            return Ok(None);
+        };
+        let Tag::Compound(entries) = tag else {
+            return Err("minecraft:custom_data is not a compound".into());
+        };
+        let Some(tag) = entries.get(&JavaString::from(mod_id)) else {
+            return Ok(None);
+        };
+        let Tag::String(value) = tag else {
+            return Err("mod's custom_data value is not a string".into());
+        };
+        // Bound allocation even if a save or command installed a huge value.
+        // UTF-8 is never shorter than its UTF-16 code-unit count.
+        if value.0.len() > 1024 {
+            return Err("stack data exceeds 1024 UTF-8 bytes".into());
+        }
+        let value = value
+            .to_string()
+            .map_err(|_| "mod's custom_data is not UTF-8")?;
+        if value.len() > 1024 {
+            return Err("stack data exceeds 1024 UTF-8 bytes".into());
+        }
+        Ok(Some(value))
+    }
+    /// Host supplies the manifest id. Preserve every other key and component.
+    pub fn set_mod_data(&mut self, mod_id: &str, value: Option<&str>) -> Result<(), String> {
+        if value.is_some_and(|v| v.len() > 1024) {
+            return Err("stack data exceeds 1024 UTF-8 bytes".into());
+        }
+        if self.count == 0 || &*self.item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        let mut entries = match self.data().and_then(|d| d.other("minecraft:custom_data")) {
+            None => Default::default(),
+            Some(Tag::Compound(entries)) => entries.clone(),
+            Some(_) => return Err("minecraft:custom_data is not a compound".into()),
+        };
+        let key = JavaString::from(mod_id);
+        if let Some(value) = value {
+            entries.insert(key, Tag::String(value.into()));
+        } else {
+            entries.remove(&key);
+        }
+        self.data_mut().set_other(
+            "minecraft:custom_data",
+            (!entries.is_empty()).then_some(Tag::Compound(entries)),
+        );
+        // An explicit removal patch must not coexist with a new custom_data
+        // value or keep an otherwise plain stack from merging after removal.
+        self.data_mut().set_other("!minecraft:custom_data", None);
+        self.tidy();
+        Ok(())
+    }
     /// Drops an all-default component box so equal stacks compare equal.
     pub fn tidy(&mut self) {
         if self.extra.as_ref().is_some_and(|d| d.is_empty()) {

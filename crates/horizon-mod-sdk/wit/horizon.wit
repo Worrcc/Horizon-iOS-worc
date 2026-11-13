@@ -1351,6 +1351,33 @@ interface %world {
         /// Plain text of the custom name, when present.
         custom-name: option<string>,
     }
+    /// API 29: only the calling manifest id's key in minecraft:custom_data.
+    /// UTF-8, at most 1024 bytes; JSON/base64 may be encoded by the mod.
+    /// Reads use the storage reservation snapshot. Empty slots return none.
+    player-stack-data: func(player: string, inv-slot: u32) -> result<option<string>, string>;
+    /// Read only this mod's value in one loaded container slot; invalid slots/containers error.
+    container-stack-data: func(dimension: string, pos: block-change-pos, slot: u32) -> result<option<string>, string>;
+    /// Main hand only; also usable inside item callbacks. No callback ABI change.
+    player-held-data: func(player: string) -> result<option<string>, string>;
+    /// Deferred until hooks return; changed/empty slots cancel on apply.
+    /// None removes only this mod's key, removing an empty component.
+    /// Bulk containers only. 64 requests/mod/tick shared with storage moves
+    /// and the two with-data creation functions. Success means queued.
+    set-player-stack-data: func(player: string, inv-slot: u32, data: option<string>) -> result<_, string>;
+    /// Queue this mod's value for a bulk container slot; None removes it. Shared 64 requests/mod/tick.
+    set-container-stack-data: func(dimension: string, pos: block-change-pos, slot: u32, data: option<string>) -> result<_, string>;
+    /// Queue a main-hand data write; selection or stack changes cancel on apply. Shared 64 requests/mod/tick.
+    set-player-held-data: func(player: string, data: option<string>) -> result<_, string>;
+    /// Same 100 stacks/call and overflow semantics as players.give-item;
+    /// component equality prevents merging with plain/differently tagged stacks.
+    give-item-with-data: func(player: string, item: string, count: u32, data: option<string>) -> result<_, string>;
+    /// Same limits as spawn-item, including the shared 16 spawns/mod/tick.
+    spawn-item-with-data: func(dimension: string, at: point, item: string, count: u32, data: option<string>) -> result<_, string>;
+    record stack-info-with-data { stack: stack-info, data: option<string> }
+    /// Read the 36 main inventory slots with only this mod's data; offline players error.
+    player-stacks-with-data: func(player: string) -> result<list<option<stack-info-with-data>>, string>;
+    /// Read one loaded block's slots with only this mod's data; missing containers error.
+    container-stacks-with-data: func(dimension: string, pos: block-change-pos) -> result<list<option<stack-info-with-data>>, string>;
     /// API level 28: one loaded block's slots (one half of a double chest).
     container-stacks: func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>;
     /// API level 28: read an online player's 36 main inventory slots, hotbar

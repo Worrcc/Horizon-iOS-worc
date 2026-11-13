@@ -9,10 +9,28 @@ pub enum StorageLocation {
     },
     Player(String),
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StorageStack {
     pub info: StackInfo,
     pub max: u32,
+    /// Host-only, bounded values for mods importing the data API.
+    pub data: HashMap<String, Result<Option<String>, String>>,
+}
+impl PartialEq for StorageStack {
+    fn eq(&self, other: &Self) -> bool {
+        // display_key already covers all saved custom_data. Auxiliary read
+        // metadata is not part of the reservation preimage.
+        self.info == other.info && self.max == other.max
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct StorageDataWrite {
+    pub location: StorageLocation,
+    pub slot: u32,
+    pub held: bool,
+    pub before: StorageStack,
+    pub mod_id: String,
+    pub value: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct StorageMove {
@@ -28,6 +46,7 @@ pub struct StorageMove {
 pub struct StorageView {
     pub slots: HashMap<StorageLocation, Vec<Option<StorageStack>>>,
     pub read_only: std::collections::HashSet<StorageLocation>,
+    pub held: HashMap<String, u32>,
 }
 impl StorageView {
     pub fn reserve(
@@ -130,7 +149,7 @@ impl State {
         count: u32,
     ) -> Result<u32, String> {
         if !channel_host::allowance(&mut self.storage_move_budget, self.snapshot.tick, 64) {
-            return Err("at most 64 storage moves per mod per tick".into());
+            return Err("at most 64 storage moves/data writes per mod per tick".into());
         }
         let mut view = self.world.lock().map_err(|_| "world unavailable")?;
         let storage = view
@@ -144,7 +163,7 @@ impl State {
         self.out.push(Output::StorageMove(plan));
         Ok(count)
     }
-    fn storage_player(&self, player: &str) -> Result<StorageLocation, String> {
+    pub(super) fn storage_player(&self, player: &str) -> Result<StorageLocation, String> {
         self.snapshot
             .players
             .iter()
@@ -153,7 +172,7 @@ impl State {
             .ok_or_else(|| "unknown or offline player".into())
     }
 }
-fn location(dimension: String, pos: BlockChangePos) -> StorageLocation {
+pub(super) fn location(dimension: String, pos: BlockChangePos) -> StorageLocation {
     StorageLocation::Container {
         dimension,
         pos: (pos.x, pos.y, pos.z),
@@ -232,6 +251,138 @@ impl State {
         self.reserve_storage(player, inv_slot, location(dimension, pos), None, count)
     }
 }
+pub(super) fn validate_data(value: Option<&str>) -> Result<(), String> {
+    if value.is_some_and(|s| s.len() > 1024) {
+        return Err("stack data exceeds 1024 UTF-8 bytes".into());
+    }
+    Ok(())
+}
+impl State {
+    pub(super) fn data_slot(&self, player: &str) -> Result<(StorageLocation, u32), String> {
+        let location = self.storage_player(player)?;
+        let StorageLocation::Player(id) = &location else {
+            unreachable!()
+        };
+        let mut view = self.world.lock().map_err(|_| "world unavailable")?;
+        let slot = view
+            .as_mut()
+            .and_then(|w| w.storage())
+            .and_then(|s| s.held.get(id))
+            .copied()
+            .ok_or("held slot unavailable")?;
+        if slot >= 9 {
+            return Err("held slot out of range".into());
+        }
+        Ok((location, slot))
+    }
+    fn stack_value(&self, stack: &StorageStack) -> Result<Option<String>, String> {
+        let data = stack.data.get(&self.id).cloned().unwrap_or(Ok(None))?;
+        validate_data(data.as_deref())?;
+        Ok(data)
+    }
+    pub(super) fn read_data(
+        &self,
+        location: StorageLocation,
+        slot: u32,
+    ) -> Result<Option<String>, String> {
+        if matches!(location, StorageLocation::Player(_)) && slot >= 36 {
+            return Err("inventory slot out of range (0..35)".into());
+        }
+        let mut view = self.world.lock().map_err(|_| "world unavailable")?;
+        let stack = view
+            .as_mut()
+            .and_then(|w| w.storage())
+            .ok_or("storage unavailable")?
+            .slots
+            .get(&location)
+            .ok_or("storage is not loaded or online")?
+            .get(slot as usize)
+            .ok_or("slot out of range")?;
+        stack
+            .as_ref()
+            .map(|s| self.stack_value(s))
+            .unwrap_or(Ok(None))
+    }
+    pub(super) fn data_budget(&mut self) -> Result<(), String> {
+        if !channel_host::allowance(&mut self.storage_move_budget, self.snapshot.tick, 64) {
+            return Err("at most 64 storage moves/data writes per mod per tick".into());
+        }
+        Ok(())
+    }
+    pub(super) fn write_data(
+        &mut self,
+        location: StorageLocation,
+        slot: u32,
+        held: bool,
+        value: Option<String>,
+    ) -> Result<(), String> {
+        validate_data(value.as_deref())?;
+        self.data_budget()?;
+        if matches!(location, StorageLocation::Player(_)) && slot >= 36 {
+            return Err("inventory slot out of range (0..35)".into());
+        }
+        let mut view = self.world.lock().map_err(|_| "world unavailable")?;
+        let storage = view
+            .as_mut()
+            .and_then(|w| w.storage())
+            .ok_or("storage unavailable")?;
+        if storage.read_only.contains(&location) {
+            return Err("special machine slots are read-only in the storage API".into());
+        }
+        let before = storage
+            .slots
+            .get(&location)
+            .ok_or("storage is not loaded or online")?
+            .get(slot as usize)
+            .ok_or("slot out of range")?
+            .as_ref()
+            .ok_or("slot is empty")?
+            .clone();
+        // A malformed compound cannot be edited safely; replacing/removing our
+        // own malformed value inside a valid compound is allowed.
+        if let Some(Err(error)) = before.data.get(&self.id)
+            && error == "minecraft:custom_data is not a compound"
+        {
+            return Err(error.clone());
+        }
+        if before.info.item == "minecraft:air" || before.info.count == 0 {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        self.out.push(Output::StorageDataWrite(StorageDataWrite {
+            location,
+            slot,
+            held,
+            before,
+            mod_id: self.id.clone(),
+            value,
+        }));
+        Ok(())
+    }
+    pub(super) fn stacks_with_data(
+        &self,
+        location: StorageLocation,
+    ) -> Result<Vec<Option<mod_world::StackInfoWithData>>, String> {
+        let mut view = self.world.lock().map_err(|_| "world unavailable")?;
+        view.as_mut()
+            .and_then(|w| w.storage())
+            .ok_or("storage unavailable")?
+            .slots
+            .get(&location)
+            .ok_or("storage is not loaded or online")?
+            .iter()
+            .map(|s| {
+                s.as_ref()
+                    .map(|s| {
+                        Ok(mod_world::StackInfoWithData {
+                            stack: s.info.clone(),
+                            data: self.stack_value(s)?,
+                        })
+                    })
+                    .transpose()
+            })
+            .collect()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +395,7 @@ mod tests {
                 custom_name: None,
             },
             max: 64,
+            data: Default::default(),
         })
     }
     #[test]

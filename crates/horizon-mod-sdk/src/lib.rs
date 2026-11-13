@@ -49,6 +49,10 @@
 //! [`server::world::spawn_point`] reads the overworld's world spawn and angle.
 //! Level 27 adds [`input::set_aim_assist`] for controller/touch look and [`input::look_device`].
 //! Level 28 adds server block-use hooks, scoped mod channels and component-preserving container moves.
+//! Level 29 adds behaviour hooks and [`server::world::player_held_data`], with
+//! scoped UTF-8 data in minecraft:custom_data (1024 bytes; JSON/base64 allowed).
+//! Data writes and creation share storage moves' 64 requests/mod/tick and apply
+//! after hooks. [`server::StackInfoWithData`] leaves the older record unchanged.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -330,7 +334,7 @@ pub mod server {
     };
     pub use horizon::mods::world::{
         self, BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack, Point as WorldPoint,
-        StackInfo, WorldTime,
+        StackInfo, StackInfoWithData, WorldTime,
     };
     pub use horizon::mods::{channel, server_hooks};
     pub use server_hooks::BehaviourConfig;

@@ -21,7 +21,7 @@ impl ServerMod for Demo {
             "behaviour_demo:*".into(),
         ])?;
         server_hooks::watch_items(&["minecraft:ender_pearl".into()])?;
-        Ok((Self, Registration::new()))
+        Ok((Self, Registration::new().command("stickdata")))
     }
     fn block_interacted(
         &mut self,
@@ -44,6 +44,25 @@ impl ServerMod for Demo {
             ),
         );
         if state.split('[').next() == Some("minecraft:lectern") {
+            if item == "minecraft:stick" && hand == horizon_mod_sdk::server::BehaviourHand::Main {
+                let result = (|| -> Result<(), String> {
+                    let next = world::player_held_data(&player.id)?
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0)
+                        .saturating_add(1)
+                        .to_string();
+                    world::set_player_held_data(&player.id, Some(&next))?;
+                    horizon_mod_sdk::log::write(
+                        horizon_mod_sdk::log::Level::Info,
+                        &format!("behaviour-demo: queued stick counter {next}"),
+                    );
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    horizon_mod_sdk::log::write(horizon_mod_sdk::log::Level::Warn, &error);
+                }
+            }
+
             let _ = world::schedule_tick(
                 &player.dimension,
                 BlockChangePos {
@@ -55,6 +74,19 @@ impl ServerMod for Demo {
             );
         }
         Decision::Cancel
+    }
+    fn command(
+        &mut self,
+        player: &Player,
+        _name: &str,
+        _args: &horizon_mod_sdk::server::Args,
+    ) -> Result<Option<String>, String> {
+        Ok(Some(format!(
+            "stickdata: {}",
+            world::player_held_data(&player.id)?
+                .as_deref()
+                .unwrap_or("none")
+        )))
     }
     fn block_scheduled_tick(&mut self, dimension: &str, pos: BlockPos, _state: &str) {
         let _ = world::set_blocks(

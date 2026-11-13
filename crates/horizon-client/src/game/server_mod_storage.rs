@@ -1,7 +1,9 @@
 //! API 28 storage transfers. Plan with metadata; apply using only real stacks.
 use super::{Game, lan::LanHost, server_mods::run::uuid_string};
 use horizon_client::{containers::BlockEntity, items::ItemStack, menu::Menu};
-use horizon_mods::{StackInfo, StorageLocation, StorageMove, StorageStack, StorageView};
+use horizon_mods::{
+    StackInfo, StorageDataWrite, StorageLocation, StorageMove, StorageStack, StorageView,
+};
 use sha2::{Digest, Sha256};
 
 // Fixed-width big-endian lengths and values; no lossy text or platform Hash encoding.
@@ -77,15 +79,31 @@ fn display_key(stack: &ItemStack) -> String {
     format!("{:x}", digest.finalize())
 }
 
+fn stack_info(stack: &ItemStack) -> StackInfo {
+    StackInfo {
+        item: stack.item.to_string(),
+        count: stack.count,
+        display_key: display_key(stack),
+        custom_name: stack.custom_name(),
+    }
+}
+fn apply_stack_data(
+    stack: Option<&mut ItemStack>,
+    before: &StackInfo,
+    mod_id: &str,
+    value: Option<&str>,
+) -> Result<(), String> {
+    let stack = stack.ok_or("slot empty; data write cancelled")?;
+    if stack_info(stack) != *before {
+        return Err("storage slot changed; data write cancelled".into());
+    }
+    stack.set_mod_data(mod_id, value)
+}
 fn description(stack: &ItemStack, items: &horizon_client::items::Items) -> StorageStack {
     StorageStack {
-        info: StackInfo {
-            item: stack.item.to_string(),
-            count: stack.count,
-            display_key: display_key(stack),
-            custom_name: stack.custom_name(),
-        },
+        info: stack_info(stack),
         max: Menu::item_max_stack(items, stack),
+        data: Default::default(),
     }
 }
 fn describe(
@@ -95,6 +113,24 @@ fn describe(
     slots
         .iter()
         .map(|s| s.as_ref().map(|s| description(s, items)))
+        .collect()
+}
+fn describe_data(
+    slots: &[Option<ItemStack>],
+    items: &horizon_client::items::Items,
+    mod_ids: &[String],
+) -> Vec<Option<StorageStack>> {
+    slots
+        .iter()
+        .map(|s| {
+            s.as_ref().map(|s| {
+                let mut stack = description(s, items);
+                for id in mod_ids {
+                    stack.data.insert(id.clone(), s.mod_data(id));
+                }
+                stack
+            })
+        })
         .collect()
 }
 /// Ordinary bulk containers have no slot-specific item rules. Special machine
@@ -161,6 +197,7 @@ impl Game<'_> {
     pub(super) fn mod_storage_snapshot(&self, host: Option<&LanHost>) -> StorageView {
         let mut view = StorageView::default();
         let items = self.res.items();
+        let data_mods = self.mods.mods.stack_data_mods();
         let mut add = |dim: &str, world: &horizon_client::world::World| {
             for (&pos, entity) in &world.block_entities {
                 let slots = super::server_mod_world::slots(entity);
@@ -172,7 +209,8 @@ impl Game<'_> {
                     if !transferable(entity) {
                         view.read_only.insert(loc.clone());
                     }
-                    view.slots.insert(loc, describe(slots, items));
+                    view.slots
+                        .insert(loc, describe_data(slots, items, &data_mods));
                 }
             }
         };
@@ -182,9 +220,10 @@ impl Game<'_> {
         }
         if let Some(host) = host.or(self.lan.as_ref()) {
             for g in host.hub.guests.iter().filter(|g| g.placed) {
+                view.held.insert(uuid_string(g.uuid), g.selected as u32);
                 view.slots.insert(
                     StorageLocation::Player(uuid_string(g.uuid)),
-                    describe(&g.inventory, items),
+                    describe_data(&g.inventory, items, &data_mods),
                 );
             }
         }
@@ -192,8 +231,24 @@ impl Game<'_> {
         {
             view.slots.insert(
                 StorageLocation::Player(self.player_uuid_string()),
-                describe(&self.inventory, items),
+                describe_data(&self.inventory, items, &data_mods),
             );
+        }
+        // During native item callbacks as_guest has swapped the actor into Game.
+        // The guest record then holds the server's parked inventory.
+        if let Some(uuid) = self.lan_acting_uuid {
+            let id = uuid_string(uuid);
+            view.slots.insert(
+                StorageLocation::Player(id.clone()),
+                describe_data(&self.inventory, items, &data_mods),
+            );
+            view.held.insert(id, self.selected as u32);
+        } else if self.options.execution_role.is_client()
+            && self.remote.is_none()
+            && self.player.is_some()
+        {
+            view.held
+                .insert(self.player_uuid_string(), self.selected as u32);
         }
         view
     }
@@ -273,6 +328,123 @@ impl Game<'_> {
             }
         }
     }
+    pub(super) fn apply_mod_give_data(
+        &mut self,
+        player: &str,
+        item: &str,
+        count: u32,
+        mod_id: &str,
+        data: Option<&str>,
+        mut host: Option<&mut LanHost>,
+    ) -> Result<(), String> {
+        use horizon_client::mod_players::{Inventories, Inventory};
+        use horizon_mods::PlayerInventories;
+        let mut result = Err("unknown or offline player".into());
+        self.with_mod_player(host.as_deref_mut(), player, |g| {
+            let Some(info) = g.res.items().get(item) else {
+                result = Err(format!("unknown item {item}"));
+                return;
+            };
+            let mut inventories = Inventories {
+                items: std::sync::Arc::new([(item.to_owned(), info.max_stack)].into()),
+                players: [(
+                    player.to_owned(),
+                    Inventory {
+                        main: g.inventory.clone(),
+                        offhand: g.offhand.clone(),
+                        selected: g.selected,
+                        creative: g.creative,
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+            };
+            result = inventories.give_item_with_data(player, item, count, mod_id, data);
+            if result.is_ok()
+                && let Some(inv) = inventories.players.remove(player)
+            {
+                g.inventory = inv.main;
+                g.offhand = inv.offhand;
+                let at = g
+                    .player
+                    .as_ref()
+                    .map(|p| [p.position.x, p.position.y, p.position.z]);
+                if let Some(at) = at {
+                    for stack in inv.drops {
+                        g.spawn_item(stack, at, [0.0, 0.1, 0.0], 10);
+                    }
+                }
+            }
+        });
+        if result.is_ok()
+            && let Some(host) = host.or(self.lan.as_mut())
+            && let Some(i) = host
+                .hub
+                .guests
+                .iter()
+                .position(|g| g.placed && uuid_string(g.uuid) == player)
+        {
+            host.hub.send_inventory(i);
+        }
+        result
+    }
+    pub(super) fn apply_mod_stack_data(
+        &mut self,
+        plan: StorageDataWrite,
+        mut host: Option<&mut LanHost>,
+    ) -> Result<(), String> {
+        let mut slots = self.storage_slots(&plan.location, host.as_deref())?;
+        if plan.held {
+            let StorageLocation::Player(id) = &plan.location else {
+                return Err("held write requires player".into());
+            };
+            let selected = if self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && *id == self.player_uuid_string()
+            {
+                Some(self.selected)
+            } else {
+                host.as_deref()
+                    .or(self.lan.as_ref())
+                    .and_then(|h| {
+                        h.hub
+                            .guests
+                            .iter()
+                            .find(|g| g.placed && uuid_string(g.uuid) == *id)
+                    })
+                    .map(|g| g.selected)
+            };
+            if selected != Some(plan.slot as usize) {
+                return Err("held slot changed; data write cancelled".into());
+            }
+        }
+        apply_stack_data(
+            slots.get_mut(plan.slot as usize).and_then(Option::as_mut),
+            &plan.before.info,
+            &plan.mod_id,
+            plan.value.as_deref(),
+        )?;
+        self.set_storage_slots(&plan.location, slots, host.as_deref_mut());
+        self.storage_changed(&plan.location);
+        if let Some(host) = host.or(self.lan.as_mut()) {
+            host.hub.sync_containers(&self.world);
+        }
+        Ok(())
+    }
+    fn storage_changed(&mut self, loc: &StorageLocation) {
+        if let StorageLocation::Container { pos, .. } = loc {
+            if let Some(chunk) = self.world.chunks.get_mut(&(pos.0 >> 4, pos.2 >> 4)) {
+                let chunk = std::sync::Arc::make_mut(chunk);
+                if let Some(saved) = chunk.saved.as_mut() {
+                    horizon_client::save::consume_container_loot(
+                        std::sync::Arc::make_mut(saved),
+                        *pos,
+                    );
+                }
+            }
+            self.container_changed(*pos);
+        }
+    }
     pub(super) fn apply_mod_storage_move(
         &mut self,
         plan: StorageMove,
@@ -318,18 +490,7 @@ impl Game<'_> {
         }
         self.set_storage_slots(&plan.to, target, host.as_deref_mut());
         for loc in [&plan.from, &plan.to] {
-            if let StorageLocation::Container { pos, .. } = loc {
-                if let Some(chunk) = self.world.chunks.get_mut(&(pos.0 >> 4, pos.2 >> 4)) {
-                    let chunk = std::sync::Arc::make_mut(chunk);
-                    if let Some(saved) = chunk.saved.as_mut() {
-                        horizon_client::save::consume_container_loot(
-                            std::sync::Arc::make_mut(saved),
-                            *pos,
-                        );
-                    }
-                }
-                self.container_changed(*pos);
-            }
+            self.storage_changed(loc);
         }
         if let Some(host) = host.or(self.lan.as_mut()) {
             host.hub.sync_containers(&self.world);
@@ -340,6 +501,84 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn data_writes_cancel_changed_or_empty_slots_and_preserve_other_keys() {
+        let mut original = ItemStack::new("minecraft:stick", 12);
+        original.set_mod_data("other", Some("keep")).unwrap();
+        let before = stack_info(&original);
+        let mut changed = original.clone();
+        changed.count -= 1;
+        let mut component_changed = original.clone();
+        component_changed
+            .set_mod_data("other", Some("different"))
+            .unwrap();
+        for mut stack in [
+            changed,
+            component_changed,
+            ItemStack::new("minecraft:stone", 12),
+        ] {
+            let saved = stack.clone();
+            assert!(apply_stack_data(Some(&mut stack), &before, "demo", Some("x")).is_err());
+            assert_eq!(stack, saved);
+        }
+        assert!(apply_stack_data(None, &before, "demo", None).is_err());
+        let mut stack = original.clone();
+        apply_stack_data(Some(&mut stack), &before, "demo", Some("x")).unwrap();
+        assert_eq!(stack.mod_data("other").unwrap().as_deref(), Some("keep"));
+        assert_eq!(stack.mod_data("demo").unwrap().as_deref(), Some("x"));
+        let before = stack_info(&stack);
+        apply_stack_data(Some(&mut stack), &before, "demo", None).unwrap();
+        assert_eq!(stack, original);
+    }
+    #[test]
+    fn data_stacks_move_chest_player_chest_and_merge_only_equal_data() {
+        let mut tagged = ItemStack::new("minecraft:stick", 12);
+        tagged.set_mod_data("demo", Some("one")).unwrap();
+        tagged.set_mod_data("other", Some("keep")).unwrap();
+        let mut chest = vec![Some(tagged.clone()), None];
+        let mut player = vec![None; 36];
+        transfer(&mut chest, 0, &mut player, None, 5, 64).unwrap();
+        assert_eq!(
+            player[0]
+                .as_ref()
+                .unwrap()
+                .mod_data("demo")
+                .unwrap()
+                .as_deref(),
+            Some("one")
+        );
+        transfer(&mut player, 0, &mut chest, None, 5, 64).unwrap();
+        assert!(player.iter().all(Option::is_none));
+        assert_eq!(chest, [Some(tagged.clone()), None]);
+        let mut different = tagged.clone();
+        different.count = 4;
+        different.set_mod_data("demo", Some("two")).unwrap();
+        assert_ne!(display_key(&tagged), display_key(&different));
+        let mut source = vec![Some(different.clone())];
+        assert!(transfer(&mut source, 0, &mut chest, Some(0), 4, 64).is_err());
+        assert_eq!(source[0], Some(different));
+        transfer(&mut source, 0, &mut chest, None, 4, 64).unwrap();
+        assert_eq!(chest[0].as_ref().unwrap().count, 12);
+        assert_eq!(chest[1].as_ref().unwrap().count, 4);
+        for stack in chest.iter_mut().flatten() {
+            stack.set_mod_data("demo", None).unwrap();
+        }
+        let removed = chest[1].clone();
+        let mut source = vec![removed];
+        chest[1] = None;
+        transfer(&mut source, 0, &mut chest, None, 4, 64).unwrap();
+        assert_eq!(chest[0].as_ref().unwrap().count, 16);
+        assert!(chest[1].is_none());
+        assert_eq!(
+            chest[0]
+                .as_ref()
+                .unwrap()
+                .mod_data("other")
+                .unwrap()
+                .as_deref(),
+            Some("keep")
+        );
+    }
     #[test]
     fn display_keys_ignore_count_and_preserve_saved_component_identity() {
         let plain = ItemStack::new("minecraft:stone", 1);

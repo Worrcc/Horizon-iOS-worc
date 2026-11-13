@@ -289,6 +289,13 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
     for out in mods.drain() {
         report.output.push(match out {
             Output::StorageMove(plan) => format!("reserved {} items for transfer", plan.count),
+            Output::StorageDataWrite(plan) => format!("queued stack data for {}", plan.mod_id),
+            Output::GiveItemWithData { item, count, .. } => {
+                format!("queued giving {count} {item} with data")
+            }
+            Output::SpawnItemWithData { item, count, .. } => {
+                format!("queued dropping {count} {item} with data")
+            }
             Output::Channel { name, data, .. } => format!("channel {name}: {} bytes", data.len()),
             Output::Chat { text, .. } => format!("chat: {text}"),
             Output::Tell { text, .. } => format!("tell: {text}"),

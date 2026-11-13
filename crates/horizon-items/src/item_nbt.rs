@@ -72,6 +72,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mod_data_survives_binary_nbt_slot_lists_for_containers_and_players() {
+        use crate::items::ItemStack;
+        use horizon_world::nbt::{Limits, read_network, write_network};
+        // Both block-entity Items and player Inventory use this slot-list codec.
+        for size in [27, 36] {
+            let mut stack = ItemStack::new("minecraft:stick", 12);
+            stack
+                .set_mod_data("first", Some("{\"counter\":42,\"text\":\"é🦀\"}"))
+                .unwrap();
+            stack.set_mod_data("other", Some("opaque")).unwrap();
+            let mut slots = vec![None; size];
+            slots[size - 1] = Some(stack.clone());
+            let bytes = write_network(&encode_items(&slots), Limits::default()).unwrap();
+            let (tag, consumed) = read_network(&bytes, Limits::default()).unwrap();
+            assert_eq!(consumed, bytes.len());
+            let loaded = decode_items(Some(&tag), size);
+            assert_eq!(loaded, slots);
+            assert_eq!(
+                loaded[size - 1].as_ref().unwrap().mod_data("first"),
+                stack.mod_data("first")
+            );
+            assert_eq!(
+                loaded[size - 1]
+                    .as_ref()
+                    .unwrap()
+                    .mod_data("other")
+                    .unwrap()
+                    .as_deref(),
+                Some("opaque")
+            );
+        }
+    }
+
+    #[test]
+    fn mod_data_is_scoped_bounded_and_removal_restores_component_equality() {
+        use crate::items::ItemStack;
+        let plain = ItemStack::new("minecraft:stick", 1);
+        let mut stack = plain.clone();
+        stack.set_mod_data("other", Some("keep")).unwrap();
+        stack
+            .data_mut()
+            .set_other("minecraft:lore", Some(Tag::List(vec![string("Keep lore")])));
+        let before = stack.clone();
+        stack.set_mod_data("first", Some(&"é".repeat(512))).unwrap();
+        assert_eq!(stack.mod_data("first").unwrap().unwrap().len(), 1024);
+        let tagged = stack.clone();
+        assert!(stack.set_mod_data("first", Some(&"é".repeat(513))).is_err());
+        assert_eq!(stack, tagged);
+        assert_ne!(stack, before);
+        stack.set_mod_data("first", None).unwrap();
+        assert_eq!(stack, before);
+        assert_eq!(stack.mod_data("other").unwrap().as_deref(), Some("keep"));
+        let mut only = plain.clone();
+        only.set_mod_data("first", Some("")).unwrap();
+        assert_eq!(only.mod_data("first").unwrap(), Some(String::new()));
+        only.set_mod_data("first", None).unwrap();
+        assert_eq!(only, plain);
+        assert!(only.extra.is_none());
+        for mut empty in [
+            ItemStack::new("minecraft:air", 1),
+            ItemStack::new("minecraft:stick", 0),
+        ] {
+            assert!(empty.mod_data("first").is_err());
+            assert!(empty.set_mod_data("first", Some("x")).is_err());
+        }
+        let mut malformed = plain;
+        malformed
+            .data_mut()
+            .set_other("minecraft:custom_data", Some(Tag::Int(7)));
+        let before = malformed.clone();
+        assert!(malformed.mod_data("first").is_err());
+        assert!(malformed.set_mod_data("first", None).is_err());
+        assert_eq!(malformed, before);
+    }
+
+    #[test]
     fn nbt_count_defaults_to_one_outside_codec_range() {
         for item in ["minecraft:stone", "minecraft:diamond_sword"] {
             for (raw, expected) in [

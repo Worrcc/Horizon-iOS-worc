@@ -1324,6 +1324,13 @@ API level 28: one slot, including the identity of all saved components.
 | `display-key` | `string` | Stable SHA-256 of item id and saved components, excluding count. A display/grouping key, never an item handle or proof of equality. |
 | `custom-name` | `option<string>` | Plain text of the custom name, when present. |
 
+### record `stack-info-with-data`
+
+| Field | Type | |
+| --- | --- | --- |
+| `stack` | `stack-info` |  |
+| `data` | `option<string>` |  |
+
 ### record `block-change-pos`
 
 | Field | Type | |
@@ -1391,6 +1398,16 @@ A plain item stack; components are not carried by this API.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `schedule-tick` | `func(dimension: string, pos: block-change-pos, delay-ticks: u32) -> result<_, string>` | API 29: loaded watched block only, delay 1..72000, 256 pending/mod. Ephemeral: discarded on state change, chunk unload, mod stop or restart. |
+| `player-stack-data` | `func(player: string, inv-slot: u32) -> result<option<string>, string>` | API 29: only the calling manifest id's key in minecraft:custom_data. UTF-8, at most 1024 bytes; JSON/base64 may be encoded by the mod. Reads use the storage reservation snapshot. Empty slots return none. |
+| `container-stack-data` | `func(dimension: string, pos: block-change-pos, slot: u32) -> result<option<string>, string>` | Read only this mod's value in one loaded container slot; invalid slots/containers error. |
+| `player-held-data` | `func(player: string) -> result<option<string>, string>` | Main hand only; also usable inside item callbacks. No callback ABI change. |
+| `set-player-stack-data` | `func(player: string, inv-slot: u32, data: option<string>) -> result<_, string>` | Deferred until hooks return; changed/empty slots cancel on apply. None removes only this mod's key, removing an empty component. Bulk containers only. 64 requests/mod/tick shared with storage moves and the two with-data creation functions. Success means queued. |
+| `set-container-stack-data` | `func(dimension: string, pos: block-change-pos, slot: u32, data: option<string>) -> result<_, string>` | Queue this mod's value for a bulk container slot; None removes it. Shared 64 requests/mod/tick. |
+| `set-player-held-data` | `func(player: string, data: option<string>) -> result<_, string>` | Queue a main-hand data write; selection or stack changes cancel on apply. Shared 64 requests/mod/tick. |
+| `give-item-with-data` | `func(player: string, item: string, count: u32, data: option<string>) -> result<_, string>` | Same 100 stacks/call and overflow semantics as players.give-item; component equality prevents merging with plain/differently tagged stacks. |
+| `spawn-item-with-data` | `func(dimension: string, at: point, item: string, count: u32, data: option<string>) -> result<_, string>` | Same limits as spawn-item, including the shared 16 spawns/mod/tick. |
+| `player-stacks-with-data` | `func(player: string) -> result<list<option<stack-info-with-data>>, string>` | Read the 36 main inventory slots with only this mod's data; offline players error. |
+| `container-stacks-with-data` | `func(dimension: string, pos: block-change-pos) -> result<list<option<stack-info-with-data>>, string>` | Read one loaded block's slots with only this mod's data; missing containers error. |
 | `container-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>` | API level 28: one loaded block's slots (one half of a double chest). |
 | `player-stacks` | `func(player: string) -> option<list<option<stack-info>>>` | API level 28: read an online player's 36 main inventory slots, hotbar first (0..35, as player-to-container's inv-slot); no armor/offhand. UUID or exact online name; none for unknown/offline players. Same stack metadata as container-stacks. Server-thread reservation view at call time: includes earlier moves in this hook batch; read-only. |
 | `container-move` | `func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>` | API level 28: reserve a component-preserving transfer after hooks return. Moves min(count, source count), all or nothing if capacity is insufficient. None selects matching stacks then empty slots. Same-slot moves return zero. Revalidated on apply; a changed endpoint cancels the entire transfer. Bulk storage containers only; special machine slots are read-only. The result is the reserved count; reread next tick to observe completion. |

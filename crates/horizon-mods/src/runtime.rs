@@ -80,7 +80,7 @@ pub use server_bindings::{
     },
     horizon::mods::world::{
         BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
-        Point as WorldPoint, StackInfo, WorldTime,
+        Point as WorldPoint, StackInfo, StackInfoWithData, WorldTime,
     },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
@@ -448,6 +448,22 @@ pub enum Output {
     },
     /// API 28: a validated reservation, checked again against live endpoints on apply.
     StorageMove(StorageMove),
+    StorageDataWrite(StorageDataWrite),
+    GiveItemWithData {
+        player: String,
+        item: String,
+        count: u32,
+        mod_id: String,
+        data: Option<String>,
+    },
+    SpawnItemWithData {
+        dimension: String,
+        at: EntityPoint,
+        item: String,
+        count: u32,
+        mod_id: String,
+        data: Option<String>,
+    },
     /// API 28: scoped bytes, delivered over negotiated custom payloads after hooks.
     Channel {
         mod_id: String,
@@ -623,6 +639,14 @@ pub trait WorldView: std::any::Any + Send {
             Err(format!("invalid item stack {item} x{count}"))
         }
     }
+    /// The same per-call bound as players.give-item, including zero-count no-op.
+    fn check_give_stack(&self, item: &str, count: u32) -> Result<(), String> {
+        if count <= 6400 {
+            self.check_item_stack(item, 1)
+        } else {
+            Err("give-item is at most 100 stacks per call".into())
+        }
+    }
     /// Whether a structure template exists in the loaded vanilla/mod resources.
     fn check_structure(&self, id: &str) -> Result<(), String> {
         Err(format!("no structure template {id}"))
@@ -644,6 +668,16 @@ pub trait PlayerInventories: std::any::Any + Send {
     }
     fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String>;
     fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String>;
+    fn give_item_with_data(
+        &mut self,
+        _player: &str,
+        _item: &str,
+        _count: u32,
+        _mod_id: &str,
+        _data: Option<&str>,
+    ) -> Result<(), String> {
+        Err("item data creation unavailable".into())
+    }
 }
 type InventoriesSlot = Arc<Mutex<Option<Box<dyn PlayerInventories>>>>;
 
@@ -708,6 +742,7 @@ struct Running {
     /// It imports capability `world-read`.
     reads_client_world: bool,
     storage_api: bool,
+    stack_data_api: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -1030,9 +1065,22 @@ impl Mods {
     }
     /// Only storage API users need component descriptions in the world loan.
     pub fn wants_storage(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|r| r.storage_api || r.stack_data_api)
+        })
+    }
+    pub fn stack_data_mods(&self) -> Vec<String> {
         self.entries
             .iter()
-            .any(|e| e.run.as_ref().is_some_and(|r| r.storage_api))
+            .filter_map(|e| {
+                e.run
+                    .as_ref()
+                    .filter(|r| r.stack_data_api)
+                    .map(|r| r.store.data().id.clone())
+            })
+            .collect()
     }
     /// Whether a running mod may use capability `world`: only then is a
     /// view worth lending.
@@ -1369,6 +1417,9 @@ impl Mods {
             }),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
+            stack_data_api: functions.iter().any(|f| {
+                f.starts_with("world.") && (f.ends_with("-data") || f.ends_with("-with-data"))
+            }),
             storage_api: functions.iter().any(|f| {
                 matches!(
                     f.as_str(),
@@ -2630,6 +2681,120 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn player_stack_data(
+        &mut self,
+        player: String,
+        inv_slot: u32,
+    ) -> Result<Option<String>, String> {
+        self.read_data(self.storage_player(&player)?, inv_slot)
+    }
+    fn container_stack_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        slot: u32,
+    ) -> Result<Option<String>, String> {
+        self.read_data(storage_api::location(dimension, pos), slot)
+    }
+    fn player_held_data(&mut self, player: String) -> Result<Option<String>, String> {
+        let (location, slot) = self.data_slot(&player)?;
+        self.read_data(location, slot)
+    }
+    fn set_player_stack_data(
+        &mut self,
+        player: String,
+        inv_slot: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        self.write_data(self.storage_player(&player)?, inv_slot, false, data)
+    }
+    fn set_container_stack_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        slot: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        self.write_data(storage_api::location(dimension, pos), slot, false, data)
+    }
+    fn set_player_held_data(&mut self, player: String, data: Option<String>) -> Result<(), String> {
+        let (location, slot) = self.data_slot(&player)?;
+        self.write_data(location, slot, true, data)
+    }
+    fn player_stacks_with_data(
+        &mut self,
+        player: String,
+    ) -> Result<Vec<Option<mod_world::StackInfoWithData>>, String> {
+        self.stacks_with_data(self.storage_player(&player)?)
+    }
+    fn container_stacks_with_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Result<Vec<Option<mod_world::StackInfoWithData>>, String> {
+        self.stacks_with_data(storage_api::location(dimension, pos))
+    }
+    fn give_item_with_data(
+        &mut self,
+        player: String,
+        item: String,
+        count: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        storage_api::validate_data(data.as_deref())?;
+        self.data_budget()?;
+        if item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        let StorageLocation::Player(player) = self.storage_player(&player)? else {
+            unreachable!()
+        };
+        self.world
+            .lock()
+            .map_err(|_| "world unavailable")?
+            .as_ref()
+            .ok_or("world unavailable")?
+            .check_give_stack(&item, count)?;
+        self.out.push(Output::GiveItemWithData {
+            player,
+            item,
+            count,
+            mod_id: self.id.clone(),
+            data,
+        });
+        Ok(())
+    }
+
+    fn spawn_item_with_data(
+        &mut self,
+        dimension: String,
+        at: WorldPoint,
+        item: String,
+        count: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        storage_api::validate_data(data.as_deref())?;
+        if item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        self.data_budget()?;
+        self.spawn_item(dimension.clone(), at, item.clone(), count)?;
+        // spawn_item validates and appends exactly one output, sharing its budget.
+        self.out.pop();
+        self.out.push(Output::SpawnItemWithData {
+            dimension,
+            at: EntityPoint {
+                x: at.x,
+                y: at.y,
+                z: at.z,
+            },
+            item,
+            count,
+            mod_id: self.id.clone(),
+            data,
+        });
+        Ok(())
+    }
     fn schedule_tick(
         &mut self,
         dimension: String,

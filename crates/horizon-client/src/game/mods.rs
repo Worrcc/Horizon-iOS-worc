@@ -1320,6 +1320,9 @@ impl Game<'_> {
                 | Output::SetBlocks { .. }
                 | Output::BreakBlocksAs { .. }
                 | Output::SetLootTable { .. }
+                | Output::GiveItemWithData { .. }
+                | Output::StorageDataWrite(_)
+                | Output::SpawnItemWithData { .. }
                 | Output::StorageMove(_)
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }

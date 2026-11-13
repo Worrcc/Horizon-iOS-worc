@@ -233,6 +233,16 @@ pub(super) mod run {
             }
             Ok(())
         }
+        fn check_give_stack(&self, item: &str, count: u32) -> Result<(), String> {
+            let max = self
+                .items
+                .get(item)
+                .ok_or_else(|| format!("unknown item {item}"))?;
+            if *max == 0 || count > max.saturating_mul(100) {
+                return Err("give-item is at most 100 stacks per call".into());
+            }
+            Ok(())
+        }
         fn check_structure(&self, id: &str) -> Result<(), String> {
             if super::super::server_mod_world::structure_exists(
                 &self.resources,
@@ -1531,6 +1541,13 @@ pub(super) mod run {
             let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.world_operations)
                 .into_iter()
                 .partition(|op| match op {
+                    Output::GiveItemWithData { .. } => true,
+                    Output::StorageDataWrite(plan) => match &plan.location {
+                        horizon_mods::StorageLocation::Container { dimension, .. } => {
+                            dimension == dim
+                        }
+                        _ => true,
+                    },
                     Output::StorageMove(plan) => {
                         [&plan.from, &plan.to].iter().all(|loc| match loc {
                             horizon_mods::StorageLocation::Container { dimension, .. } => {
@@ -1543,6 +1560,7 @@ pub(super) mod run {
                     | Output::PlaceStructure { dimension, .. }
                     | Output::SetSpawner { dimension, .. }
                     | Output::PlaySound { dimension, .. }
+                    | Output::SpawnItemWithData { dimension, .. }
                     | Output::SpawnItem { dimension, .. }
                     | Output::BreakBlocksAs { dimension, .. } => dimension == dim,
                     _ => false,
@@ -1576,6 +1594,40 @@ pub(super) mod run {
                             10,
                         );
                         Ok(())
+                    }
+                    Output::GiveItemWithData {
+                        player,
+                        item,
+                        count,
+                        mod_id,
+                        data,
+                    } => self.apply_mod_give_data(
+                        &player,
+                        &item,
+                        count,
+                        &mod_id,
+                        data.as_deref(),
+                        host.as_deref_mut(),
+                    ),
+                    Output::SpawnItemWithData {
+                        at,
+                        item,
+                        count,
+                        mod_id,
+                        data,
+                        ..
+                    } => {
+                        let mut stack = horizon_client::items::ItemStack::new(&item, count);
+                        match stack.set_mod_data(&mod_id, data.as_deref()) {
+                            Ok(()) => {
+                                self.spawn_item(stack, [at.x, at.y, at.z], [0.0, 0.1, 0.0], 10);
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Output::StorageDataWrite(plan) => {
+                        self.apply_mod_stack_data(plan, host.as_deref_mut())
                     }
                     Output::PlaySound { at, sound, .. } => {
                         self.mod_play_sound([at.x, at.y, at.z], &sound);
@@ -2016,7 +2068,10 @@ pub(super) mod run {
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
-                operation @ (Output::StorageMove(_)
+                operation @ (Output::GiveItemWithData { .. }
+                | Output::StorageDataWrite(_)
+                | Output::SpawnItemWithData { .. }
+                | Output::StorageMove(_)
                 | Output::BreakBlocksAs { .. }
                 | Output::SetContainer { .. }
                 | Output::PlaceStructure { .. }

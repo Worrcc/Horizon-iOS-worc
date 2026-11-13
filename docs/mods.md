@@ -1692,3 +1692,32 @@ Cancellable damage and drops are deferred because their native hooks lack a safe
 runtime context or run after inventory removal. See [Phase A-1 design and precise
 semantics](api-expansion-a.md), including callback ordering, budget fall-through,
 and the server-only [behaviour demo](../mods/official/behaviour-demo).
+
+### API level 29, part 2: stack data
+
+Server capability `world` adds `player-stack-data`, `container-stack-data`,
+`player-held-data` and their `set-` counterparts. UUID or exact online names;
+main inventory slots 0..35, hotbar first; held means main hand. Data is a UTF-8
+string of at most 1024 bytes stored under the calling manifest id in vanilla
+`minecraft:custom_data`; mods may encode JSON/base64. No other key/component is
+accessible. `None` removes the key and an empty component, restoring plain stack
+merging. Saves, cloned/transferred stacks, client packets and `display-key`
+already carry this component. Different data cannot merge; equal data can.
+
+Writes are deferred and revalidated against the slot's item/count/components;
+changed/empty slots cancel, as do a changed selected slot for held writes.
+Bulk container writes only; viewers and player inventories sync. The 64 requests
+per mod per tick are shared with storage moves and creation with data.
+`give-item-with-data` shares give's 100 stacks/call and overflow behavior;
+`spawn-item-with-data` shares the 16 spawns/tick budget and legal stack limits.
+Creation is deferred too. `player-stacks-with-data` and
+`container-stacks-with-data` return the additive `stack-info-with-data` record;
+existing records are unchanged. SDK wrappers are generated in `server::world`.
+`player-held-data` is usable in item callbacks without changing their ABI; it
+reads the current main hand (after consumption for finish-use, never a pickup's
+ground stack). Mods using none of these imports incur no data extraction cost.
+
+The [behaviour demo](../mods/official/behaviour-demo) increments held stick data
+on a main-hand lectern click, logs the counter and registers `/stickdata` to
+report it without renaming the item. See [Phase A's data contract](api-expansion-a.md#a-2-per-stack-custom-data-also-level-29)
+for errors, reservations, limits and coverage. Block-entity data is Phase B.

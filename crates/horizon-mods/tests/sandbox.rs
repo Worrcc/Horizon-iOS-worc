@@ -3359,6 +3359,7 @@ fn api28_storage_reservations_and_block_use_cross_the_sandbox() {
             custom_name: Some("Named".into()),
         },
         max: 64,
+        data: Default::default(),
     };
     let view = StorageView {
         slots: [
@@ -3438,6 +3439,7 @@ fn api28_storage_reservations_and_block_use_cross_the_sandbox() {
             custom_name: Some("Named".into()),
         },
         max: 64,
+        data: Default::default(),
     });
     let slots = [(L::Player(p.id.clone()), inventory)].into();
     let expected = StorageView {
@@ -3804,3 +3806,6 @@ fn api27_look_device_defaults_to_mouse_and_reads_the_current_snapshot() {
 
 #[path = "behaviour/mod.rs"]
 mod behaviour;
+
+#[path = "stack_data/mod.rs"]
+mod stack_data;
