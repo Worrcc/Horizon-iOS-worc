@@ -63,7 +63,8 @@ use bindings::{
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, Decision,
+        Hand as BehaviourHand, ServerCommand,
     },
     horizon::mods::entities::{
         Area as EntityArea, AttributeChange as EntityAttributeChange, Death, EffectChange,
@@ -88,6 +89,9 @@ use server_callbacks::ServerCallbacks as HorizonServerMod;
 type ServerEvents = HorizonServerMod;
 mod storage_api;
 pub use storage_api::*;
+mod behaviour;
+pub use behaviour::*;
+pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
 mod channel_host;
 pub use channel_host::{CHANNEL_DATA, CHANNEL_MESSAGES, ChannelPeers};
 /// Canvas-screen pointer actions (API level 18).
@@ -908,6 +912,7 @@ struct State {
     item_spawn_budget: (Option<u64>, u32),
     break_budget: (Option<u64>, usize),
     mod_command_budget: (Option<u64>, usize),
+    behaviour: behaviour::Behaviour,
     uses: (bool, bool),
     use_budget: (Option<u64>, usize),
     channel_budget: (Option<u64>, usize),
@@ -1263,6 +1268,7 @@ impl Mods {
             item_spawn_budget: (None, 0),
             break_budget: (None, 0),
             mod_command_budget: (None, 0),
+            behaviour: Default::default(),
             uses: (false, false),
             use_budget: (None, 0),
             channel_budget: (None, 0),
@@ -2624,6 +2630,14 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn schedule_tick(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        delay_ticks: u32,
+    ) -> Result<(), String> {
+        self.schedule_behaviour_tick(dimension, pos, delay_ticks)
+    }
     fn player_stacks(&mut self, player: String) -> Option<Vec<Option<StackInfo>>> {
         self.storage_player_stacks(player)
     }
@@ -4376,6 +4390,7 @@ mod entity_tests {
             item_spawn_budget: (None, 0),
             break_budget: (None, 0),
             mod_command_budget: (None, 0),
+            behaviour: Default::default(),
             uses: (false, false),
             use_budget: (None, 0),
             channel_budget: (None, 0),

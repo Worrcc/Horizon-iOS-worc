@@ -1,7 +1,7 @@
 //! API 28: opt-in block use and mod-scoped, bounded messages.
 use super::*;
 mod bindings {
-    wasmtime::component::bindgen!({ path: "../horizon-mod-sdk/wit", world: "channel-host" });
+    wasmtime::component::bindgen!({ path: "../horizon-mod-sdk/wit", world: "channel-host", with: { "horizon:mods/server-hooks": super::server_bindings::horizon::mods::server_hooks } });
 }
 use bindings::horizon::mods::{channel, server_hooks};
 pub const CHANNEL_DATA: usize = 65536;
@@ -39,6 +39,25 @@ pub(super) fn allowance(budget: &mut (Option<u64>, usize), tick: u64, limit: usi
     true
 }
 impl server_hooks::Host for State {
+    fn set_behaviour_hooks(&mut self, config: BehaviourConfig) {
+        if self.server {
+            self.behaviour.config = config;
+        }
+    }
+    fn watch_blocks(&mut self, ids: Vec<String>) -> Result<(), String> {
+        validate_watches(&ids)?;
+        if self.server {
+            self.behaviour.blocks = ids;
+        }
+        Ok(())
+    }
+    fn watch_items(&mut self, ids: Vec<String>) -> Result<(), String> {
+        validate_watches(&ids)?;
+        if self.server {
+            self.behaviour.items = ids;
+        }
+        Ok(())
+    }
     fn set_block_uses(&mut self, enabled: bool, including_sneaking_item: bool) {
         if self.server {
             self.uses = (enabled, including_sneaking_item);

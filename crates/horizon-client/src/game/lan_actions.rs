@@ -1167,6 +1167,10 @@ impl Game<'_> {
         if let Some(mob) = guest_mount {
             self.lan_open_mount(host, conn, mob);
         }
+        #[cfg(feature = "mods")]
+        if self.mods.restore_uses.remove(&conn) {
+            host.hub.send_inventory(i);
+        }
         // The turn's teleports are in the hub now: the mods hear them.
         self.flush_teleport_notes(host);
         // An inner turn may move, kill or change a player's mode. Once its
@@ -2292,7 +2296,8 @@ impl Game<'_> {
                     .border
                     .contains(f64::from(p.pos[0]), f64::from(p.pos[2]))
                 {
-                    let mod_consumed = self.guest_mod_block_used(host, conn, p.pos, hand);
+                    let (mod_consumed, mod_canceled) =
+                        self.guest_mod_block_used(host, conn, &hit, hand);
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                     let used = self.as_guest(host, conn, |g| {
@@ -2303,8 +2308,11 @@ impl Game<'_> {
                         // InteractionResult.consumesAction: a FAIL (`use_failed`,
                         // as BlockItem.place's failed placement) does not count,
                         // even though the click ended on it.
-                        let consumed =
-                            mod_consumed || (matches!(g.use_item(), Ok(Some(_))) && !g.use_failed);
+                        let consumed = if mod_consumed {
+                            !mod_canceled
+                        } else {
+                            matches!(g.use_item(), Ok(Some(_))) && !g.use_failed
+                        };
                         // handleUseItemOn: a consuming useItemOn triggers
                         // ANY_BLOCK_USE with the hand's stack as it now is.
                         if consumed {

@@ -1338,6 +1338,9 @@ interface players {
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    /// API 29: loaded watched block only, delay 1..72000, 256 pending/mod.
+    /// Ephemeral: discarded on state change, chunk unload, mod stop or restart.
+    schedule-tick: func(dimension: string, pos: block-change-pos, delay-ticks: u32) -> result<_, string>;
     /// API level 28: one slot, including the identity of all saved components.
     record stack-info {
         item: string,
@@ -1837,6 +1840,36 @@ interface server-events {
     block-used: func(player: player, pos: block-pos, state: string, sneaking: bool) -> bool;
     /// API level 28: channel capability, only this mod id's messages (32/tick).
     channel-message: func(player: player, name: string, data: list<u8>);
+    /// API 29: before a player changes a watched block. Cancel keeps block and item.
+    enum decision { allow, cancel }
+    enum hand { main, off }
+    variant chat-decision { allow, cancel, replace(string) }
+    /// API 29: general hooks use flags without watched ids.
+    item-picked-up: func(player: player, item: string) -> decision;
+    /// Replacements contain at most 256 chat characters; invalid replacements allow.
+    chat-sent-filter: func(player: player, text: string) -> chat-decision;
+    /// Before watched ItemStack.useOn, after the block lets the use pass. Cancel leaves the hand unchanged.
+    item-used-on-block: func(player: player, item: string, pos: block-pos, state: string, face: s32) -> decision;
+    /// Before watched Item.use (air or fallback). Cancel suppresses use and consumption.
+    item-used: func(player: player, item: string) -> decision;
+    /// Before an attack with a watched held item; kind and network id identify the target.
+    item-hit-entity: func(player: player, item: string, entity-kind: string, entity-id: s32) -> decision;
+    /// A watched player item completed its timed use; observation only.
+    item-use-finished: func(player: player, item: string);
+
+    /// API 29: observations of the engine's neighbour/random hooks.
+    /// `from` is the changed block's resource id (the native hook's BlockId).
+    block-neighbour-changed: func(dimension: string, pos: block-pos, state: string, %from: string);
+    /// Observe an engine random tick, including content blocks with random_ticks.
+    block-random-tick: func(dimension: string, pos: block-pos, state: string);
+    /// A mod-requested tick became due for an unchanged loaded watched block.
+    block-scheduled-tick: func(dimension: string, pos: block-pos, state: string);
+    /// API 29: relative hit coordinates; face is vanilla's 0..5, hand main/off.
+    block-interacted: func(player: player, pos: block-pos, state: string, face: s32, hit-x: f64, hit-y: f64, hit-z: f64, hand: hand, item: string, sneaking: bool) -> decision;
+    /// Before player destruction of a watched block. Cancel keeps it and its drops.
+    block-breaking: func(player: player, pos: block-pos, state: string) -> decision;
+    /// Before engine placement of a watched candidate state from item. Cancel preserves block and hand.
+    block-placing: func(player: player, pos: block-pos, state: string, item: string) -> decision;
     /// A player placed `state` at `pos` in their dimension.
     block-placed: func(player: player, pos: block-pos, state: string);
 }
@@ -1847,6 +1880,28 @@ interface server-hooks {
     /// Disabled initially. Sneaking with a nonempty main hand bypasses the hook
     /// unless including-sneaking-item is true. May be set during init.
     set-block-uses: func(enabled: bool, including-sneaking-item: bool);
+    /// API 29: all flags default false. Each family has 32 calls/mod/server tick.
+    record behaviour-config {
+        block-breaking: bool,
+        block-placing: bool,
+        block-interacted: bool,
+        block-neighbour-changed: bool,
+        block-random-tick: bool,
+        block-scheduled-tick: bool,
+        item-used-on-block: bool,
+        item-used: bool,
+        item-hit-entity: bool,
+        item-use-finished: bool,
+        item-picked-up: bool,
+        chat-sent-filter: bool,
+    }
+    /// API 29: replace the opt-in flags; disabled flags cost no guest calls.
+    set-behaviour-hooks: func(config: behaviour-config);
+    /// Exact resource ids or namespace:*, at most 64. No global wildcard.
+    /// Replaces the list atomically; invalid input leaves the previous list intact.
+    watch-blocks: func(ids: list<string>) -> result<_, string>;
+    /// Replace item id filters atomically, with the same bounds as watch-blocks.
+    watch-items: func(ids: list<string>) -> result<_, string>;
 }
 
 /// API level 28: experimental capability `channel`, on either side.

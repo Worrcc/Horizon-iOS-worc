@@ -1637,15 +1637,28 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     /// `BlockItem.place` (and its subclasses' overrides).
     pub(crate) fn place(&mut self, input: &PlaceContext) -> PlaceOutcome {
-        let b = self.b;
-        let Some((ctx, binding, state)) = self.placement(input) else {
+        let Some(prepared) = self.prepare_place(input) else {
             return PlaceOutcome::Failed;
         };
-        if !self.is_in_valid_bounds(ctx.pos) {
-            return PlaceOutcome::Failed;
-        }
-
-        if binding.kind == ItemKind::DoubleHigh {
+        self.commit_place(prepared)
+    }
+    fn prepare_place(&mut self, input: &PlaceContext) -> Option<PreparedPlacement> {
+        let (ctx, binding, state) = self.placement(input)?;
+        self.is_in_valid_bounds(ctx.pos)
+            .then_some(PreparedPlacement {
+                ctx,
+                state,
+                double_high: binding.kind == ItemKind::DoubleHigh,
+            })
+    }
+    fn commit_place(&mut self, prepared: PreparedPlacement) -> PlaceOutcome {
+        let PreparedPlacement {
+            ctx,
+            state,
+            double_high,
+        } = prepared;
+        let b = self.b;
+        if double_high {
             let above_pos = above(ctx.pos);
             let replacement = if self.is_water_at(above_pos) {
                 b.default_of(b.named.water)
@@ -1736,7 +1749,36 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
 }
 
+/// An engine-validated placement, consumed immediately on the same server turn.
+/// Preparing runs the native state-for-placement hook once; committing runs all
+/// normal block writes, second-half placement, sounds and game events.
+pub struct PreparedPlacement {
+    ctx: PlacementContext,
+    state: BlockStateId,
+    double_high: bool,
+}
+impl PreparedPlacement {
+    pub fn target(&self) -> (BlockPos, BlockStateId) {
+        (self.ctx.pos, self.state)
+    }
+}
 impl Behaviours {
+    pub fn prepare_placement<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        ctx: &PlaceContext,
+    ) -> Option<PreparedPlacement> {
+        self.sim(level, ticks).prepare_place(ctx)
+    }
+    pub fn commit_placement<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        prepared: PreparedPlacement,
+    ) -> PlaceOutcome {
+        self.sim(level, ticks).commit_place(prepared)
+    }
     /// `BlockItem.place` for the item in `ctx`: resolves the replaced
     /// position, computes `getStateForPlacement`, checks survival and entity
     /// obstruction, writes the block (flags 11), runs `setPlacedBy` (second

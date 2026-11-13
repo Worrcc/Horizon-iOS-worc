@@ -58,6 +58,8 @@ fn mods_dir() -> &'static Path {
             ])
             .args([
                 "-p",
+                "behaviour-demo",
+                "-p",
                 "coords-hud",
                 "-p",
                 "predator-missile",
@@ -94,6 +96,11 @@ fn mods_dir() -> &'static Path {
             std::fs::read_to_string(root.join(path)).unwrap()
         };
         let mods = [
+            (
+                "behaviour_demo",
+                std::fs::read_to_string(root.join("mods/official/behaviour-demo/horizon-mod.toml"))
+                    .unwrap(),
+            ),
             ("coords_hud", example("coords-hud")),
             ("predator_missile", example("predator-missile")),
             ("welcome", example("welcome")),
@@ -182,11 +189,54 @@ experimental = ["players", "world", "channel"]
                 }
             }
             if name == "horizon_mods_test_api20_server_guest" {
+                let (stripped28, mut metadata28) = wit_component::metadata::decode(&core).unwrap();
+                for (_, interface) in metadata28.resolve.interfaces.iter_mut() {
+                    if interface.name.as_deref() == Some("server-events") {
+                        interface.functions.retain(|name, _| {
+                            matches!(
+                                name.as_str(),
+                                "init"
+                                    | "tick"
+                                    | "player-joined"
+                                    | "player-left"
+                                    | "chat"
+                                    | "command"
+                                    | "block-broken"
+                                    | "block-placed"
+                                    | "block-used"
+                                    | "channel-message"
+                            )
+                        });
+                    }
+                }
+                let mut legacy28 = stripped28.unwrap();
+                wit_component::embed_component_metadata(
+                    &mut legacy28,
+                    &metadata28.resolve,
+                    metadata28.world,
+                    wit_component::StringEncoding::UTF8,
+                )
+                .unwrap();
+                std::fs::write(
+                    dir.join("legacy_server28.hmod"),
+                    Package::write(&manifest, &componentize(&legacy28).unwrap()).unwrap(),
+                )
+                .unwrap();
                 let (stripped, mut metadata) = wit_component::metadata::decode(&core).unwrap();
                 for (_, interface) in metadata.resolve.interfaces.iter_mut() {
                     if interface.name.as_deref() == Some("server-events") {
                         interface.functions.retain(|name, _| {
-                            !matches!(name.as_str(), "block-used" | "channel-message")
+                            matches!(
+                                name.as_str(),
+                                "init"
+                                    | "tick"
+                                    | "player-joined"
+                                    | "player-left"
+                                    | "chat"
+                                    | "command"
+                                    | "block-broken"
+                                    | "block-placed"
+                            )
                         });
                     }
                 }
@@ -3666,7 +3716,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     }
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        28
+        29
     );
 }
 
@@ -3751,3 +3801,6 @@ fn api27_look_device_defaults_to_mouse_and_reads_the_current_snapshot() {
         assert_eq!(read(&mut mods), [expected]);
     }
 }
+
+#[path = "behaviour/mod.rs"]
+mod behaviour;

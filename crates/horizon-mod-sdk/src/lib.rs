@@ -317,8 +317,8 @@ pub mod server {
     });
 
     pub use exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
-        ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, Decision, Guest as __Guest,
+        Hand as BehaviourHand, Registration, ServerCommand,
     };
     pub use horizon::mods::entities::{
         self, Area, AttributeChange, Death, EffectChange, Entity, HurtEvent, Mount, Order,
@@ -333,6 +333,27 @@ pub mod server {
         StackInfo, WorldTime,
     };
     pub use horizon::mods::{channel, server_hooks};
+    pub use server_hooks::BehaviourConfig;
+    // The generated WIT type cannot carry a per-type derive here.
+    #[allow(clippy::derivable_impls)]
+    impl Default for BehaviourConfig {
+        fn default() -> Self {
+            Self {
+                block_breaking: false,
+                block_placing: false,
+                block_interacted: false,
+                block_neighbour_changed: false,
+                block_random_tick: false,
+                block_scheduled_tick: false,
+                item_used_on_block: false,
+                item_used: false,
+                item_hit_entity: false,
+                item_use_finished: false,
+                item_picked_up: false,
+                chat_sent_filter: false,
+            }
+        }
+    }
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks
     /// for are called; the others may stay as their defaults.
@@ -361,6 +382,45 @@ pub mod server {
         /// When [`Registration::blocks`] is set: `state` is what was there.
         fn block_broken(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
         fn block_placed(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
+        fn block_neighbour_changed(
+            &mut self,
+            _dimension: &str,
+            _pos: BlockPos,
+            _state: &str,
+            _from: &str,
+        ) {
+        }
+        fn block_random_tick(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
+        fn block_scheduled_tick(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
+        fn item_used_on_block(
+            &mut self,
+            _player: &Player,
+            _item: &str,
+            _pos: BlockPos,
+            _state: &str,
+            _face: i32,
+        ) -> Decision {
+            Decision::Allow
+        }
+        fn item_used(&mut self, _player: &Player, _item: &str) -> Decision {
+            Decision::Allow
+        }
+        fn item_hit_entity(
+            &mut self,
+            _player: &Player,
+            _item: &str,
+            _entity_kind: &str,
+            _entity_id: i32,
+        ) -> Decision {
+            Decision::Allow
+        }
+        fn item_use_finished(&mut self, _player: &Player, _item: &str) {}
+        fn item_picked_up(&mut self, _player: &Player, _item: &str) -> Decision {
+            Decision::Allow
+        }
+        fn chat_sent_filter(&mut self, _player: &Player, _text: &str) -> ChatDecision {
+            ChatDecision::Allow
+        }
         /// API 28: opt in with server_hooks::set_block_uses during init.
         fn block_used(
             &mut self,
@@ -370,6 +430,34 @@ pub mod server {
             _sneaking: bool,
         ) -> bool {
             false
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn block_interacted(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+            _face: i32,
+            _hit_x: f64,
+            _hit_y: f64,
+            _hit_z: f64,
+            _hand: BehaviourHand,
+            _item: &str,
+            _sneaking: bool,
+        ) -> Decision {
+            Decision::Allow
+        }
+        fn block_breaking(&mut self, _player: &Player, _pos: BlockPos, _state: &str) -> Decision {
+            Decision::Allow
+        }
+        fn block_placing(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+            _item: &str,
+        ) -> Decision {
+            Decision::Allow
         }
         fn channel_message(&mut self, _player: &Player, _name: &str, _data: &[u8]) {}
     }
@@ -575,6 +663,59 @@ macro_rules! export_server_mod {
                     with(|m| out = m.command(&player, &name, &args));
                     out
                 }
+                fn block_neighbour_changed(
+                    dimension: String,
+                    pos: BlockPos,
+                    state: String,
+                    from: String,
+                ) {
+                    with(|m| m.block_neighbour_changed(&dimension, pos, &state, &from))
+                }
+                fn block_random_tick(dimension: String, pos: BlockPos, state: String) {
+                    with(|m| m.block_random_tick(&dimension, pos, &state))
+                }
+                fn block_scheduled_tick(dimension: String, pos: BlockPos, state: String) {
+                    with(|m| m.block_scheduled_tick(&dimension, pos, &state))
+                }
+                fn item_used_on_block(
+                    player: Player,
+                    item: String,
+                    pos: BlockPos,
+                    state: String,
+                    face: i32,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_used_on_block(&player, &item, pos, &state, face));
+                    answer
+                }
+                fn item_used(player: Player, item: String) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_used(&player, &item));
+                    answer
+                }
+                fn item_hit_entity(
+                    player: Player,
+                    item: String,
+                    entity_kind: String,
+                    entity_id: i32,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_hit_entity(&player, &item, &entity_kind, entity_id));
+                    answer
+                }
+                fn item_use_finished(player: Player, item: String) {
+                    with(|m| m.item_use_finished(&player, &item));
+                }
+                fn item_picked_up(player: Player, item: String) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_picked_up(&player, &item));
+                    answer
+                }
+                fn chat_sent_filter(player: Player, text: String) -> $crate::server::ChatDecision {
+                    let mut answer = $crate::server::ChatDecision::Allow;
+                    with(|m| answer = m.chat_sent_filter(&player, &text));
+                    answer
+                }
                 fn block_used(
                     player: Player,
                     pos: BlockPos,
@@ -584,6 +725,45 @@ macro_rules! export_server_mod {
                     let mut consumed = false;
                     with(|m| consumed = m.block_used(&player, pos, &state, sneaking));
                     consumed
+                }
+                fn block_interacted(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                    face: i32,
+                    hit_x: f64,
+                    hit_y: f64,
+                    hit_z: f64,
+                    hand: $crate::server::BehaviourHand,
+                    item: String,
+                    sneaking: bool,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| {
+                        answer = m.block_interacted(
+                            &player, pos, &state, face, hit_x, hit_y, hit_z, hand, &item, sneaking,
+                        )
+                    });
+                    answer
+                }
+                fn block_breaking(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.block_breaking(&player, pos, &state));
+                    answer
+                }
+                fn block_placing(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                    item: String,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.block_placing(&player, pos, &state, &item));
+                    answer
                 }
                 fn channel_message(player: Player, name: String, data: Vec<u8>) {
                     with(|m| m.channel_message(&player, &name, &data))

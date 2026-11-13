@@ -1,6 +1,18 @@
 //! Resolve server exports individually so pre-28 components stay loadable.
 use super::*;
 
+type InteractionParams = (
+    ServerPlayer,
+    BlockPos,
+    String,
+    i32,
+    f64,
+    f64,
+    f64,
+    BehaviourHand,
+    String,
+    bool,
+);
 type CommandResult = Result<Option<String>, String>;
 type CommandParams = (ServerPlayer, String, String, Vec<(String, ArgumentValue)>);
 
@@ -13,6 +25,19 @@ pub(super) struct ServerCallbacks {
     command: TypedFunc<CommandParams, (CommandResult,)>,
     broken: TypedFunc<(ServerPlayer, BlockPos, String), ()>,
     placed: TypedFunc<(ServerPlayer, BlockPos, String), ()>,
+    pub item_used_on_block:
+        Option<TypedFunc<(ServerPlayer, String, BlockPos, String, i32), (Decision,)>>,
+    pub item_used: Option<TypedFunc<(ServerPlayer, String), (Decision,)>>,
+    pub item_hit_entity: Option<TypedFunc<(ServerPlayer, String, String, i32), (Decision,)>>,
+    pub item_use_finished: Option<TypedFunc<(ServerPlayer, String), ()>>,
+    pub pickup: Option<TypedFunc<(ServerPlayer, String), (Decision,)>>,
+    pub chat_filter: Option<TypedFunc<(ServerPlayer, String), (ChatDecision,)>>,
+    pub neighbour: Option<TypedFunc<(String, BlockPos, String, String), ()>>,
+    pub random: Option<TypedFunc<(String, BlockPos, String), ()>>,
+    pub scheduled: Option<TypedFunc<(String, BlockPos, String), ()>>,
+    pub interacted: Option<TypedFunc<InteractionParams, (Decision,)>>,
+    pub breaking: Option<TypedFunc<(ServerPlayer, BlockPos, String), (Decision,)>>,
+    pub placing: Option<TypedFunc<(ServerPlayer, BlockPos, String, String), (Decision,)>>,
     pub used: Option<TypedFunc<(ServerPlayer, BlockPos, String, bool), (bool,)>>,
     pub channel: Option<TypedFunc<(ServerPlayer, String, Vec<u8>), ()>>,
 }
@@ -43,6 +68,18 @@ impl ServerCallbacks {
             command: required!("command"),
             broken: required!("block-broken"),
             placed: required!("block-placed"),
+            item_used_on_block: get!("item-used-on-block"),
+            item_used: get!("item-used"),
+            item_hit_entity: get!("item-hit-entity"),
+            item_use_finished: get!("item-use-finished"),
+            pickup: get!("item-picked-up"),
+            chat_filter: get!("chat-sent-filter"),
+            neighbour: get!("block-neighbour-changed"),
+            random: get!("block-random-tick"),
+            scheduled: get!("block-scheduled-tick"),
+            interacted: get!("block-interacted"),
+            breaking: get!("block-breaking"),
+            placing: get!("block-placing"),
             used: get!("block-used"),
             channel: get!("channel-message"),
         })

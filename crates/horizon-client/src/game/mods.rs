@@ -40,6 +40,8 @@ pub(super) struct ModsState {
     #[cfg(feature = "mods")]
     pub(super) consumed_uses: std::collections::HashMap<u32, u64>,
     #[cfg(feature = "mods")]
+    pub(super) restore_uses: std::collections::HashSet<u32>,
+    #[cfg(feature = "mods")]
     pub(super) channel: super::mod_channel::Channels,
     pub(super) import: super::modpack_import::Job,
     #[cfg(feature = "mods")]

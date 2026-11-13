@@ -1654,3 +1654,41 @@ an empty list clears items. See [Storage API](storage-api.md#canvas-item-icons)
 for the full lifecycle, compatibility rationale and the SDK `canvas-test` example.
 The existing WIT shape variants are unchanged. All these additions remain API
 level **28**, which has not yet been released.
+
+## API level 29: server behaviour hooks
+
+Server mods with `world` opt in using `server-hooks.set-behaviour-hooks(config)`
+and `watch-blocks` / `watch-items`. Flags default false; filters start empty.
+Each filter list holds at most 64 exact namespaced ids or `namespace:*`, including
+vanilla ids. Global `*` is rejected. Invalid lists leave the previous list intact.
+
+The SDK adds `ServerMod` methods with allow/no-op defaults:
+
+| Family | Delivery and result |
+|---|---|
+| `block-breaking` / `block-placing` | Before destruction or engine placement; `Decision::Cancel` keeps the block and item. Existing post-hooks stay unchanged. |
+| `block-interacted` | Before block use; includes face, relative hit coordinates, hand, held item and sneaking. Cancel skips level-28 `block-used`, vanilla use and follow-up use packets that tick. |
+| `block-neighbour-changed` | Native neighbour observations, delivered after the engine turn; `from` is the changed block id. |
+| `block-random-tick` | Engine-selected random ticks, including content blocks with `random_ticks`; observations after the engine turn. |
+| `block-scheduled-tick` | A timer requested by that mod with `world.schedule-tick`, while the exact state remains loaded and unchanged. |
+| `item-used-on-block` / `item-used` / `item-hit-entity` | Native item/attack hook points, cancellable, filtered by item id. |
+| `item-use-finished` | A watched item's timed use completed; observation only. |
+| `item-picked-up` | Cancellable native ground pickup; opt-in flag without ids. |
+| `chat-sent-filter` | Allow, cancel or replace (max 256 chat characters); opt-in flag without ids. Replacements preserve the signed body and use unsigned display content. |
+
+Each family has **32 calls per mod per server tick**, across all players and
+dimensions, with the normal hook fuel limit. Over-budget, trapped and timed-out
+guests allow actions; failures log once and faulty guests stop. With no matching
+opt-in/export there are no guest calls. Block and inventory prediction is
+corrected through the server's existing acknowledgement/update paths.
+
+`world.schedule-tick(dimension, pos, delay-ticks)` returns an error for invalid or
+unwatched/unloaded blocks, delays outside **1..=72000**, or more than **256 pending
+entries per mod**. Timers silently disappear on block changes or chunk unloads.
+They are **not persisted across restarts** and are cleared on world close/reload.
+Vanilla's own scheduled ticks remain separate.
+
+Cancellable damage and drops are deferred because their native hooks lack a safe
+runtime context or run after inventory removal. See [Phase A-1 design and precise
+semantics](api-expansion-a.md), including callback ordering, budget fall-through,
+and the server-only [behaviour demo](../mods/official/behaviour-demo).

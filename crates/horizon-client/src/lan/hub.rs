@@ -128,6 +128,8 @@ pub struct TickCtx<'a> {
 
 /// What the gameplay code has to do for a guest.
 pub enum HostEvent {
+    /// Validated, moderated chat awaiting an opted-in WASM decision on the game thread.
+    BehaviourChat { name: String, message: Box<chat::ChatMessage> },
     /// A guest entered the world; load their saved state.
     Joined(u32),
     /// A guest left (state to save, entities to drop).
@@ -286,6 +288,7 @@ pub struct Hub {
     /// Whether any native mod is loaded: `Input` and `Sneak` events only exist for them, so
     /// the hub queues none otherwise. The game sets it before each poll.
     pub mods_loaded: bool,
+    pub behaviour_chat: bool,
     /// Players a native mod hid (`native_hide_player`), by UUID, on or off:
     /// only players of at least that permission level see them, in the
     /// player list, the world and their joining and leaving.
@@ -679,6 +682,7 @@ impl Hub {
             sync_attachments: false,
             native_advancement_grants: Vec::new(),
             mods_loaded: false,
+            behaviour_chat: false,
             hidden: Default::default(),
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),

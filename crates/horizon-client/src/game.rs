@@ -983,6 +983,10 @@ struct InteractTarget {
 
 /// The client world as seen by the vanilla block-behaviour library.
 struct GameLevel<'w> {
+    #[cfg(feature = "mods")]
+    behaviour_mods: &'w horizon_mods::Mods,
+    #[cfg(feature = "mods")]
+    behaviour_tick: u64,
     world: &'w mut World,
     redstone_experiments: bool,
     facts: &'w BlockFacts,
@@ -4763,6 +4767,10 @@ impl Game<'_> {
         }
         let native_authoritative = self.native_authoritative();
         let mut level = GameLevel {
+            #[cfg(feature = "mods")]
+            behaviour_mods: &self.mods.mods,
+            #[cfg(feature = "mods")]
+            behaviour_tick: self.ticks,
             redstone_experiments: self
                 .level
                 .enabled_features
@@ -6929,7 +6937,9 @@ impl Game<'_> {
             self.native_use_item(&stack, &mut claimed);
         }
         if claimed {
-            self.swing_arm();
+            if !self.use_failed {
+                self.swing_arm();
+            }
             return Ok(true);
         }
         // ItemStack.useOn: after the block's own useItemOn/useWithoutItem
@@ -7132,7 +7142,38 @@ impl Game<'_> {
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
-        let outcome = self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx));
+        let prepared = self.with_level(|b, level, ticks| b.prepare_placement(level, ticks, &ctx));
+        #[cfg(feature = "mods")]
+        if let Some(prepared) = &prepared {
+            let (pos, state) = prepared.target();
+            let state = server_mods::run::state_string(self.pack.assets.registry, state);
+            if self.mod_behaviour(
+                horizon_mods::BehaviourFamily::Placing,
+                &state,
+                |mods, player| {
+                    mods.block_placing(
+                        player,
+                        horizon_mods::BlockPos {
+                            x: pos.x,
+                            y: pos.y,
+                            z: pos.z,
+                        },
+                        &state,
+                        &stack.item,
+                    )
+                },
+            ) {
+                self.use_failed = true;
+                self.mod_consume_followups();
+                return Ok(true);
+            }
+        }
+        let outcome = match prepared {
+            Some(prepared) => {
+                self.with_level(|b, level, ticks| b.commit_placement(level, ticks, prepared))
+            }
+            None => PlaceOutcome::Failed,
+        };
         let PlaceOutcome::Placed { pos, state } = outcome else {
             self.process_level_events()?;
             // BlockItem.useOn: a consumable that could not be placed is used,

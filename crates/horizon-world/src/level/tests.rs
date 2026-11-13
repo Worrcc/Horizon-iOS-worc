@@ -3518,7 +3518,23 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         can_use_game_master_blocks: false,
     };
     assert!(b.directional_can_place(&mut level, &mut ticks, &dispenser));
-    let outcome = b.place_block(&mut level, &mut ticks, &dispenser);
+    // A refused prepared placement makes no writes and emits no place sound.
+    let before = level.block_state(front);
+    let events = level.inner.events.len();
+    let prepared = b
+        .prepare_placement(&mut level, &mut ticks, &dispenser)
+        .unwrap();
+    assert_eq!(prepared.target(), (front, facing("east")));
+    assert_eq!(level.block_state(front), before);
+    assert_eq!(level.inner.events.len(), events);
+    // Discarding the candidate is cancellation. Preparing again and committing
+    // must not ask native getStateForPlacement a second time during commit.
+    level.asked.borrow_mut().clear();
+    let prepared = b
+        .prepare_placement(&mut level, &mut ticks, &dispenser)
+        .unwrap();
+    let outcome = b.commit_placement(&mut level, &mut ticks, prepared);
+    assert_eq!(level.asked.borrow().len(), 1);
     assert_eq!(
         outcome,
         PlaceOutcome::Placed {

@@ -35,14 +35,22 @@ pub(super) enum ModEvent {
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
     pub(super) fn tick_server_mods(&mut self) {}
+    pub(super) fn guest_mod_chat_filter(
+        &mut self,
+        _host: &mut LanHost,
+        _sender: u128,
+        text: &str,
+    ) -> Option<String> {
+        Some(text.into())
+    }
     pub(super) fn guest_mod_block_used(
         &mut self,
         _host: &mut LanHost,
         _conn: u32,
-        _pos: [i32; 3],
+        _hit: &super::Hit,
         _hand: horizon_client::first_person::Hand,
-    ) -> bool {
-        false
+    ) -> (bool, bool) {
+        (false, false)
     }
     pub(super) fn mod_use_consumed(&mut self, _conn: u32) -> bool {
         false
@@ -95,6 +103,23 @@ pub(super) mod run {
     use horizon_world::registry::{BlockRegistry, BlockStateId};
     use serde_json::{Value, json};
 
+    pub(in crate::game) fn face_id(face: [i32; 3]) -> i32 {
+        match face {
+            [0, -1, 0] => 0,
+            [0, 1, 0] => 1,
+            [0, 0, -1] => 2,
+            [0, 0, 1] => 3,
+            [-1, 0, 0] => 4,
+            _ => 5,
+        }
+    }
+    pub(in crate::game) fn dimension_id(d: horizon_world::level::Dimension) -> &'static str {
+        match d {
+            horizon_world::level::Dimension::Overworld => "minecraft:overworld",
+            horizon_world::level::Dimension::Nether => "minecraft:the_nether",
+            horizon_world::level::Dimension::End => "minecraft:the_end",
+        }
+    }
     /// Blocks queued for levels that don't tick (another dimension, in-frame)
     /// are kept up to this many; the oldest go first.
     const MAX_QUEUED_WRITES: usize = 1 << 16;
@@ -222,6 +247,9 @@ pub(super) mod run {
         fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             let chunk = chunks.get(&(x >> 4, z >> 4))?;
+            if y < chunk.min_y() || y >= chunk.max_y() {
+                return None;
+            }
             Some(state_string(self.registry, chunk.block(x & 15, y, z & 15)))
         }
         fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
@@ -429,62 +457,106 @@ pub(super) mod run {
             &mut self,
             host: &mut LanHost,
             conn: u32,
-            at: [i32; 3],
+            hit: &super::super::Hit,
             hand: horizon_client::first_person::Hand,
-        ) -> bool {
+        ) -> (bool, bool) {
             if self.mod_use_consumed(conn) {
-                return true;
+                return (true, true);
             }
-            if !self.hears_players() || hand != horizon_client::first_person::Hand::Main {
-                return false;
+            if !self.hears_players() {
+                return (false, false);
             }
             let Some(g) = host.hub.guest(conn) else {
-                return false;
+                return (false, false);
             };
             if g.spectator() {
-                return false;
+                return (false, false);
             }
+            let at = hit.pos;
+            let main = hand == horizon_client::first_person::Hand::Main;
+            let item = if main {
+                g.inventory.get(g.selected).and_then(Option::as_ref)
+            } else {
+                g.offhand.as_ref()
+            }
+            .map(|s| s.item.to_string())
+            .unwrap_or_else(|| "minecraft:air".into());
             let sneaking = g.sneaking;
             let holding = g
                 .inventory
                 .get(g.selected)
                 .and_then(Option::as_ref)
                 .is_some_and(|s| s.count > 0);
-            if !self
-                .mods
-                .mods
-                .wants_block_uses(self.ticks, sneaking, holding)
-            {
-                return false;
-            }
             let id = uuid_string(g.uuid);
             let Some(chunk) = self.world.chunks.get(&(at[0] >> 4, at[2] >> 4)) else {
-                return false;
+                return (false, false);
             };
             let state = state_string(
                 self.pack.assets.registry,
                 chunk.block(at[0] & 15, at[1], at[2] & 15),
             );
+            if !(main
+                && self
+                    .mods
+                    .mods
+                    .wants_block_uses(self.ticks, sneaking, holding))
+                && !self
+                    .mods
+                    .mods
+                    .wants_behaviour(horizon_mods::BehaviourFamily::Interacted, &state)
+            {
+                return (false, false);
+            }
             let players = self.server_players(Some(host));
             let Some(player) = players.iter().find(|p| p.id == id).cloned() else {
-                return false;
+                return (false, false);
             };
             let mut snapshot = self.server_snapshot(players, Some(host));
             snapshot.channel_peers = self.wasm_channel_peers(Some(host));
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(Some(host));
             self.lend_mod_inventories(Some(host));
-            let used = self.mods.mods.block_used(
+            let pos = BlockPos {
+                x: at[0],
+                y: at[1],
+                z: at[2],
+            };
+            let face = match hit.face {
+                [0, -1, 0] => 0,
+                [0, 1, 0] => 1,
+                [0, 0, -1] => 2,
+                [0, 0, 1] => 3,
+                [-1, 0, 0] => 4,
+                _ => 5,
+            };
+            let relative = std::array::from_fn(|i| hit.point[i] - f64::from(at[i]));
+            let rich = self.mods.mods.block_interacted(
                 &player,
-                BlockPos {
-                    x: at[0],
-                    y: at[1],
-                    z: at[2],
-                },
+                pos,
                 &state,
+                face,
+                relative,
+                if main {
+                    horizon_mods::BehaviourHand::Main
+                } else {
+                    horizon_mods::BehaviourHand::Off
+                },
+                &item,
                 sneaking,
-                holding,
             );
+            let used = rich
+                || (main
+                    && self.mods.mods.block_used(
+                        &player,
+                        BlockPos {
+                            x: at[0],
+                            y: at[1],
+                            z: at[2],
+                        },
+                        &state,
+                        sneaking,
+                        holding,
+                    ));
             self.return_world();
             self.return_mod_inventories(Some(host));
             self.route_mod_output(Some(host));
@@ -493,8 +565,79 @@ pub(super) mod run {
             self.apply_mod_world_operations(Some(host));
             if used {
                 self.mods.consumed_uses.insert(conn, self.ticks);
+                if rich {
+                    self.mods.restore_uses.insert(conn);
+                }
             }
-            used
+            (used, rich)
+        }
+
+        pub(in crate::game) fn guest_mod_chat_filter(
+            &mut self,
+            host: &mut LanHost,
+            sender: u128,
+            text: &str,
+        ) -> Option<String> {
+            let players = self.server_players(Some(host));
+            let Some(player) = players
+                .iter()
+                .find(|p| p.id == uuid_string(sender))
+                .cloned()
+            else {
+                return Some(text.into());
+            };
+            let snapshot = self.server_snapshot(players, Some(host));
+            self.mods.mods.set_snapshot(snapshot);
+            self.lend_world(Some(host));
+            let text = self.mods.mods.chat_sent_filter(&player, text);
+            self.return_world();
+            self.route_mod_output(Some(host));
+            text
+        }
+        /// The acting player's state is swapped in by the existing native hook path.
+        /// Outputs are queued until the ordinary server-mod flush, so a decision
+        /// cannot change the candidate block or shrink the hand under the engine.
+        pub(in crate::game) fn mod_behaviour(
+            &mut self,
+            family: horizon_mods::BehaviourFamily,
+            id: &str,
+            f: impl FnOnce(&mut horizon_mods::Mods, &ServerPlayer) -> bool,
+        ) -> bool {
+            if !self.hears_players() || !self.mods.mods.wants_behaviour(family, id) {
+                return false;
+            }
+            let Some(p) = self.player.as_ref() else {
+                return false;
+            };
+            let player = ServerPlayer {
+                id: self
+                    .lan_acting_uuid
+                    .map(uuid_string)
+                    .unwrap_or_else(|| self.player_uuid_string()),
+                name: self.acting_player_name().to_owned(),
+                dimension: self.dim.id().to_owned(),
+                x: p.position.x,
+                y: p.position.y,
+                z: p.position.z,
+                game_mode: mode(self.mode_id()),
+                health: p.health.health(),
+            };
+            let mut players = self.server_players(None);
+            players.retain(|p| p.id != player.id);
+            players.push(player.clone());
+            let snapshot = self.server_snapshot(players, None);
+            self.mods.mods.set_snapshot(snapshot);
+            self.lend_world(None);
+            let canceled = f(&mut self.mods.mods, &player);
+            self.return_world();
+            self.show_mod_output();
+            canceled
+        }
+        pub(in crate::game) fn mod_consume_followups(&mut self) {
+            if let Some(conn) = self.lan_acting {
+                self.mods.consumed_uses.insert(conn, self.ticks);
+                self.mods.restore_uses.insert(conn);
+            }
         }
 
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
@@ -592,6 +735,7 @@ pub(super) mod run {
                 }
             }
             self.run_wasm_channels(&players);
+            self.mods.mods.flush_behaviour_ticks();
             self.mods.mods.server_tick(self.ticks);
             self.return_world();
             self.return_mod_inventories(None);
@@ -1946,6 +2090,36 @@ pub(super) mod run {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+#[cfg(feature = "mods")]
+impl super::GameLevel<'_> {
+    pub(in crate::game) fn observe_wasm_tick(
+        &self,
+        family: horizon_mods::BehaviourFamily,
+        dimension: horizon_world::level::Dimension,
+        pos: horizon_core::position::BlockPos,
+        state: horizon_world::registry::BlockStateId,
+        from: &str,
+    ) {
+        let Some(s) = self.registry.state(state) else {
+            return;
+        };
+        if self.behaviour_mods.wants_behaviour(family, &s.name) {
+            self.behaviour_mods.observe_behaviour_block(
+                family,
+                self.behaviour_tick,
+                run::dimension_id(dimension),
+                horizon_mods::BlockPos {
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z,
+                },
+                &run::state_string(self.registry, state),
+                from,
+            );
         }
     }
 }

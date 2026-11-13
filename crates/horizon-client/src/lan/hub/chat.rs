@@ -252,16 +252,27 @@ impl Hub {
                 return;
             }
         }
+        if self.behaviour_chat {
+            events.push(HostEvent::BehaviourChat { name, message: Box::new(message) });
+        } else {
+            self.finish_player_chat(&name, message, events);
+        }
+    }
+    /// Resume a validated message. Replacements use unsigned display content;
+    /// the signed body, signature and acknowledgement chain stay intact.
+    pub fn finish_player_chat(&mut self, name: &str, message: ChatMessage, events: &mut Vec<HostEvent>) {
+        let uuid = message.sender;
+        let displayed = message.unsigned_content.as_ref().map(|t| self.english(t)).unwrap_or_else(|| message.content.clone());
         let bound = play::ChatTypeBound {
             chat_type: self.chat_type,
             name: self.player_display_name(uuid, &name),
             target: None,
         };
-        let line = format!("<{name}> {}", message.content);
+        let line = format!("<{name}> {displayed}");
         self.broadcast_chat(&message, &bound, line, events);
         events.push(HostEvent::PlayerChat {
             sender: uuid,
-            text: message.content,
+            text: displayed,
         });
     }
 

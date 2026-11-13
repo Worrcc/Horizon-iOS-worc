@@ -1390,6 +1390,7 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `schedule-tick` | `func(dimension: string, pos: block-change-pos, delay-ticks: u32) -> result<_, string>` | API 29: loaded watched block only, delay 1..72000, 256 pending/mod. Ephemeral: discarded on state change, chunk unload, mod stop or restart. |
 | `container-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>` | API level 28: one loaded block's slots (one half of a double chest). |
 | `player-stacks` | `func(player: string) -> option<list<option<stack-info>>>` | API level 28: read an online player's 36 main inventory slots, hotbar first (0..35, as player-to-container's inv-slot); no armor/offhand. UUID or exact online name; none for unknown/offline players. Same stack metadata as container-stacks. Server-thread reservation view at call time: includes earlier moves in this hook batch; read-only. |
 | `container-move` | `func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>` | API level 28: reserve a component-preserving transfer after hooks return. Moves min(count, source count), all or nothing if capacity is insufficient. None selects matching stacks then empty slots. Same-slot moves return zero. Revalidated on apply; a changed endpoint cancels the entire transfer. Bulk storage containers only; special machine slots are read-only. The result is the reserved count; reread next tick to observe completion. |
@@ -1697,6 +1698,30 @@ An argument's value, parsed as its kind says.
 | `chat` | `bool` | Call `chat` for each chat message a player sends. |
 | `blocks` | `bool` | Call `block-broken` and `block-placed`. |
 
+### enum `decision`
+
+API 29: before a player changes a watched block. Cancel keeps block and item.
+
+| Case | |
+| --- | --- |
+| `allow` |  |
+| `cancel` |  |
+
+### enum `hand`
+
+| Case | |
+| --- | --- |
+| `main` |  |
+| `off` |  |
+
+### variant `chat-decision`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `allow` |  |  |
+| `cancel` |  |  |
+| `replace` | `string` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `init` | `func() -> result<registration, string>` | Once, after loading. An error keeps the mod off and is logged. |
@@ -1708,6 +1733,18 @@ An argument's value, parsed as its kind says.
 | `block-broken` | `func(player: player, pos: block-pos, state: string)` | A player broke the block at `pos` in their dimension: `state` is what was there, as `minecraft:oak_log[axis=y]`. |
 | `block-used` | `func(player: player, pos: block-pos, state: string, sneaking: bool) -> bool` | API level 28: main-hand block use before vanilla/placement. True consumes it. Opt in through server-hooks.set-block-uses; at most 32 calls/mod/tick. |
 | `channel-message` | `func(player: player, name: string, data: list<u8>)` | API level 28: channel capability, only this mod id's messages (32/tick). |
+| `item-picked-up` | `func(player: player, item: string) -> decision` | API 29: general hooks use flags without watched ids. |
+| `chat-sent-filter` | `func(player: player, text: string) -> chat-decision` | Replacements contain at most 256 chat characters; invalid replacements allow. |
+| `item-used-on-block` | `func(player: player, item: string, pos: block-pos, state: string, face: s32) -> decision` | Before watched ItemStack.useOn, after the block lets the use pass. Cancel leaves the hand unchanged. |
+| `item-used` | `func(player: player, item: string) -> decision` | Before watched Item.use (air or fallback). Cancel suppresses use and consumption. |
+| `item-hit-entity` | `func(player: player, item: string, entity-kind: string, entity-id: s32) -> decision` | Before an attack with a watched held item; kind and network id identify the target. |
+| `item-use-finished` | `func(player: player, item: string)` | A watched player item completed its timed use; observation only. |
+| `block-neighbour-changed` | `func(dimension: string, pos: block-pos, state: string, from: string)` | API 29: observations of the engine's neighbour/random hooks. `from` is the changed block's resource id (the native hook's BlockId). |
+| `block-random-tick` | `func(dimension: string, pos: block-pos, state: string)` | Observe an engine random tick, including content blocks with random_ticks. |
+| `block-scheduled-tick` | `func(dimension: string, pos: block-pos, state: string)` | A mod-requested tick became due for an unchanged loaded watched block. |
+| `block-interacted` | `func(player: player, pos: block-pos, state: string, face: s32, hit-x: f64, hit-y: f64, hit-z: f64, hand: hand, item: string, sneaking: bool) -> decision` | API 29: relative hit coordinates; face is vanilla's 0..5, hand main/off. |
+| `block-breaking` | `func(player: player, pos: block-pos, state: string) -> decision` | Before player destruction of a watched block. Cancel keeps it and its drops. |
+| `block-placing` | `func(player: player, pos: block-pos, state: string, item: string) -> decision` | Before engine placement of a watched candidate state from item. Cancel preserves block and hand. |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
 
 ## `server-hooks`
@@ -1716,9 +1753,31 @@ Access: capability `world`.
 
 API level 28: additive server hook opt-in, capability `world`. Leaves the original server-events.registration record unchanged.
 
+### record `behaviour-config`
+
+API 29: all flags default false. Each family has 32 calls/mod/server tick.
+
+| Field | Type | |
+| --- | --- | --- |
+| `block-breaking` | `bool` |  |
+| `block-placing` | `bool` |  |
+| `block-interacted` | `bool` |  |
+| `block-neighbour-changed` | `bool` |  |
+| `block-random-tick` | `bool` |  |
+| `block-scheduled-tick` | `bool` |  |
+| `item-used-on-block` | `bool` |  |
+| `item-used` | `bool` |  |
+| `item-hit-entity` | `bool` |  |
+| `item-use-finished` | `bool` |  |
+| `item-picked-up` | `bool` |  |
+| `chat-sent-filter` | `bool` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `set-block-uses` | `func(enabled: bool, including-sneaking-item: bool)` | Disabled initially. Sneaking with a nonempty main hand bypasses the hook unless including-sneaking-item is true. May be set during init. |
+| `set-behaviour-hooks` | `func(config: behaviour-config)` | API 29: replace the opt-in flags; disabled flags cost no guest calls. |
+| `watch-blocks` | `func(ids: list<string>) -> result<_, string>` | Exact resource ids or namespace:*, at most 64. No global wildcard. Replaces the list atomically; invalid input leaves the previous list intact. |
+| `watch-items` | `func(ids: list<string>) -> result<_, string>` | Replace item id filters atomically, with the same bounds as watch-blocks. |
 
 ## `channel`
 

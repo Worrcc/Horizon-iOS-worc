@@ -1948,6 +1948,22 @@ impl Game<'_> {
         self.lan_object_states(hub, out, drain_minecart_steps, after);
     }
 
+    fn lan_hear_player_chat(&mut self, host: &mut LanHost, sender: u128, text: String) {
+        self.mod_player_chat(super::server_mods::Who::Uuid(sender), &text);
+        if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
+            if self.options.dedicated.is_some() {
+                super::dedicated::events::record(
+                    "chat",
+                    &g.name,
+                    sender,
+                    serde_json::json!({ "message": text }),
+                );
+            }
+            let conn = g.conn;
+            self.detect_rate_spam(host, conn, false);
+        }
+    }
+
     /// Apply gameplay events produced while the hub handles guest packets.
     ///
     /// Both the pre-block packet phase and the normal LAN tick receive the
@@ -1987,20 +2003,35 @@ impl Game<'_> {
                     count,
                     action,
                 } => self.chat_filtered(&mut host, sender, &name, place, &text, count, action),
-                HostEvent::PlayerChat { sender, text } => {
-                    self.mod_player_chat(super::server_mods::Who::Uuid(sender), &text);
-                    if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
-                        if self.options.dedicated.is_some() {
-                            super::dedicated::events::record(
-                                "chat",
-                                &g.name,
-                                sender,
-                                serde_json::json!({ "message": text }),
-                            );
-                        }
-                        let conn = g.conn;
-                        self.detect_rate_spam(&mut host, conn, false);
+                HostEvent::BehaviourChat { name, mut message } => {
+                    if !host
+                        .hub
+                        .guests
+                        .iter()
+                        .any(|g| g.uuid == message.sender && g.placed)
+                    {
+                        continue;
                     }
+                    if let Some(text) =
+                        self.guest_mod_chat_filter(&mut host, message.sender, &message.content)
+                    {
+                        if text != message.content {
+                            message.unsigned_content = Some(horizon_protocol::text::literal(&text));
+                        }
+                        let mut next = Vec::new();
+                        host.hub.finish_player_chat(&name, *message, &mut next);
+                        for event in next {
+                            match event {
+                                HostEvent::PlayerChat { sender, text } => {
+                                    self.lan_hear_player_chat(&mut host, sender, text)
+                                }
+                                event => self.lan_log_event(event),
+                            }
+                        }
+                    }
+                }
+                HostEvent::PlayerChat { sender, text } => {
+                    self.lan_hear_player_chat(&mut host, sender, text)
                 }
                 HostEvent::Joined(conn) => {
                     // The mods may refuse the login before the player is placed.
@@ -2264,6 +2295,13 @@ impl Game<'_> {
                 self.ui.rules.bool("elytra_movement_check"),
             );
             host.hub.mods_loaded = !horizon_client::mod_api::mods().is_empty();
+            #[cfg(feature = "mods")]
+            {
+                host.hub.behaviour_chat = self
+                    .mods
+                    .mods
+                    .wants_behaviour(horizon_mods::BehaviourFamily::ChatFilter, "");
+            }
             let pass = self.level_pass;
             let mut events = if pass.first {
                 horizon_client::spans::time("lan_poll", || host.hub.poll(&mut ctx))
@@ -2577,6 +2615,13 @@ impl Game<'_> {
                 // Player packets may already have been drained before
                 // scheduled block ticks (`tick_lan_packets`).
                 host.hub.mods_loaded = !horizon_client::mod_api::mods().is_empty();
+                #[cfg(feature = "mods")]
+                {
+                    host.hub.behaviour_chat = self
+                        .mods
+                        .mods
+                        .wants_behaviour(horizon_mods::BehaviourFamily::ChatFilter, "");
+                }
                 let pass = self.level_pass;
                 let mut events = if pass.first && !pass.packets_drained {
                     host.hub.poll(&mut ctx)
@@ -3228,7 +3273,7 @@ fn event_kind(event: &HostEvent) -> EventKind {
         HostEvent::Kicked { name, .. } => ("kick", None, Some(name.clone())),
         HostEvent::Flight { conn, .. } => ("flight", Some(*conn), None),
         HostEvent::Chat { .. } => ("chat line", None, None),
-        HostEvent::PlayerChat { .. } => ("chat", None, None),
+        HostEvent::PlayerChat { .. } | HostEvent::BehaviourChat { .. } => ("chat", None, None),
         HostEvent::ChatFiltered { name, .. } => ("filtered chat", None, Some(name.clone())),
         HostEvent::Warn(_) => ("warning", None, None),
         HostEvent::Error(_) => ("error", None, None),
