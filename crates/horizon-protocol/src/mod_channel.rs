@@ -1,4 +1,4 @@
-//! Sandboxed mod channel negotiation and bounded fragmentation (API 26).
+//! Sandboxed mod channel negotiation and bounded fragmentation (API 28).
 //! Separate from native mod_net, whose wire contract stays unchanged.
 use crate::{
     Error, Result,

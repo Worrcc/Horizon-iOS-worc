@@ -1,5 +1,5 @@
 //! An example of capability `render`'s canvas and capability `world-read`
-//! (API level 26): a 64 × 64 gradient the mod paints itself, shown round in
+//! (API level 28): a 64 × 64 gradient the mod paints itself, shown round in
 //! a box at the top right and behind an item icon on its canvas screen, and
 //! the top block of the column under the
 //! player, read from the chunk with `client-world.columns`, said in chat

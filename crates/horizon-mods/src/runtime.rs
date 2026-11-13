@@ -75,7 +75,7 @@ pub use server_bindings::{
     horizon::mods::players::{
         Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
         ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer, PlayerDamage,
-        Point as PlayerPoint,
+        Point as PlayerPoint, TeleportTarget,
     },
     horizon::mods::world::{
         BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
@@ -145,7 +145,7 @@ mod render_bindings {
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
 pub use render_bindings::horizon::mods::input::{
-    Event as InputEvent, HeldItem, ItemUse, TouchButton, TouchContext,
+    AimAssist, Event as InputEvent, HeldItem, ItemUse, LookDeviceKind, TouchButton, TouchContext,
 };
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
@@ -258,12 +258,14 @@ pub struct EntityResources {
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
-    /// API 26: negotiated channel peers for running mod ids.
+    /// API 28: negotiated channel peers for running mod ids.
     pub channel_peers: ChannelPeers,
     /// Simulation tick, including on servers without a window player.
     pub tick: u64,
     /// Whether the game is showing its touch controls.
     pub touch_active: bool,
+    /// The device of the most recent applied look movement.
+    pub look_device: LookDeviceKind,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -312,6 +314,12 @@ pub struct Snapshot {
     pub effect_ids: Arc<std::collections::HashSet<String>>,
     /// Where each online server player looks, by UUID, for `players.facing`.
     pub player_looks: Arc<[(String, PlayerLook)]>,
+    /// The current vanilla op levels, by online player's UUID.
+    pub player_permissions: Arc<[(String, u8)]>,
+    /// Available dimensions and their current world border [min x, min z, max x, max z].
+    pub teleport_borders: std::collections::BTreeMap<String, [f64; 4]>,
+    /// Overworld level.dat spawn data, shared across the server's dimensions.
+    pub world_spawn: Option<(String, WorldPoint, f32)>,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
     pub generated_chunks: Arc<[ChunkPos]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
@@ -434,9 +442,9 @@ pub enum Output {
         dimension: String,
         blocks: Vec<BlockChange>,
     },
-    /// API 26: a validated reservation, checked again against live endpoints on apply.
+    /// API 28: a validated reservation, checked again against live endpoints on apply.
     StorageMove(StorageMove),
-    /// API 26: scoped bytes, delivered over negotiated custom payloads after hooks.
+    /// API 28: scoped bytes, delivered over negotiated custom payloads after hooks.
     Channel {
         mod_id: String,
         player: Option<String>,
@@ -504,6 +512,10 @@ pub enum Output {
         strength: f32,
         dx: f64,
         dz: f64,
+    },
+    PlayerTeleport {
+        player: String,
+        target: TeleportTarget,
     },
     PlayerPush {
         player: String,
@@ -595,7 +607,7 @@ pub trait WorldView: std::any::Any + Send {
     ) -> Option<Vec<Option<ContainerItemStack>>> {
         None
     }
-    /// API 26: shared reservation view; never exposes components to the guest.
+    /// API 28: shared reservation view; never exposes components to the guest.
     fn storage(&mut self) -> Option<&mut StorageView> {
         None
     }
@@ -1984,6 +1996,10 @@ impl Mods {
             }
         }
     }
+    /// Per-mod aim assistance, borrowed without allocating; removed with its runtime.
+    pub fn aim_assists(&self) -> impl Iterator<Item = &AimAssist> {
+        self.inputs().filter_map(|i| i.aim_assist.as_ref())
+    }
     /// Some running mod holds the mouse wheel.
     pub fn wheel_claimed(&self) -> bool {
         self.inputs().any(|i| i.wheel)
@@ -2650,6 +2666,19 @@ impl mod_world::Host for State {
         self.storage_from_player(player, inv_slot, dimension, pos, count)
     }
 
+    fn spawn_point(&mut self) -> (String, WorldPoint, f32) {
+        self.snapshot.world_spawn.clone().unwrap_or_else(|| {
+            (
+                "minecraft:overworld".into(),
+                WorldPoint {
+                    x: 0.0,
+                    y: 64.0,
+                    z: 0.0,
+                },
+                0.0,
+            )
+        })
+    }
     fn break_blocks_as(
         &mut self,
         player: String,
@@ -3419,6 +3448,40 @@ impl State {
     }
 }
 impl players::Host for State {
+    fn teleport(&mut self, player: String, target: TeleportTarget) -> Result<(), String> {
+        self.online_player(&player)?;
+        let [min_x, min_z, max_x, max_z] = self
+            .snapshot
+            .teleport_borders
+            .get(&target.dimension)
+            .ok_or_else(|| format!("unknown dimension {}", target.dimension))?;
+        let at = &target.at;
+        if ![at.x, at.y, at.z].iter().all(|v| v.is_finite())
+            || target.yaw.is_some_and(|v| !v.is_finite())
+            || target.pitch.is_some_and(|v| !v.is_finite())
+        {
+            return Err("teleport needs finite coordinates and angles".into());
+        }
+        if at.x < *min_x || at.x >= *max_x || at.z < *min_z || at.z >= *max_z {
+            return Err("outside the world border".into());
+        }
+        if !(-30_000_000.0..30_000_000.0).contains(&at.x)
+            || !(-30_000_000.0..30_000_000.0).contains(&at.z)
+            || !(-20_000_000.0..20_000_000.0).contains(&at.y)
+        {
+            return Err("outside teleport coordinate bounds".into());
+        }
+        self.out.push(Output::PlayerTeleport { player, target });
+        Ok(())
+    }
+    fn permission_level(&mut self, player: String) -> Option<u8> {
+        self.online_player(&player).ok()?;
+        self.snapshot
+            .player_permissions
+            .iter()
+            .find(|(id, _)| *id == player)
+            .map(|(_, level)| *level)
+    }
     fn damage_taken(&mut self) -> Vec<PlayerDamage> {
         self.snapshot
             .player_damage
@@ -3605,6 +3668,7 @@ struct InputState {
     down: Vec<String>,
     /// It holds the mouse wheel.
     wheel: bool,
+    aim_assist: Option<AimAssist>,
     /// The keys the player chose, `name → key`: they win over
     /// `register-key`'s.
     bindings: Vec<(String, String)>,
@@ -3708,7 +3772,46 @@ impl InputState {
     }
 }
 
+impl Default for LookDeviceKind {
+    fn default() -> Self {
+        Self::Mouse
+    }
+}
+
 impl input::Host for State {
+    fn set_aim_assist(&mut self, config: Option<AimAssist>) -> Result<(), String> {
+        let config = config
+            .map(|mut cfg| {
+                if cfg.targets.len() > 32 {
+                    return Err("aim assist accepts at most 32 targets".to_owned());
+                }
+                if cfg
+                    .targets
+                    .iter()
+                    .any(|id| id.is_empty() || id.chars().count() > 64)
+                {
+                    return Err("aim assist targets need 1..64 characters".to_owned());
+                }
+                if ![cfg.range, cfg.cone, cfg.slowdown, cfg.pull]
+                    .iter()
+                    .all(|v| v.is_finite())
+                {
+                    return Err("aim assist numbers must be finite".to_owned());
+                }
+                cfg.range = cfg.range.clamp(2.0, 32.0);
+                cfg.cone = cfg.cone.clamp(1.0, 20.0);
+                cfg.slowdown = cfg.slowdown.clamp(0.0, 0.9);
+                cfg.pull = cfg.pull.clamp(0.0, 60.0);
+                Ok(cfg)
+            })
+            .transpose()?;
+        self.input.aim_assist = config;
+        Ok(())
+    }
+    fn look_device(&mut self) -> LookDeviceKind {
+        self.snapshot.look_device
+    }
+
     fn touch_active(&mut self) -> bool {
         self.snapshot.touch_active
     }
@@ -4583,8 +4686,8 @@ mod entity_tests {
     }
 
     #[test]
-    fn pre_level_26_components_still_link() {
-        older_components_still_link(26);
+    fn pre_level_28_components_still_link() {
+        older_components_still_link(28);
     }
 
     #[test]

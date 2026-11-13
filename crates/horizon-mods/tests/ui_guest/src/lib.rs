@@ -108,7 +108,7 @@ impl Mod for Guest {
             "container_take",
             "container_latch",
             "container_buttons",
-            "channel26",
+            "channel28",
             "ui_screen",
             "chat_open",
             "ui_settings",
@@ -123,6 +123,8 @@ impl Mod for Guest {
             "input_poll",
             "input_held",
             "input_wheel",
+            "aim_assist",
+            "look_device",
             "zoom",
             "minimap",
             "far_terrain",
@@ -160,7 +162,7 @@ impl Mod for Guest {
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {
-            "channel26" => {
+            "channel28" => {
                 assert!(channel::send("bad:scope", &[]).is_err());
                 assert!(channel::send_to_player("Alice", "state", &[]).is_err());
                 channel::send("state", args.as_bytes())?;
@@ -345,6 +347,39 @@ impl Mod for Guest {
                 chat::show(&format!("holding {held}"));
             }
             "input_wheel" => input::claim_wheel(args != "off"),
+            "look_device" => chat::show(match input::look_device() {
+                input::LookDeviceKind::Mouse => "mouse",
+                input::LookDeviceKind::Controller => "controller",
+                input::LookDeviceKind::Touch => "touch",
+            }),
+            "aim_assist" => {
+                let mut words = args.split_whitespace();
+                let mut number = || {
+                    words
+                        .next()
+                        .and_then(|w| w.parse().ok())
+                        .unwrap_or(f32::NAN)
+                };
+                let (range, cone, slowdown, pull) = (number(), number(), number(), number());
+                let targets = words.next().unwrap_or("*");
+                input::set_aim_assist(
+                    (args != "off")
+                        .then(|| input::AimAssist {
+                            targets: if targets == "-" {
+                                vec![]
+                            } else {
+                                targets.split(',').map(str::to_owned).collect()
+                            },
+                            range,
+                            cone,
+                            slowdown,
+                            pull,
+                            controller: true,
+                            touch: true,
+                        })
+                        .as_ref(),
+                )?;
+            }
             "zoom" => {
                 let mut words = args.split(' ');
                 let mut number = || {

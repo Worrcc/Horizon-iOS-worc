@@ -1,4 +1,4 @@
-//! API 26: opt-in block use and mod-scoped, bounded messages.
+//! API 28: opt-in block use and mod-scoped, bounded messages.
 use super::*;
 mod bindings {
     wasmtime::component::bindgen!({ path: "../horizon-mod-sdk/wit", world: "channel-host" });

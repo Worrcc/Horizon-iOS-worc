@@ -54,6 +54,7 @@ mod advancements;
 mod advancements_screen;
 mod agent;
 mod agent_settings;
+mod aim_assist;
 mod allays;
 mod armor_stands;
 mod atlas_slots;
@@ -2584,6 +2585,15 @@ struct Game<'a> {
     video_modes: horizon_client::window::VideoModeList,
     /// MouseHandler's accumulated look and wheel state.
     mouse: MouseLook,
+    /// Touch look is eligible only in the accumulator interval where it arrived.
+    touch_look_frame: Option<u64>,
+    /// Any non-touch motion, including agents/replays, prevents touch assistance.
+    mouse_look_moved: bool,
+    touch_assist_history: bool,
+    look_device: aim_assist::LookDevice,
+    /// Controller and touch share a single per-frame candidate/raycast budget.
+    #[cfg(feature = "mods")]
+    aim_assist_targets_left: usize,
     /// An agent moved the mouse (`mouse-move`) since the pointer was last
     /// grabbed or released: its motion turns the view like a grabbed pointer.
     agent_pointer: bool,
@@ -8339,7 +8349,23 @@ impl Game<'_> {
     /// `MouseHandler.handleAccumulatedMovement` and `Entity.turn`, once per frame.
     /// An agent moving the mouse (`mouse-move`) counts as a grabbed pointer in
     /// an active window, as it cannot grab the real one.
-    fn apply_mouse_look(&mut self) {
+    fn apply_mouse_look(&mut self, seconds: f32) {
+        #[cfg(feature = "mods")]
+        {
+            self.aim_assist_targets_left = 32;
+        }
+        let device = aim_assist::accumulated_device(
+            self.touch_look_frame.take(),
+            self.frames,
+            std::mem::take(&mut self.mouse_look_moved),
+        );
+        let assisted_touch = device == aim_assist::LookDevice::Touch && self.touch_assist_enabled();
+        if assisted_touch != self.touch_assist_history {
+            // Clear history on entry/exit of assisted touch, preserving vanilla smoothing
+            // when no mod enables it. Physical mouse history can never enter assistance.
+            self.mouse.reset_smoothing();
+            self.touch_assist_history = assisted_touch;
+        }
         let look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
         let pointer = self.captured || self.agent_pointer;
@@ -8349,7 +8375,12 @@ impl Game<'_> {
             .mouse
             .handle_accumulated_movement(time, active, grabbed, look)
         {
-            self.look_turn(xo, yo);
+            let (xo, yo) = if device == aim_assist::LookDevice::Touch {
+                self.assisted_turn((xo, yo), seconds, false)
+            } else {
+                (xo, yo)
+            };
+            self.device_look_turn(xo, yo, device);
         }
     }
     /// A look from any device, in `Entity.turn` units: the tutorial's "look
@@ -17754,6 +17785,7 @@ impl ApplicationHandler for Game<'_> {
                 input_trace::InputOrigin::User,
                 input_trace::TraceKind::Motion { x, y },
             );
+            self.mouse_look_moved |= x != 0.0 || y != 0.0;
             self.mouse.on_move(0.0, 0.0, x, y, true, true);
             self.last_input = Instant::now();
         }
@@ -19145,7 +19177,7 @@ impl Game<'_> {
                     self.mods_frame(elapsed);
                     self.poll_moved_extras();
                     self.extras_retry()?;
-                    self.apply_mouse_look();
+                    self.apply_mouse_look(elapsed.as_secs_f32());
                     self.pad_look(elapsed.as_secs_f32());
                     self.advance_flight();
                     self.tick_world_icon();
@@ -19624,6 +19656,12 @@ impl<'a> Game<'a> {
             fullscreen: horizon_client::window::FullscreenState::new(false),
             video_modes: Default::default(),
             mouse: MouseLook::default(),
+            touch_look_frame: None,
+            mouse_look_moved: false,
+            touch_assist_history: false,
+            look_device: aim_assist::LookDevice::Mouse,
+            #[cfg(feature = "mods")]
+            aim_assist_targets_left: 32,
             agent_pointer: false,
             smooth_camera: false,
             toggles: Default::default(),

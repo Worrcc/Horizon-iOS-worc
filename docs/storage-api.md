@@ -1,6 +1,6 @@
-# Storage API (level 26)
+# Storage API (level 28)
 
-Level 26 adds server block-use hooks, messages between the two halves of a
+Level 28 adds server block-use hooks, messages between the two halves of a
 sandboxed mod, component-preserving storage transfers, player inventory reads
 and item icons on canvases. All additions keep
 earlier WIT records and functions unchanged. See [mods.md](mods.md) and the
@@ -145,9 +145,9 @@ screen discards them. `set-corner` / `set-placed` starts a box with no items;
 ignored, and an empty list clears that item layer. Set the items again after
 replacing a box. The SDK's `canvas-test` example shows a diamond over its image.
 
-These are additive level-26 functions; `canvas.shape` is unchanged. Wasmtime
+These are additive level-28 functions; `canvas.shape` is unchanged. Wasmtime
 48's `component::func::typed::typecheck_variant` checks exact case counts,
 names, order and payloads: adding an `item` case would stop old guests linking.
 Levels 17–18 already kept `render.shape` intact by introducing a separate
-`canvas.shape` for images. Compatibility tests keep pre-26 and level-17
+`canvas.shape` for images. Compatibility tests keep pre-28 and level-17
 components linking and pin the variant-mismatch failure.

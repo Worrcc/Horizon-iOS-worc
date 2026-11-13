@@ -729,7 +729,13 @@ impl Game<'_> {
         if yaw == 0.0 && pitch == 0.0 {
             return;
         }
-        self.look_turn(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
+        // look_delta returns degrees; look_turn takes Entity.turn units (0.15 degrees).
+        let (x, y) = self.assisted_turn(
+            (f64::from(yaw / 0.15), f64::from(pitch / 0.15)),
+            seconds,
+            true,
+        );
+        self.device_look_turn(x, y, super::aim_assist::LookDevice::Controller);
     }
 
     /// Vibrate the active pad, when vibration is on and the pad is the one

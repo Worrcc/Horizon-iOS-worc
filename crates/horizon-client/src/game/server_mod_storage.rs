@@ -1,4 +1,4 @@
-//! API 26 storage transfers. Plan with metadata; apply using only real stacks.
+//! API 28 storage transfers. Plan with metadata; apply using only real stacks.
 use super::{Game, lan::LanHost, server_mods::run::uuid_string};
 use horizon_client::{containers::BlockEntity, items::ItemStack, menu::Menu};
 use horizon_mods::{StackInfo, StorageLocation, StorageMove, StorageStack, StorageView};

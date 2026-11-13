@@ -1,4 +1,4 @@
-//! API 26 messages use custom payloads on every connection, including memory
+//! API 28 messages use custom payloads on every connection, including memory
 //! connections to the integrated server. Offers contain only running mod ids.
 use super::{Game, lan::LanHost};
 use horizon_protocol::mod_channel as wire;

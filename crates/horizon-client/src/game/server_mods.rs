@@ -387,7 +387,7 @@ pub(super) mod run {
 
         /// Whether what players do now reaches server mods: one is running
         /// and this game simulates the world.
-        fn player_looks(&self) -> Vec<(String, horizon_mods::PlayerLook)> {
+        fn player_looks(&self, host: Option<&LanHost>) -> Vec<(String, horizon_mods::PlayerLook)> {
             let mut out = Vec::new();
             if self.options.execution_role.is_client()
                 && self.remote.is_none()
@@ -399,7 +399,10 @@ pub(super) mod run {
                 };
                 out.push((self.player_uuid_string(), look));
             }
-            let guests = self.lan.iter().flat_map(|h| &h.hub.guests);
+            let guests = host
+                .or(self.lan.as_ref())
+                .into_iter()
+                .flat_map(|h| &h.hub.guests);
             out.extend(guests.filter(|g| g.placed).map(|g| {
                 let look = horizon_mods::PlayerLook {
                     yaw: g.yaw,
@@ -466,7 +469,7 @@ pub(super) mod run {
             let Some(player) = players.iter().find(|p| p.id == id).cloned() else {
                 return false;
             };
-            let mut snapshot = self.server_snapshot(players);
+            let mut snapshot = self.server_snapshot(players, Some(host));
             snapshot.channel_peers = self.wasm_channel_peers(Some(host));
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(Some(host));
@@ -527,7 +530,7 @@ pub(super) mod run {
             self.mods.use_fallbacks.clear();
             self.mods.last_attacks = std::mem::take(&mut self.mods.attacks).into();
             let players = self.server_players(None);
-            let mut snapshot = self.server_snapshot(players.clone());
+            let mut snapshot = self.server_snapshot(players.clone(), None);
             snapshot.interactions = self.take_mod_interactions();
             snapshot.generated_chunks = std::mem::take(&mut self.mods.generated_chunks).into();
             self.mods.mods.set_snapshot(snapshot);
@@ -683,9 +686,51 @@ pub(super) mod run {
 
         /// The snapshot server mods read: the game's, the players, and the loaded mobs when a
         /// running mod has capability `entities`.
-        fn server_snapshot(&mut self, players: Vec<ServerPlayer>) -> Snapshot {
+        fn server_snapshot(
+            &mut self,
+            players: Vec<ServerPlayer>,
+            host: Option<&LanHost>,
+        ) -> Snapshot {
             let mut snapshot = self.mod_snapshot_with(players);
-            snapshot.player_looks = self.player_looks().into();
+            snapshot.player_looks = self.player_looks(host).into();
+            let host = host.or(self.lan.as_ref());
+            snapshot.player_permissions = snapshot
+                .players
+                .iter()
+                .map(|p| {
+                    let level = host
+                        .and_then(|h| {
+                            h.hub
+                                .guests
+                                .iter()
+                                .find(|g| g.placed && uuid_string(g.uuid) == p.id)
+                                // Hub::refresh_permissions resolves ops and integrated-server
+                                // command access, including the owner's level 4 with cheats.
+                                .map(|g| g.permission)
+                        })
+                        .unwrap_or_else(|| if self.allow_commands() { 4 } else { 0 });
+                    (p.id.clone(), level.min(4))
+                })
+                .collect::<Vec<_>>()
+                .into();
+            snapshot.teleport_borders = [
+                "minecraft:overworld",
+                "minecraft:the_nether",
+                "minecraft:the_end",
+            ]
+            .into_iter()
+            .map(|d| (d.to_owned(), self.border.bounds()))
+            .collect();
+            let [x, y, z] = self.level.world_spawn.unwrap_or([0, 64, 0]);
+            snapshot.world_spawn = Some((
+                "minecraft:overworld".into(),
+                horizon_mods::WorldPoint {
+                    x: f64::from(x),
+                    y: f64::from(y),
+                    z: f64::from(z),
+                },
+                self.level.world_spawn_angle[0],
+            ));
             if self.mods.entities {
                 let here = self.dim.id();
                 // Who rides which mob: the server's players by their vehicle, and the
@@ -1554,7 +1599,7 @@ pub(super) mod run {
             let Some(me) = players.first().cloned() else {
                 return false;
             };
-            let snapshot = self.server_snapshot(players);
+            let snapshot = self.server_snapshot(players, None);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(None);
             self.lend_mod_inventories(None);
@@ -1622,7 +1667,7 @@ pub(super) mod run {
             let Some(me) = players.iter().find(|p| p.id == id).cloned() else {
                 return false;
             };
-            let mut snapshot = self.server_snapshot(players);
+            let mut snapshot = self.server_snapshot(players, Some(host));
             snapshot.channel_peers = self.wasm_channel_peers(Some(host));
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(Some(host));
@@ -1756,6 +1801,51 @@ pub(super) mod run {
                         );
                         if let Some(p) = g.player.as_mut() {
                             p.health.sync_velocity = true;
+                        }
+                    });
+                }
+                Output::PlayerTeleport { player, target } => {
+                    self.with_mod_player(host, &player, |g| {
+                        // Use TeleportCommand itself: it owns same-level placement and
+                        // the cross-level ServerPlayer transfer queue. An explicit decimal
+                        // prevents Vec3Argument from centering integer x/z coordinates.
+                        let number = |v: f64| {
+                            let mut text = v.to_string();
+                            if !text.contains('.') {
+                                text.push_str(".0");
+                            }
+                            text
+                        };
+                        let at = &target.at;
+                        let mut line =
+                            format!("tp @s {} {} {}", number(at.x), number(at.y), number(at.z));
+                        if target.yaw.is_some() || target.pitch.is_some() {
+                            let angle = |v: Option<f32>| {
+                                v.map_or_else(|| "~".into(), |v| number(f64::from(v)))
+                            };
+                            line.push_str(&format!(
+                                " {} {}",
+                                angle(target.yaw),
+                                angle(target.pitch)
+                            ));
+                        }
+                        let source = super::super::commands::execute::Source {
+                            silent: true,
+                            rot: [g.yaw, g.pitch],
+                            level: Some(super::super::Dim::from_id(&target.dimension)),
+                            ..g.player_source()
+                        };
+                        // Capability players authorizes this operation independently of
+                        // the destination player's command permissions. Restore the caller's
+                        // command state, including when called inside a mod command hook.
+                        let permission = g.ui.registries.permission;
+                        g.ui.registries.permission = 4;
+                        let exec = std::mem::take(&mut g.exec);
+                        let result = g.execute_line(&line, source);
+                        g.exec = exec;
+                        g.ui.registries.permission = permission;
+                        if let Err(error) = result {
+                            log::warn!("server mod teleport: {error:?}");
                         }
                     });
                 }

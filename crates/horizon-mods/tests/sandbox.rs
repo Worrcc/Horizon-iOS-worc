@@ -422,10 +422,10 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container", "
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest also exercises API 26 channels.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 26);
-    // canvas-test now draws items over its canvas screen (level 26).
-    assert_eq!(level("canvas_test.hmod"), 26);
+    // The UI guest also exercises API 28 channels.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 28);
+    // canvas-test now draws items over its canvas screen (level 28).
+    assert_eq!(level("canvas_test.hmod"), 28);
 }
 
 #[test]
@@ -2095,7 +2095,7 @@ fn canvas_images_are_checked_capped_and_uploaded() {
 }
 
 #[test]
-fn api26_canvas_items_are_bounded_and_follow_screen_and_box_lifetimes() {
+fn api28_canvas_items_are_bounded_and_follow_screen_and_box_lifetimes() {
     let mut game = canvas_guest();
     answer(&mut game, "screen_items 2").unwrap(); // No screen: ignored.
     answer(&mut game, "screen 1").unwrap();
@@ -3207,7 +3207,7 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
-        26
+        28
     );
     let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
     assert!(
@@ -3265,7 +3265,7 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
 }
 
 #[test]
-fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
+fn api28_storage_reservations_and_block_use_cross_the_sandbox() {
     use horizon_mods::{StorageLocation as L, StorageStack, StorageView, WorldView};
     struct View(StorageView);
     impl WorldView for View {
@@ -3326,7 +3326,7 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
         channel_peers: [("test_api20_server".into(), vec![p.id.clone()])].into(),
         ..Default::default()
     });
-    assert!(mods.server_command(&p, "storage26"));
+    assert!(mods.server_command(&p, "storage28"));
     let out = mods.drain();
     assert!(
         !out.iter().any(|o| matches!(
@@ -3352,7 +3352,7 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
     assert!(mods.drain().is_empty());
     assert!(mods.block_used(&p, pos, "test:terminal", false, true));
     mods.drain();
-    assert!(mods.server_command(&p, "sneak26"));
+    assert!(mods.server_command(&p, "sneak28"));
     assert!(mods.block_used(&p, pos, "test:terminal", true, true));
     mods.drain();
     // Two calls used this tick; exactly thirty more hooks may run.
@@ -3396,7 +3396,7 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
     };
     let before = expected.slots.clone();
     mods.lend_world(Box::new(View(expected)));
-    assert!(mods.server_command(&p, "player_peek26"));
+    assert!(mods.server_command(&p, "player_peek28"));
     let out = mods.drain();
     assert!(
         matches!(&out[..], [Output::Reply { text, error: false, .. }] if text == "player slots checked"),
@@ -3406,7 +3406,7 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
     assert_eq!(world.storage().unwrap().slots, before);
     mods.lend_world(world);
     mods.set_snapshot(Snapshot::default());
-    assert!(mods.server_command(&p, "player_peek26"));
+    assert!(mods.server_command(&p, "player_peek28"));
     let out = mods.drain();
     assert!(
         matches!(&out[..], [Output::Reply { text, error: false, .. }] if text == "no player inventory"),
@@ -3417,7 +3417,7 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
         ..Default::default()
     });
     mods.lend_world(Box::new(View(StorageView::default())));
-    assert!(mods.server_command(&p, "player_peek26"));
+    assert!(mods.server_command(&p, "player_peek28"));
     let out = mods.drain();
     assert!(
         matches!(&out[..], [Output::Reply { text, error: false, .. }] if text == "no player inventory"),
@@ -3426,11 +3426,11 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
 }
 
 #[test]
-fn api26_client_channel_checks_peers_size_scope_and_tick_budget() {
+fn api28_client_channel_checks_peers_size_scope_and_tick_budget() {
     let mut mods = load("horizon_mods_test_ui_guest.hmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
     mods.drain();
-    mods.command("channel26 missing");
+    mods.command("channel28 missing");
     assert!(
         mods.drain()
             .iter()
@@ -3443,23 +3443,23 @@ fn api26_client_channel_checks_peers_size_scope_and_tick_budget() {
     };
     mods.set_snapshot(snapshot(4));
     for _ in 0..32 {
-        mods.command("channel26 data");
+        mods.command("channel28 data");
     }
     assert_eq!(mods.drain().iter().filter(|o| matches!(o,Output::Channel {mod_id,player:None,data,..} if mod_id == "test_ui_guest" && data == b"data")).count(),32);
-    mods.command("channel26 excess");
+    mods.command("channel28 excess");
     assert!(
         mods.drain()
             .iter()
             .any(|o| matches!(o, Output::Feedback { error: true, .. }))
     );
     mods.set_snapshot(snapshot(5));
-    mods.command("channel26 next");
+    mods.command("channel28 next");
     assert!(
         mods.drain()
             .iter()
             .any(|o| matches!(o, Output::Channel { .. }))
     );
-    mods.command(&format!("channel26 {}", "x".repeat(65537)));
+    mods.command(&format!("channel28 {}", "x".repeat(65537)));
     assert!(
         mods.drain()
             .iter()
@@ -3495,7 +3495,7 @@ fn api26_client_channel_checks_peers_size_scope_and_tick_budget() {
 }
 
 #[test]
-fn api26_optional_server_exports_leave_level25_guests_loadable() {
+fn api28_optional_server_exports_leave_level25_guests_loadable() {
     let mut mods = load("legacy_server25.hmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
     let p = ServerPlayer {
@@ -3525,4 +3525,229 @@ fn api26_optional_server_exports_leave_level25_guests_loadable() {
             .iter()
             .any(|o| matches!(o, Output::Tell { .. }))
     );
+}
+
+fn api26_server() -> (Mods, ServerPlayer, Snapshot) {
+    let mut mods = load("horizon_mods_test_api20_server_guest.hmod");
+    let player = ServerPlayer {
+        id: "alice".into(),
+        name: "Alex".into(),
+        x: 0.0,
+        y: 64.0,
+        z: 0.0,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Survival,
+        health: 20.0,
+    };
+    let snapshot = Snapshot {
+        players: vec![player.clone()],
+        player_permissions: vec![("alice".into(), 2)].into(),
+        teleport_borders: ["minecraft:overworld", "minecraft:the_nether"]
+            .map(|d| (d.into(), [-100.0, -100.0, 100.0, 100.0]))
+            .into(),
+        world_spawn: Some((
+            "minecraft:overworld".into(),
+            horizon_mods::WorldPoint {
+                x: -16.0,
+                y: 80.0,
+                z: 32.0,
+            },
+            135.0,
+        )),
+        ..Snapshot::default()
+    };
+    mods.set_snapshot(snapshot.clone());
+    (mods, player, snapshot)
+}
+
+#[test]
+fn api26_teleport_crosses_the_sandbox_and_rejects_invalid_requests_atomically() {
+    let (mut mods, player, _) = api26_server();
+    for (args, error) in [
+        ("unknown", "unknown dimension test:missing"),
+        ("offline", "no online player offline"),
+        ("nan", "teleport needs finite coordinates and angles"),
+        ("infinite", "teleport needs finite coordinates and angles"),
+        ("angle", "teleport needs finite coordinates and angles"),
+        ("border", "outside the world border"),
+        ("height", "outside teleport coordinate bounds"),
+    ] {
+        assert!(mods.server_command(&player, &format!("api26_teleport {args}")));
+        let out = mods.drain();
+        assert!(
+            !out.iter()
+                .any(|o| matches!(o, Output::PlayerTeleport { .. })),
+            "{args}"
+        );
+        assert!(
+            out.iter()
+                .any(|o| matches!(o, Output::Reply { text, error: true, .. } if text == error)),
+            "{args}: {out:?}"
+        );
+    }
+    for (args, dimension, yaw, pitch) in [
+        ("", "minecraft:overworld", None, None),
+        ("yaw", "minecraft:overworld", Some(45.0), None),
+        ("cross", "minecraft:the_nether", Some(90.0), Some(-30.0)),
+    ] {
+        assert!(mods.server_command(&player, &format!("api26_teleport {args}")));
+        let teleports: Vec<_> = mods
+            .drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::PlayerTeleport { player, target } => Some((player, target)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(teleports.len(), 1);
+        let (id, target) = &teleports[0];
+        assert_eq!(id, "alice");
+        assert_eq!(target.dimension, dimension);
+        assert_eq!([target.at.x, target.at.y, target.at.z], [12.0, 70.25, -4.5]);
+        assert_eq!((target.yaw, target.pitch), (yaw, pitch));
+    }
+}
+
+#[test]
+fn api26_permission_level_reads_the_current_online_players_snapshot() {
+    let (mut mods, player, mut snapshot) = api26_server();
+    for (level, expected) in [(2, "Some(2)"), (4, "Some(4)"), (0, "Some(0)")] {
+        snapshot.player_permissions = vec![("alice".into(), level)].into();
+        mods.set_snapshot(snapshot.clone());
+        assert!(mods.server_command(&player, "api26_permission"));
+        assert!(
+            mods.drain()
+                .iter()
+                .any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == expected))
+        );
+    }
+    assert!(mods.server_command(&player, "api26_permission offline"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "None"))
+    );
+    snapshot.players.clear();
+    mods.set_snapshot(snapshot);
+    assert!(mods.server_command(&player, "api26_permission"));
+    assert!(
+        mods.drain()
+            .iter()
+            .any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "None"))
+    );
+}
+
+#[test]
+fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
+    let (mut mods, player, mut snapshot) = api26_server();
+    assert!(mods.server_command(&player, "api26_spawn"));
+    assert!(mods.drain().iter().any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "minecraft:overworld -16 80 32 135")));
+    snapshot.world_spawn = Some((
+        "minecraft:overworld".into(),
+        horizon_mods::WorldPoint {
+            x: 10.0,
+            y: 65.0,
+            z: -20.0,
+        },
+        -45.0,
+    ));
+    mods.set_snapshot(snapshot);
+    assert!(mods.server_command(&player, "api26_spawn"));
+    assert!(mods.drain().iter().any(|o| matches!(o, Output::Reply { text, error: false, .. } if text == "minecraft:overworld 10 65 -20 -45")));
+    let package =
+        Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod")).unwrap();
+    let imports = horizon_mods::api_level::imports(package.wasm.as_ref().unwrap()).unwrap();
+    for name in [
+        "players.teleport",
+        "players.permission-level",
+        "world.spawn-point",
+    ] {
+        assert!(imports.iter().any(|i| i == name), "{name}");
+    }
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        28
+    );
+}
+
+#[test]
+fn api27_aim_assist_validates_atomically_clamps_and_clears_across_the_sandbox() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.aim_assists().next().is_none());
+    assert!(mods.command("aim_assist 16 6 0.5 8 minecraft:zombie,#hostile,*"));
+    let good = mods.aim_assists().next().unwrap().clone();
+    assert_eq!(good.targets, ["minecraft:zombie", "#hostile", "*"]);
+    assert!(good.controller && good.touch);
+    mods.drain();
+    let mut bad = vec![
+        format!("16 6 0.5 8 {}", ["*"; 33].join(",")),
+        "16 6 0.5 8 ,".into(),
+        format!("16 6 0.5 8 {}", "x".repeat(65)),
+    ];
+    for i in 0..4 {
+        for value in ["NaN", "inf", "-inf"] {
+            let mut numbers = ["16", "6", "0.5", "8"];
+            numbers[i] = value;
+            bad.push(format!("{} *", numbers.join(" ")));
+        }
+    }
+    for args in bad {
+        assert!(mods.command(&format!("aim_assist {args}")));
+        assert!(
+            mods.drain().iter().any(|o| matches!(o,
+                Output::Feedback { text, error: true, .. } if !text.is_empty()
+            )),
+            "{args}"
+        );
+        assert_eq!(mods.aim_assists().next(), Some(&good));
+    }
+    for targets in ["-".to_owned(), "x".repeat(64), ["*"; 32].join(",")] {
+        assert!(mods.command(&format!("aim_assist 100 0 1 -5 {targets}")));
+        assert!(
+            !mods
+                .drain()
+                .iter()
+                .any(|o| matches!(o, Output::Feedback { error: true, .. }))
+        );
+        let c = mods.aim_assists().next().unwrap();
+        assert_eq!((c.range, c.cone, c.slowdown, c.pull), (32.0, 1.0, 0.9, 0.0));
+    }
+    assert!(mods.command("aim_assist -1 100 -1 100 -"));
+    let c = mods.aim_assists().next().unwrap();
+    assert!(c.targets.is_empty());
+    assert_eq!(
+        (c.range, c.cone, c.slowdown, c.pull),
+        (2.0, 20.0, 0.0, 60.0)
+    );
+    assert!(mods.command("aim_assist off"));
+    assert!(mods.aim_assists().next().is_none());
+}
+
+#[test]
+fn api27_look_device_defaults_to_mouse_and_reads_the_current_snapshot() {
+    use horizon_mods::LookDeviceKind;
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let read = |mods: &mut Mods| {
+        mods.drain();
+        assert!(mods.command("look_device"));
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(read(&mut mods), ["mouse"]);
+    for (device, expected) in [
+        (LookDeviceKind::Controller, "controller"),
+        (LookDeviceKind::Touch, "touch"),
+        (LookDeviceKind::Mouse, "mouse"),
+    ] {
+        mods.set_snapshot(Snapshot {
+            look_device: device,
+            ..Snapshot::default()
+        });
+        assert_eq!(read(&mut mods), [expected]);
+    }
 }

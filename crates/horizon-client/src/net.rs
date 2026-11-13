@@ -50,7 +50,7 @@ pub enum Event {
     ModQuietCommands,
     /// The server carries mod messages (`horizon_protocol::mod_net`).
     ModNet,
-    /// API 26 sandboxed mod messages.
+    /// API 28 sandboxed mod messages.
     WasmChannel,
     /// The server samples far terrain for this client (`lod_net`).
     FarTerrain(crate::lod_net::Offer),

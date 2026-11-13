@@ -1,6 +1,6 @@
 //! Write Horizon mods in Rust (`docs/mods.md`).
 //!
-//! API level 26: [`canvas::set_screen_items`] and [`canvas::set_box_items`]
+//! API level 28: [`canvas::set_screen_items`] and [`canvas::set_box_items`]
 //! draw item icons on canvases; [`server::world::player_stacks`] reads an online
 //! player's main inventory, including earlier storage reservations in the batch.
 //!
@@ -43,8 +43,12 @@
 //! [`client_world::prepared_columns`] to prepare columns natively.
 //! Level 24 adds [`client_world::harvest`] (the tool and tier a block needs)
 //! and [`input::set_auto_button_shown`]: automatic touch buttons start hidden.
-//! Level 26 adds server block-use hooks, scoped mod channels and component-preserving container moves.
 //! Level 25 adds [`input::set_touch_button_context`] for riding/held-item visibility.
+//! Level 26 adds [`server::players::teleport`] for vanilla player teleports across dimensions.
+//! [`server::players::permission_level`] reads an online player's vanilla op level.
+//! [`server::world::spawn_point`] reads the overworld's world spawn and angle.
+//! Level 27 adds [`input::set_aim_assist`] for controller/touch look and [`input::look_device`].
+//! Level 28 adds server block-use hooks, scoped mod channels and component-preserving container moves.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -103,7 +107,7 @@ pub trait Mod: Sized + 'static {
     fn init() -> Result<(Self, Registration), String>;
     /// Every game tick, when [`Registration::tick`] is set.
     fn tick(&mut self, _tick: u64) {}
-    /// API 26: a message from this mod id on the server.
+    /// API 28: a message from this mod id on the server.
     fn channel_message(&mut self, _name: &str, _data: &[u8]) {}
     /// Every rendered frame, when [`Registration::frame`] is set.
     fn frame(&mut self, _seconds: f32) {}
@@ -322,7 +326,7 @@ pub mod server {
     };
     pub use horizon::mods::players::{
         self, Attack, BlockHit, EquipmentSlots, GameMode, ItemUse, Look, Player, PlayerDamage,
-        Point as PlayerPoint,
+        Point as PlayerPoint, TeleportTarget,
     };
     pub use horizon::mods::world::{
         self, BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack, Point as WorldPoint,
@@ -357,7 +361,7 @@ pub mod server {
         /// When [`Registration::blocks`] is set: `state` is what was there.
         fn block_broken(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
         fn block_placed(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
-        /// API 26: opt in with server_hooks::set_block_uses during init.
+        /// API 28: opt in with server_hooks::set_block_uses during init.
         fn block_used(
             &mut self,
             _player: &Player,

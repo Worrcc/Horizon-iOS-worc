@@ -953,6 +953,13 @@ impl Game<'_> {
             channel_peers: self.wasm_channel_peers(None),
             tick: self.ticks,
             touch_active: self.mod_touch_active(),
+            look_device: match self.look_device {
+                super::aim_assist::LookDevice::Mouse => horizon_mods::LookDeviceKind::Mouse,
+                super::aim_assist::LookDevice::Controller => {
+                    horizon_mods::LookDeviceKind::Controller
+                }
+                super::aim_assist::LookDevice::Touch => horizon_mods::LookDeviceKind::Touch,
+            },
             player,
             clock,
             gui_size: self.gui_size(),
@@ -1013,6 +1020,9 @@ impl Game<'_> {
                 .collect::<std::collections::HashSet<_>>()
                 .into(),
             player_looks: Default::default(),
+            player_permissions: Default::default(),
+            teleport_borders: Default::default(),
+            world_spawn: None,
             generated_chunks: Default::default(),
             view_hit: self.mod_view_hit(),
             view_entity: self.mod_view_entity(),
@@ -1317,6 +1327,7 @@ impl Game<'_> {
                 | Output::Strike { .. }
                 | Output::PlayerKnockback { .. }
                 | Output::PlayerPush { .. }
+                | Output::PlayerTeleport { .. }
                 | Output::PlaySound { .. }
                 | Output::MobEffect { .. }
                 | Output::MobPush { .. }

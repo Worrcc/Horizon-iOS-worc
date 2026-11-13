@@ -81,7 +81,7 @@ Horizon has none. What carries over is the data and assets inside a jar ([modpac
 | `canvas` | `render` | API level 17. The mod's own pixels: `create-image(w, h)` (each side 1 to 1024, 1024 × 1024 texels per mod in all) on one atlas page the mods share; `update-image(image, x, y, w, h, rgba)` (straight-alpha RGBA, at most 1 MiB a frame per mod), shown from the next frame; `drop-image(image)`; `set-corner(corner, w, h, shapes)`: a box stacked with the other corner panels, holding images (a `src` rectangle of texels stretched over `dst`, tinted, square or clipped round) beside `render`'s fills, quads, sprites and text; `request-frame-budget(µs)`: up to 500 µs a `frame` call (100 by default), or 4000 µs while that mod's own canvas screen is open; `work-left()`: how much of this call's budget is left, about 1000000 at its start, so a mod works `while work-left() > reserve` with no clock. Epoch mode measures elapsed wall time, including host calls; fuel mode estimates the allowance from the mod's measured instruction rate on this device. **Experimental:** `experimental = ["render"]` |
 | `client-world` | `world-read` | API level 17. What this game has loaded, in single player and on any server (only what the server sent): `columns(chunks, layer, depth)`: up to 16 chunks a call, each column's top block in the layer (the surface, or the floor below a height as the game's minimap maps caves and the Nether) and up to 16 state ids down from it, its water depth, the light above it and its biome's grass, foliage and water colours; `changes(since, radius)`: the chunks changed, loaded or unloaded since a counter, nearest first; `block-table()`: every block state's block, facts (air, water, see-through, ...), the texture its model shows up and south with its tint source, and its map colour, from the loaded packs (its `version` changes on a resource reload; `table-version()` reads it alone, cheap enough every tick); `texture(name)`: a block texture's RGBA from the loaded packs, so a mod averages its own colours; `dimension()`, `light(x, y, z)`, `biome(x, y, z)`. **Experimental:** `experimental = ["world-read"]` |
 | `container` | `container` | API level 22: live container slots/cursor, real clicks, drag takeover, per-mod Shift latch and up to eight slot-style buttons; synchronous optional `container-events`. Excludes creative inventory. **Experimental:** `experimental = ["container"]` |
-| `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
+| `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. API level 27: `set-aim-assist(config)` enables controller/touch aim assistance; `look-device()` reports the last look device (below). **Experimental:** `experimental = ["input"]` |
 | `recipes` | `recipes` | `items()`: every item in the registry's order, with its name in the player's language and its tags; `all()`: every recipe (crafting, smelting, blasting, smoking, campfire, stonecutting, smithing, brewing), its slots as the stacks that fit each, its results, cooking time and experience, and the recipe book's id for it; `known()`: the book ids the player's recipe book holds; `place(book-id, all)`: the recipe book's click on a recipe, in the open inventory, crafting table, furnace, blast furnace or smoker (refused for a recipe the player's book doesn't hold, as vanilla's server refuses it); `give(stack)`: in creative mode, the stack into the player's inventory, as from the creative inventory. The recipes are the world's in single player and on Horizon's servers, vanilla 26.3's on any other server (a client is sent no others), while `known` follows that server's book. The game makes the tables once, when a mod first reads them. `browser-ext.item-facts` reads furnace burn ticks, compost chance and anvil repair materials; `browser-ext.other-recipes` reads custom recipe files; `browser-ext.recipe-count` and `browser-ext.recipes-page(start, count)` count and page through `recipes.all` (up to 2048 per call) when a full query would exceed frame fuel. These browser extensions are level 19 and need only `recipes`. **Experimental:** `experimental = ["recipes"]` |
 
 | Hook (export) | When |
@@ -760,7 +760,7 @@ one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
 |---|---|---|
 | `log` | always | as for client mods |
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
-| `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
+| `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call; API level 26: `teleport(player, target)`, `permission-level(player)` (below) |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
 | `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, texture, rider, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `interactions()`: the last tick's right clicks on content mods' mobs (player UUID, mob id, kind, held item), in order, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
 
@@ -925,6 +925,19 @@ tick's block writes, so a mod can place a spawner with `set-blocks` and give it 
 the same tick, as a Java structure processor rewrites a template spawner's `SpawnData`. The
 spawner keeps its delays, spawn count and ranges; players see the new mob in it. No spawner
 there then, or an unknown type: the write is skipped and logged.
+
+**API level 26: player teleports, permissions and world spawn.**
+`players.teleport(player, teleport-target) -> result<_, string>` moves an online
+player by UUID through vanilla's `/tp` path, including across dimensions, resetting
+fall distance and syncing clients. The target has `dimension`, `at: point`, and
+optional `yaw`/`pitch` in F3 degrees; none preserves that axis of the current view.
+Offline players, unknown dimensions, non-finite coordinates or angles, positions
+outside the world border, and positions outside vanilla's teleport bounds are errors.
+`players.permission-level(player) -> option<u8>` returns vanilla's op level (0..4),
+or none offline; single-player with cheats on is 4. Both require capability `players`.
+`world.spawn-point() -> tuple<string, point, f32>` requires capability `world` and
+returns the overworld's world spawn dimension id, block position and yaw in degrees.
+These reads reflect the server snapshot for the current hook, including commands.
 
 **API level 15: combat, players and world helpers.** All additions are functions;
 existing hooks and records keep their ABI. `entities.strike(mob, hit)` extends hurt-area
@@ -1563,9 +1576,34 @@ characters. Malformed/unknown file formats are ignored with a log warning;
 unlisted mounts use the translated Sprint/Attack labels. These files require no
 code mod or input capability.
 
-## API level 26: storage, canvas items, block use and mod channels
+## API level 27: controller and touch aim assistance
 
-Level 26 adds the APIs described in [storage-api.md](storage-api.md):
+Capability `input` (also list `experimental = ["input"]`) adds
+`set-aim-assist(some(config))`; `none` removes that mod's config. `aim-assist`
+contains `targets`, `range`, `cone`, `slowdown`, `pull`, `controller`, and `touch`.
+Targets are exact entity ids, `*` for every non-player mob, or `#hostile` for the
+monster category. An empty list targets nothing. At most 32 entries, each 1..64
+characters; non-finite numbers are errors and leave the old config intact.
+The host clamps range to 2..32 blocks, cone to 1..20 degrees, slowdown to 0..0.9,
+and pull to 0..60 degrees per second. Pull acts only while the player turns.
+
+Several mods combine conservatively: every number takes its minimum, a device
+must be enabled by every mod that set a config, and an entity must match every
+mod's target list. Only living, visible non-player mobs in range and cone qualify;
+the host considers at most 32 candidates per frame across both devices. If client category
+metadata is unavailable, `#hostile` uses the built-in vanilla hostile ids; exact
+mod entity ids still work.
+
+Controller look and finger movement in the touch look area can be assisted.
+Physical mouse motion is never assisted. Touch and mouse motion in the same
+frame share an unassisted turn, reported as mouse; cinematic history is cleared
+when entering or leaving assisted touch. `look-device() -> look-device-kind`
+returns `mouse`, `controller`, or `touch`, initially `mouse`, retaining the last
+applied movement's device while the view is still.
+
+## API level 28: storage, canvas items, block use and mod channels
+
+Level 28 adds the APIs described in [storage-api.md](storage-api.md):
 
 - Server mods with `world` opt into main-hand `server-events.block-used` using
   `server-hooks.set-block-uses(enabled, including-sneaking-item)`. Returning true
@@ -1593,7 +1631,7 @@ The WIT changes are additive. In Rust, implement `ServerMod::block_used` and
 `ServerMod::channel_message`, or client `Mod::channel_message`; the SDK export
 macros provide the callbacks. No extraction handles are exposed.
 
-Level 26 also adds `world.player-stacks(player)` (capability `world`), a read-only
+Level 28 also adds `world.player-stacks(player)` (capability `world`), a read-only
 list of 36 main inventory slots in hotbar-first order, with the same item id,
 count, display-key and optional custom-name as `container-stacks`. UUID or exact
 online name is accepted; unknown/offline players return none. Armor/offhand are
@@ -1615,4 +1653,4 @@ box clears its items. Calls without the corresponding surface are ignored;
 an empty list clears items. See [Storage API](storage-api.md#canvas-item-icons)
 for the full lifecycle, compatibility rationale and the SDK `canvas-test` example.
 The existing WIT shape variants are unchanged. All these additions remain API
-level **26**, which has not yet been released.
+level **28**, which has not yet been released.

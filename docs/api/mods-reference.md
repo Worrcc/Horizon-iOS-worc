@@ -567,6 +567,28 @@ Capability `input` (experimental: the manifest needs `experimental = ["input"]`)
 
 `type corner = corner`
 
+### record `aim-assist`
+
+API level 27: assistance for controller and touch look.
+
+| Field | Type | |
+| --- | --- | --- |
+| `targets` | `list<string>` | Entity ids, "*" (every mob but players) or "#hostile" (monsters); at most 32 entries. |
+| `range` | `f32` | Blocks, clamped by the host to 2..32. |
+| `cone` | `f32` | Degrees from the look direction, clamped to 1..20. |
+| `slowdown` | `f32` | 0..0.9 slowdown inside the cone. |
+| `pull` | `f32` | Degrees per second toward the target, 0..60, only while the player turns. |
+| `controller` | `bool` | Apply to controller look. |
+| `touch` | `bool` | Apply to touch look (finger on the look area). |
+
+### enum `look-device-kind`
+
+| Case | |
+| --- | --- |
+| `mouse` |  |
+| `controller` |  |
+| `touch` |  |
+
 ### record `touch-button`
 
 API level 20: a square button above the game's touch controls.
@@ -628,6 +650,8 @@ A mapping as the player has bound it.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `set-aim-assist` | `func(config: option<aim-assist>) -> result<_, string>` | API level 27: replaces this mod's aim assist; none turns it off. Several mods: each field takes its weakest value (enabled only if every mod that set it enabled it). Targets must match every mod's list. Errors leave the previous config intact. |
+| `look-device` | `func() -> look-device-kind` | API level 27: the device that turned the view last frame, so a settings page can show the right preview text. Defaults to mouse; unchanged until another look movement. |
 | `set-touch-button` | `func(name: string, button: option<touch-button>) -> result<_, string>` | API level 20: set/remove a button for a registered key (at most four per mod). A finger sends key-down/key-up and consumes the touch. Clamped fully on screen, including the small button's outer selection ring. Hit area at least 24x24, centred. Game-mode slot artwork, or a plain plate under 20 px; lit adds a gold frame. Player touch-layout overrides win over the anchor/offset. Removing an explicit button restores the key's automatic button. |
 | `set-auto-button-shown` | `func(name: string, shown: bool) -> result<_, string>` | API level 24: whether a registered key's automatic touch button (one for a key with no `set-touch-button`) starts shown. Automatic buttons start hidden unless the mod asks; the player's own choice (the mod's settings page or Edit Touch Layout) always wins. |
 | `set-touch-button-context` | `func(name: string, context: option<touch-context>) -> result<_, string>` | API level 25: set/clear the registered key's default touch visibility context. Both nonempty lists must match; none clears it. The player's Show choice (Always/Riding/Never) wins. Automatic buttons still start hidden unless opted in with set-auto-button-shown. Errors leave the previous context intact. |
@@ -720,8 +744,8 @@ What a canvas corner box holds.
 | `set-box-key` | `func(name: option<string>) -> result<_, string>` | API level 21: a finger on the drawn canvas box sends key-down for this input.register-key name, and lifting sends key-up. Only while playing with touch controls shown; consumes the touch. Game and mod touch buttons win overlaps. none restores the default of taking no touches. An unknown key name is an error. |
 | `open-canvas-screen` | `func(title: string, shapes: list<shape>)` | API level 18: opens the mod's full-window canvas (capabilities ui and render). Up to 4096 shapes in GUI pixels from the window top left, clipped to the window. Hides its HUD box; Escape sends ui-events.closed. |
 | `set-canvas-screen` | `func(shapes: list<shape>)` | Replaces the open canvas screen's shapes; ignored without a screen. |
-| `set-screen-items` | `func(items: list<item-shape>)` | API level 26: replaces the open canvas screen's item layer (ui and render). Ignored without this mod's canvas screen. First 256 items; unknown ids draw nothing. render.item-shape: GUI-pixel top left, scale 1 = 16 x 16, scale clamped to 0..16 (nonfinite becomes 1); nonfinite positions become 0. When nonempty, draw non-text shapes in list order, then items in list order, then text shapes in list order. No count overlays; use text. set-canvas-screen retains items; opening/reopening or closing clears them. |
-| `set-box-items` | `func(items: list<item-shape>)` | API level 26: same item layer for the existing corner/placed box, in GUI pixels from its top left. First 256; same sanitizing and draw order as set-screen-items. Placed boxes clip items too. Ignored without a box; set-corner, set-placed and clear-corner clear its items. Needs render only. |
+| `set-screen-items` | `func(items: list<item-shape>)` | API level 28: replaces the open canvas screen's item layer (ui and render). Ignored without this mod's canvas screen. First 256 items; unknown ids draw nothing. render.item-shape: GUI-pixel top left, scale 1 = 16 x 16, scale clamped to 0..16 (nonfinite becomes 1); nonfinite positions become 0. When nonempty, draw non-text shapes in list order, then items in list order, then text shapes in list order. No count overlays; use text. set-canvas-screen retains items; opening/reopening or closing clears them. |
+| `set-box-items` | `func(items: list<item-shape>)` | API level 28: same item layer for the existing corner/placed box, in GUI pixels from its top left. First 256; same sanitizing and draw order as set-screen-items. Placed boxes clip items too. Ignored without a box; set-corner, set-placed and clear-corner clear its items. Needs render only. |
 | `close-canvas-screen` | `func()` | Closes the mod's canvas screen without a closed event. |
 | `clear-corner` | `func()` | Removes the mod's canvas box. |
 | `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500, or 4000 while this mod's canvas screen is open. Remembers the request: closing the screen immediately restores the 500 maximum; reopening reapplies a larger request. Thermal pressure may limit screens to 500 too. Returns what is granted now (the Mods page shows it). The frame hook's hard call limit always wins, with headroom to return. The mod has no clock: `work-left` says how much of the soft budget is left. |
@@ -1190,6 +1214,17 @@ Registry ids, none for an empty slot. Distinct name from equipment (WIT).
 | `off-hand` | `option<string>` |  |
 | `hotbar` | `list<option<string>>` | Exactly nine hotbar slots, in order. |
 
+### record `teleport-target`
+
+Yaw and pitch in degrees as F3 shows them; none keeps the player's current view.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `at` | `point` |  |
+| `yaw` | `option<f32>` |  |
+| `pitch` | `option<f32>` |  |
+
 ### enum `game-mode`
 
 | Case | |
@@ -1260,7 +1295,9 @@ The block a player clicked, and its face (down, up, north, south, west, east).
 | `damage-item` | `func(player: string, hand: string, amount: u32) -> result<_, string>` | ItemStack.hurtAndBreak on main_hand or off_hand, including Unbreaking, creative immunity, inventory sync and the item's break sound/particles. |
 | `knockback` | `func(player: string, strength: f32, dx: f64, dz: f64) -> result<_, string>` | LivingEntity knockback; dx/dz point away from the attacker. Strength 0..4. The game applies the player's knockback resistance. |
 | `push` | `func(player: string, velocity: point) -> result<_, string>` | Add velocity in blocks per tick, each axis -4..4; clients receive the motion. |
+| `teleport` | `func(player: string, target: teleport-target) -> result<_, string>` | Moves an online player like vanilla /tp, including across dimensions, resetting fall distance and notifying clients. Errors for an offline player, unknown dimension, non-finite coordinates or angles, or outside the world border. |
 | `online` | `func() -> list<player>` | The players online, in the order they joined. |
+| `permission-level` | `func(player: string) -> option<u8>` | Vanilla's op permission level, 0..4; none when offline. Single-player with cheats on counts as 4. |
 | `facing` | `func(player: string) -> option<look>` | Where an online player looks, by UUID; none when no such player is online. |
 | `item-uses` | `func() -> list<item-use>` | Item right clicks during the last tick, oldest first, at most 256. The game's own use of each item still happens. Reading does not consume them. |
 | `attacks` | `func() -> list<attack>` | Melee hits players landed during the last tick, oldest first, at most 256. |
@@ -1278,7 +1315,7 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 
 ### record `stack-info`
 
-API level 26: one slot, including the identity of all saved components.
+API level 28: one slot, including the identity of all saved components.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -1353,12 +1390,13 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
-| `container-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>` | API level 26: one loaded block's slots (one half of a double chest). |
-| `player-stacks` | `func(player: string) -> option<list<option<stack-info>>>` | API level 26: read an online player's 36 main inventory slots, hotbar first (0..35, as player-to-container's inv-slot); no armor/offhand. UUID or exact online name; none for unknown/offline players. Same stack metadata as container-stacks. Server-thread reservation view at call time: includes earlier moves in this hook batch; read-only. |
-| `container-move` | `func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>` | API level 26: reserve a component-preserving transfer after hooks return. Moves min(count, source count), all or nothing if capacity is insufficient. None selects matching stacks then empty slots. Same-slot moves return zero. Revalidated on apply; a changed endpoint cancels the entire transfer. Bulk storage containers only; special machine slots are read-only. The result is the reserved count; reread next tick to observe completion. |
-| `container-to-player` | `func(dimension: string, pos: block-change-pos, slot: u32, count: u32, player: string) -> result<u32, string>` | API level 26: as container-move, into the online player's main inventory. No creative exemption, overflow drops, armor or offhand slots. |
-| `player-to-container` | `func(player: string, inv-slot: u32, dimension: string, pos: block-change-pos, count: u32) -> result<u32, string>` | API level 26: main inventory slot 0..35 (hotbar first) into a container. |
+| `container-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>` | API level 28: one loaded block's slots (one half of a double chest). |
+| `player-stacks` | `func(player: string) -> option<list<option<stack-info>>>` | API level 28: read an online player's 36 main inventory slots, hotbar first (0..35, as player-to-container's inv-slot); no armor/offhand. UUID or exact online name; none for unknown/offline players. Same stack metadata as container-stacks. Server-thread reservation view at call time: includes earlier moves in this hook batch; read-only. |
+| `container-move` | `func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>` | API level 28: reserve a component-preserving transfer after hooks return. Moves min(count, source count), all or nothing if capacity is insufficient. None selects matching stacks then empty slots. Same-slot moves return zero. Revalidated on apply; a changed endpoint cancels the entire transfer. Bulk storage containers only; special machine slots are read-only. The result is the reserved count; reread next tick to observe completion. |
+| `container-to-player` | `func(dimension: string, pos: block-change-pos, slot: u32, count: u32, player: string) -> result<u32, string>` | API level 28: as container-move, into the online player's main inventory. No creative exemption, overflow drops, armor or offhand slots. |
+| `player-to-container` | `func(player: string, inv-slot: u32, dimension: string, pos: block-change-pos, count: u32) -> result<u32, string>` | API level 28: main inventory slot 0..35 (hotbar first) into a container. |
 | `break-blocks-as` | `func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>` | API level 20: queue real player breaks, applied after hooks with the live game. Unknown/offline players or over 2048 positions/call or 4096/mod/tick error atomically. At apply time skip air, liquids, unloaded blocks, positions beyond 80 blocks, and unbreakable blocks in survival. Stop if the player leaves or keep-tool triggers. Uses the normal player path (protection, border, loot, XP, wear, stats and updates). Creative gives no drops/wear; the caller's block-broken hook is excluded. |
+| `spawn-point` | `func() -> tuple<string, point, f32>` | The overworld's world spawn: dimension id, position, angle in degrees. |
 | `spawn-item` | `func(dimension: string, at: point, item: string, count: u32) -> result<_, string>` | Drop a plain stack in this dimension, count 1..max stack size. At most 16 successful requests per tick per mod, across all hook calls. |
 | `block-has-tag` | `func(block: string, tag: string) -> bool` | Whether a block id or state belongs to a loaded block tag (without #). Unknown blocks and tags return false. |
 | `play-sound` | `func(dimension: string, at: point, name: string, volume: f32, pitch: f32) -> result<_, string>` | A registered vanilla or loaded content sound in this dimension. |
@@ -1668,15 +1706,15 @@ An argument's value, parsed as its kind says.
 | `chat` | `func(player: player, text: string)` | A chat message a player sent, as plain text. |
 | `command` | `func(player: player, name: string, args: string, values: list<tuple<string, argument-value>>) -> result<option<string>, string>` | `/name args` typed by `player`: ok(some(text)) is their feedback, err(text) their error in red. `values` holds each argument given, by name, in order (an optional one left out isn't there); a line that doesn't parse never reaches the mod: the player gets vanilla's error. |
 | `block-broken` | `func(player: player, pos: block-pos, state: string)` | A player broke the block at `pos` in their dimension: `state` is what was there, as `minecraft:oak_log[axis=y]`. |
-| `block-used` | `func(player: player, pos: block-pos, state: string, sneaking: bool) -> bool` | API level 26: main-hand block use before vanilla/placement. True consumes it. Opt in through server-hooks.set-block-uses; at most 32 calls/mod/tick. |
-| `channel-message` | `func(player: player, name: string, data: list<u8>)` | API level 26: channel capability, only this mod id's messages (32/tick). |
+| `block-used` | `func(player: player, pos: block-pos, state: string, sneaking: bool) -> bool` | API level 28: main-hand block use before vanilla/placement. True consumes it. Opt in through server-hooks.set-block-uses; at most 32 calls/mod/tick. |
+| `channel-message` | `func(player: player, name: string, data: list<u8>)` | API level 28: channel capability, only this mod id's messages (32/tick). |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
 
 ## `server-hooks`
 
 Access: capability `world`.
 
-API level 26: additive server hook opt-in, capability `world`. Leaves the original server-events.registration record unchanged.
+API level 28: additive server hook opt-in, capability `world`. Leaves the original server-events.registration record unchanged.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
@@ -1686,7 +1724,7 @@ API level 26: additive server hook opt-in, capability `world`. Leaves the origin
 
 Access: capability `channel`.
 
-API level 26: experimental capability `channel`, on either side.
+API level 28: experimental capability `channel`, on either side.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
@@ -1697,7 +1735,7 @@ API level 26: experimental capability `channel`, on either side.
 
 Access: exported by the mod: the game calls it.
 
-API level 26: optional client export, gated by capability `channel`.
+API level 28: optional client export, gated by capability `channel`.
 
 | Function | Signature | What it does |
 | --- | --- | --- |

@@ -1,4 +1,4 @@
-//! Resolve server exports individually so pre-26 components stay loadable.
+//! Resolve server exports individually so pre-28 components stay loadable.
 use super::*;
 
 type CommandResult = Result<Option<String>, String>;
