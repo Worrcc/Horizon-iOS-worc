@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.70",
+          "buildVersion": "0.2.0.70",
+          "date": "2026-11-13T20:21:17Z",
+          "localizedDescription": "Branch claude/storage-api, commit a09be38cf.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-70/Horizon.ipa",
+          "size": 34517787,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.69",
           "buildVersion": "0.2.0.69",
           "date": "2026-11-12T23:12:14Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-60/Horizon.ipa",
           "size": 34377085,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.59",
-          "buildVersion": "0.2.0.59",
-          "date": "2026-11-11T07:54:21Z",
-          "localizedDescription": "Branch claude/mousetweaks-api, commit 71f0a3525.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-59/Horizon.ipa",
-          "size": 34377086,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.69",
-      "versionDate": "2026-11-12T23:12:14Z",
-      "versionDescription": "Branch claude/essentials-aim-api, commit 89ced2d2f.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-69/Horizon.ipa",
-      "size": 34462260
+      "version": "0.2.0.70",
+      "versionDate": "2026-11-13T20:21:17Z",
+      "versionDescription": "Branch claude/storage-api, commit a09be38cf.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-70/Horizon.ipa",
+      "size": 34517787
     }
   ],
   "news": []
