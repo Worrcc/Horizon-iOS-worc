@@ -303,7 +303,7 @@ pub fn carry<R: Read + Seek>(
     let mut folders: BTreeMap<(String, String), BTreeMap<String, Value>> = BTreeMap::new();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         let Some(rest) = name.strip_prefix("assets/").filter(|n| n.ends_with(".tbl")) else {
             continue;
         };
