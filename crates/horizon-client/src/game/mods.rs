@@ -713,9 +713,7 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
-    pub(super) fn tick_mods(&mut self) {
-        self.announce_wasm_channels();
-    }
+    pub(super) fn tick_mods(&mut self) {}
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
         false
@@ -1146,6 +1144,7 @@ impl Game<'_> {
     }
     /// A game tick.
     pub(super) fn tick_mods(&mut self) {
+        self.announce_wasm_channels();
         // Here, at the player's level: shown inside a console call (a control
         // socket command set the hook off), they would run as the console.
         for line in std::mem::take(&mut self.mods.commands) {
