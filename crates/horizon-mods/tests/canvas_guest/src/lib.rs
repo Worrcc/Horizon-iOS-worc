@@ -12,7 +12,7 @@ use horizon_mod_sdk::{
     canvas::{self, ImageShape, Shape},
     client_world::{self, Layer},
     game, input,
-    render::{Corner, FillShape, Rect},
+    render::{Corner, FillShape, ItemShape, Point, Rect},
 };
 
 struct Guest {
@@ -46,6 +46,8 @@ impl Mod for Guest {
             "screen",
             "screen_set",
             "screen_close",
+            "screen_items",
+            "box_items",
             "events",
             "screen_frames",
             "budget",
@@ -223,6 +225,29 @@ impl Mod for Guest {
                     canvas::set_canvas_screen(&shapes);
                 }
                 "screen shapes".into()
+            }
+            "screen_items" | "box_items" => {
+                let f: Vec<f32> = args
+                    .split_whitespace()
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                let items = vec![
+                    ItemShape {
+                        item: "minecraft:stone".into(),
+                        at: Point {
+                            x: f.get(1).copied().unwrap_or(8.0),
+                            y: f.get(2).copied().unwrap_or(9.0)
+                        },
+                        scale: f.get(3).copied().unwrap_or(1.0),
+                    };
+                    at(0) as usize
+                ];
+                if name == "screen_items" {
+                    canvas::set_screen_items(&items);
+                } else {
+                    canvas::set_box_items(&items);
+                }
+                "items set".into()
             }
             "screen_close" => {
                 canvas::close_canvas_screen();

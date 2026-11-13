@@ -160,6 +160,22 @@ fn location(dimension: String, pos: BlockChangePos) -> StorageLocation {
     }
 }
 impl State {
+    pub(super) fn storage_player_stacks(
+        &mut self,
+        player: String,
+    ) -> Option<Vec<Option<StackInfo>>> {
+        let player = self.storage_player(&player).ok()?;
+        let mut view = self.world.lock().ok()?;
+        Some(
+            view.as_mut()?
+                .storage()?
+                .slots
+                .get(&player)?
+                .iter()
+                .map(|s| s.as_ref().map(|s| s.info.clone()))
+                .collect(),
+        )
+    }
     pub(super) fn storage_stacks(
         &mut self,
         dimension: String,

@@ -628,7 +628,7 @@ interface render {
 /// `set-corner`, beside the `render` shapes. Also the frame budget a mod
 /// with heavy `frame` work asks for, and how much of it is left.
 interface canvas {
-    use render.{corner, rect, point, fill-shape, quad-shape, sprite-shape, text-shape};
+    use render.{corner, rect, point, fill-shape, quad-shape, sprite-shape, text-shape, item-shape};
     /// An image of the mod's, from `create-image`.
     type image = u32;
     /// A new image of `width` × `height` texels (each side 1 to 1024; at most
@@ -690,6 +690,19 @@ interface canvas {
     open-canvas-screen: func(title: string, shapes: list<shape>);
     /// Replaces the open canvas screen's shapes; ignored without a screen.
     set-canvas-screen: func(shapes: list<shape>);
+    /// API level 26: replaces the open canvas screen's item layer (ui and render).
+    /// Ignored without this mod's canvas screen. First 256 items; unknown ids
+    /// draw nothing. render.item-shape: GUI-pixel top left, scale 1 = 16 x 16,
+    /// scale clamped to 0..16 (nonfinite becomes 1); nonfinite positions become 0.
+    /// When nonempty, draw non-text shapes in list order, then items in list
+    /// order, then text shapes in list order. No count overlays; use text.
+    /// set-canvas-screen retains items; opening/reopening or closing clears them.
+    set-screen-items: func(items: list<item-shape>);
+    /// API level 26: same item layer for the existing corner/placed box, in GUI
+    /// pixels from its top left. First 256; same sanitizing and draw order as
+    /// set-screen-items. Placed boxes clip items too. Ignored without a box;
+    /// set-corner, set-placed and clear-corner clear its items. Needs render only.
+    set-box-items: func(items: list<item-shape>);
     /// Closes the mod's canvas screen without a closed event.
     close-canvas-screen: func();
     /// Removes the mod's canvas box.
@@ -1303,6 +1316,12 @@ interface %world {
     }
     /// API level 26: one loaded block's slots (one half of a double chest).
     container-stacks: func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>;
+    /// API level 26: read an online player's 36 main inventory slots, hotbar
+    /// first (0..35, as player-to-container's inv-slot); no armor/offhand.
+    /// UUID or exact online name; none for unknown/offline players. Same stack
+    /// metadata as container-stacks. Server-thread reservation view at call time:
+    /// includes earlier moves in this hook batch; read-only.
+    player-stacks: func(player: string) -> option<list<option<stack-info>>>;
     /// API level 26: reserve a component-preserving transfer after hooks return.
     /// Moves min(count, source count), all or nothing if capacity is insufficient.
     /// None selects matching stacks then empty slots. Same-slot moves return zero.

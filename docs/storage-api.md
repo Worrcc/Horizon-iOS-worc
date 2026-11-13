@@ -1,7 +1,8 @@
 # Storage API (level 26)
 
 Level 26 adds server block-use hooks, messages between the two halves of a
-sandboxed mod, and component-preserving storage transfers. All additions keep
+sandboxed mod, component-preserving storage transfers, player inventory reads
+and item icons on canvases. All additions keep
 earlier WIT records and functions unchanged. See [mods.md](mods.md) and the
 [reference](api/mods-reference.md) for manifests and signatures.
 
@@ -61,9 +62,18 @@ path; integrated connections use memory transport.
 Capability `world` adds:
 
 - `container-stacks(dimension, pos)`: slots of one loaded block, or none.
+- `player-stacks(player)`: the online player’s 36 main inventory slots, or none.
 - `container-move(dimension, from, from-slot, to, to-slot, count)`.
 - `container-to-player(dimension, pos, slot, count, player)`.
 - `player-to-container(player, inv-slot, dimension, pos, count)`.
+
+`player-stacks` is read-only, accepts UUID or exact online name, and returns
+none for unknown/offline players. Slots 0..8 are the hotbar, then 9..35 are the
+rest of the main inventory, exactly as `player-to-container`'s `inv-slot`;
+armor and offhand are excluded. It uses the server thread's storage view at
+call time, including earlier reservations in the same hook batch, as
+`container-stacks` does. Empty slots are none; an empty inventory is a list
+of 36 empty slots.
 
 Reads include item id, count, optional plain custom-name text and `display-key`.
 The key is a deterministic SHA-256 over the item id and saved component patch,
@@ -106,3 +116,38 @@ comparators, open container viewers and player inventories are updated.
 
 There is no extraction handle: moving directly between authoritative endpoints
 avoids abandoned handles losing items or replayed handles duplicating them.
+
+## Canvas item icons
+
+Client mods use `canvas.set-screen-items(items)` after `open-canvas-screen`,
+or `canvas.set-box-items(items)` after `set-placed` / `set-corner`. Both take
+`list<render.item-shape>`: an item id, `at` in GUI pixels from the screen/box's
+top left, and `scale` (1 means 16 × 16 GUI pixels). Screen items need both
+`ui` and `render`; box items need only `render`, with the usual experimental
+opt-ins. Only the first 256 items per screen/box are kept, independently of the
+shape cap. Unknown ids draw nothing. Scale is clamped to 0..16, nonfinite scale
+becomes 1, and nonfinite coordinates become 0. Items use the game's item-model
+renderer, including content items and resource packs, as HUD `render.item-shape`
+does. No count overlay is added; draw counts with canvas text.
+
+With a nonempty item list the exact order is all non-text canvas shapes in
+original list order, then all item icons in item-list order, then all canvas
+text shapes in original list order. Later entries in each layer cover earlier
+ones. Without items the original shape-list order is preserved. Screens clip
+every layer to the window; placed boxes clip every layer to the box/window
+intersection, as they do other shapes. Corner boxes retain their existing
+viewport clipping. The two layers belong only to the calling mod.
+
+`set-canvas-screen` replaces shapes and retains items. Opening/reopening a
+screen starts with no items; closing it, Esc or replacing it with a widget
+screen discards them. `set-corner` / `set-placed` starts a box with no items;
+`clear-corner` discards them. Calls without the corresponding screen/box are
+ignored, and an empty list clears that item layer. Set the items again after
+replacing a box. The SDK's `canvas-test` example shows a diamond over its image.
+
+These are additive level-26 functions; `canvas.shape` is unchanged. Wasmtime
+48's `component::func::typed::typecheck_variant` checks exact case counts,
+names, order and payloads: adding an `item` case would stop old guests linking.
+Levels 17–18 already kept `render.shape` intact by introducing a separate
+`canvas.shape` for images. Compatibility tests keep pre-26 and level-17
+components linking and pin the variant-mismatch failure.

@@ -17,7 +17,7 @@ use {
     super::mod_render::argb,
     horizon_client::{extras::Corner, hud::MOD_IMAGE_SPRITE},
     horizon_client::{extras_hud::Corners, hud::HudBatch},
-    horizon_mods::{CanvasImageShape, CanvasShape, RenderCorner, Shape},
+    horizon_mods::{CanvasImageShape, CanvasShape, ItemShape, RenderCorner, Shape},
 };
 
 /// A client mod that is on imports `canvas`, as of the last time the
@@ -147,7 +147,7 @@ impl Game<'_> {
                 .unwrap_or_else(|| corners.place(corner, panel.width, panel.height));
             let start = batch.vertices.len();
             hits.push((owner, [at.0, at.1, panel.width, panel.height]));
-            self.draw_canvas_shapes(batch, owner, &panel.shapes, at);
+            self.draw_canvas_shapes(batch, owner, &panel.shapes, &panel.items, at);
             if panel.placed.is_some() {
                 batch.clip_since(
                     start,
@@ -190,9 +190,17 @@ impl Game<'_> {
         batch: &mut HudBatch,
         owner: usize,
         shapes: &[CanvasShape],
+        items: &[ItemShape],
         at: (f32, f32),
     ) {
-        for shape in shapes {
+        for primitive in canvas_draw_order(shapes, items) {
+            let shape = match primitive {
+                CanvasPrimitive::Item(item) => {
+                    self.draw_shapes(batch, &[Shape::Item(item.clone())], at);
+                    continue;
+                }
+                CanvasPrimitive::Shape(shape) => shape,
+            };
             let plain = match shape {
                 CanvasShape::Image(image) => {
                     self.draw_canvas_image(batch, owner, image, at);
@@ -278,6 +286,32 @@ impl Game<'_> {
     }
 }
 
+#[cfg(feature = "mods")]
+enum CanvasPrimitive<'a> {
+    Shape(&'a CanvasShape),
+    Item(&'a ItemShape),
+}
+
+/// Keep legacy shape ordering without items. An active item layer lifts text
+/// above items, while keeping order within each of the three layers.
+#[cfg(feature = "mods")]
+fn canvas_draw_order<'a>(
+    shapes: &'a [CanvasShape],
+    items: &'a [ItemShape],
+) -> impl Iterator<Item = CanvasPrimitive<'a>> {
+    shapes
+        .iter()
+        .filter(move |s| items.is_empty() || !matches!(s, CanvasShape::Text(_)))
+        .map(CanvasPrimitive::Shape)
+        .chain(items.iter().map(CanvasPrimitive::Item))
+        .chain(
+            shapes
+                .iter()
+                .filter(move |s| !items.is_empty() && matches!(s, CanvasShape::Text(_)))
+                .map(CanvasPrimitive::Shape),
+        )
+}
+
 /// Exact box bounds as drawn, intersected with the viewport; no touch padding.
 #[cfg(feature = "mods")]
 fn box_contains([x, y, w, h]: [f32; 4], size: (f32, f32), at: (f32, f32)) -> bool {
@@ -318,6 +352,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn canvas_items_draw_between_backgrounds_and_text() {
+        use horizon_mods::{FillShape, RenderPoint, RenderRect, TextShape};
+        let text = CanvasShape::Text(TextShape {
+            text: "count".into(),
+            at: RenderPoint { x: 8.0, y: 8.0 },
+            color: 0xffffff,
+            centered: false,
+            shadow: true,
+        });
+        let fill = CanvasShape::Fill(FillShape {
+            rect: RenderRect {
+                x: 0.0,
+                y: 0.0,
+                w: 16.0,
+                h: 16.0,
+            },
+            color: 0xff000000,
+        });
+        let shapes = [text.clone(), fill.clone(), text, fill];
+        let items = [ItemShape {
+            item: "minecraft:stone".into(),
+            at: RenderPoint { x: 0.0, y: 0.0 },
+            scale: 1.0,
+        }];
+        let order = |items: &[ItemShape]| {
+            canvas_draw_order(&shapes, items)
+                .map(|p| match p {
+                    CanvasPrimitive::Shape(CanvasShape::Text(_)) => "text",
+                    CanvasPrimitive::Shape(_) => "fill",
+                    CanvasPrimitive::Item(_) => "item",
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&items), ["fill", "fill", "item", "text", "text"]);
+        assert_eq!(order(&[]), ["text", "fill", "text", "fill"]);
+    }
+
+    #[test]
     fn box_hit_uses_drawn_bounds_and_clips_to_window() {
         let size = (320.0, 180.0);
         // A stacked box includes the overlays above it in its drawn origin.
@@ -332,6 +404,7 @@ mod tests {
             width: 40.0,
             height: 30.0,
             shapes: Vec::new(),
+            items: Vec::new(),
         };
         let at = panel.placed_origin(size).unwrap();
         assert_eq!(at, (280.0, 0.0));

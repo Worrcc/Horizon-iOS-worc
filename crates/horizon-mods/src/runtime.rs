@@ -1274,6 +1274,7 @@ impl Mods {
             matches!(
                 f.as_str(),
                 "canvas.open-canvas-screen"
+                    | "canvas.set-screen-items"
                     | "canvas.set-canvas-screen"
                     | "canvas.close-canvas-screen"
             )
@@ -1416,6 +1417,7 @@ impl Mods {
                 matches!(
                     f.as_str(),
                     "world.container-stacks"
+                        | "world.player-stacks"
                         | "world.container-move"
                         | "world.container-to-player"
                         | "world.player-to-container"
@@ -2593,6 +2595,9 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn player_stacks(&mut self, player: String) -> Option<Vec<Option<StackInfo>>> {
+        self.storage_player_stacks(player)
+    }
     fn container_stacks(
         &mut self,
         dimension: String,
@@ -4561,6 +4566,11 @@ mod entity_tests {
     }
 
     #[test]
+    fn pre_level_26_components_still_link() {
+        older_components_still_link(26);
+    }
+
+    #[test]
     fn pre_level_25_components_still_link() {
         older_components_still_link(25);
     }
@@ -4741,6 +4751,15 @@ mod entity_tests {
 
     #[test]
     fn level_17_canvas_components_still_link() {
+        canvas_component_shape_compatibility(false);
+    }
+
+    #[test]
+    fn changing_canvas_variant_cases_breaks_component_linking() {
+        canvas_component_shape_compatibility(true);
+    }
+
+    fn canvas_component_shape_compatibility(remove_case: bool) {
         use wit_parser::{ManglingAndAbi, Resolve};
         let mut resolve = Resolve::default();
         let package = resolve
@@ -4760,6 +4779,8 @@ mod entity_tests {
                     !matches!(
                         name.as_str(),
                         "set-placed"
+                            | "set-screen-items"
+                            | "set-box-items"
                             | "open-canvas-screen"
                             | "set-canvas-screen"
                             | "close-canvas-screen"
@@ -4767,6 +4788,16 @@ mod entity_tests {
                     )
                 });
             }
+        }
+        // Model a host that has added a variant case since the guest was
+        // compiled. Wasmtime's typed host requires the exact same case set.
+        if remove_case {
+            let canvas = resolve.packages[package].interfaces["canvas"];
+            let shape = resolve.interfaces[canvas].types["shape"];
+            let wit_parser::TypeDefKind::Variant(variant) = &mut resolve.types[shape].kind else {
+                panic!("canvas.shape must be a variant");
+            };
+            variant.cases.pop();
         }
         let world = resolve
             .select_world(&[package], Some("render-host"))
@@ -4797,7 +4828,16 @@ mod entity_tests {
         let component = Component::new(engine, wasm).unwrap();
         let mut store = Store::new(engine, state());
         store.set_fuel(FUEL_INIT).unwrap();
-        linker.instantiate(&mut store, &component).unwrap();
+        let result = linker.instantiate(&mut store, &component);
+        if remove_case {
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains("expected variant of 5 cases, found 4 cases"),
+                "{error}"
+            );
+        } else {
+            result.unwrap();
+        }
     }
 
     #[test]

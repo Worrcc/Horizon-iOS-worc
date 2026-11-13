@@ -1507,9 +1507,9 @@ characters. Malformed/unknown file formats are ignored with a log warning;
 unlisted mounts use the translated Sprint/Attack labels. These files require no
 code mod or input capability.
 
-## API level 26: storage, block use and mod channels
+## API level 26: storage, canvas items, block use and mod channels
 
-Level 26 adds the three pieces described in [storage-api.md](storage-api.md):
+Level 26 adds the APIs described in [storage-api.md](storage-api.md):
 
 - Server mods with `world` opt into main-hand `server-events.block-used` using
   `server-hooks.set-block-uses(enabled, including-sneaking-item)`. Returning true
@@ -1536,3 +1536,27 @@ Level 26 adds the three pieces described in [storage-api.md](storage-api.md):
 The WIT changes are additive. In Rust, implement `ServerMod::block_used` and
 `ServerMod::channel_message`, or client `Mod::channel_message`; the SDK export
 macros provide the callbacks. No extraction handles are exposed.
+
+Level 26 also adds `world.player-stacks(player)` (capability `world`), a read-only
+list of 36 main inventory slots in hotbar-first order, with the same item id,
+count, display-key and optional custom-name as `container-stacks`. UUID or exact
+online name is accepted; unknown/offline players return none. Armor/offhand are
+excluded. Reads use the server thread's view at call time and include earlier
+storage reservations in the hook batch.
+
+For client canvases, `canvas.set-screen-items(list<render.item-shape>)` draws
+items after `open-canvas-screen`, using the game's item renderer. Item `at` is
+the top left in GUI pixels; `scale = 1` gives 16 × 16 pixels. The first 256 items
+are retained; unknown ids draw nothing, scale clamps to 0..16 (nonfinite → 1),
+and nonfinite positions become 0. `set-box-items` does the same for an existing
+placed/corner box. Screen items require `ui` plus `render`; box items only
+`render`, with their experimental opt-ins. With items present, non-text shapes
+draw first in their list order, then items in theirs, then text in its original
+order; without items, legacy shape order is preserved. Counts are mod-drawn text.
+Screen/window and placed-box clipping include items. `set-canvas-screen` retains
+items; opening/reopening/closing a screen clears them. Replacing or clearing a
+box clears its items. Calls without the corresponding surface are ignored;
+an empty list clears items. See [Storage API](storage-api.md#canvas-item-icons)
+for the full lifecycle, compatibility rationale and the SDK `canvas-test` example.
+The existing WIT shape variants are unchanged. All these additions remain API
+level **26**, which has not yet been released.

@@ -424,8 +424,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container", "
     assert_eq!(level("coords_hud.hmod"), 0);
     // The UI guest also exercises API 26 channels.
     assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 26);
-    // canvas-test uses a placed box and a canvas screen (level 18).
-    assert_eq!(level("canvas_test.hmod"), 18);
+    // canvas-test now draws items over its canvas screen (level 26).
+    assert_eq!(level("canvas_test.hmod"), 26);
 }
 
 #[test]
@@ -2075,6 +2075,57 @@ fn canvas_images_are_checked_capped_and_uploaded() {
     assert_eq!(game.status(), &Status::Running);
 }
 
+#[test]
+fn api26_canvas_items_are_bounded_and_follow_screen_and_box_lifetimes() {
+    let mut game = canvas_guest();
+    answer(&mut game, "screen_items 2").unwrap(); // No screen: ignored.
+    answer(&mut game, "screen 1").unwrap();
+    assert!(game.canvas_screen().unwrap().items.is_empty());
+    answer(&mut game, "screen_items 300 12 24 2").unwrap();
+    let screen = game.canvas_screen().unwrap();
+    assert_eq!(screen.items.len(), 256);
+    let item = &screen.items[0];
+    assert_eq!(item.item, "minecraft:stone");
+    assert_eq!((item.at.x, item.at.y, item.scale), (12.0, 24.0, 2.0));
+    answer(&mut game, "screen_set 2").unwrap();
+    assert_eq!(game.canvas_screen().unwrap().items.len(), 256);
+    answer(&mut game, "screen_items 1 NaN inf NaN").unwrap();
+    let item = &game.canvas_screen().unwrap().items[0];
+    assert_eq!((item.at.x, item.at.y, item.scale), (0.0, 0.0, 1.0));
+    for (scale, want) in [("-1", 0.0), ("100", 16.0)] {
+        answer(&mut game, &format!("screen_items 1 0 0 {scale}")).unwrap();
+        assert_eq!(game.canvas_screen().unwrap().items[0].scale, want);
+    }
+    answer(&mut game, "screen_items 0").unwrap();
+    assert!(game.canvas_screen().unwrap().items.is_empty());
+    answer(&mut game, "screen_items 1").unwrap();
+    answer(&mut game, "screen 1").unwrap(); // Reopen clears items.
+    assert!(game.canvas_screen().unwrap().items.is_empty());
+    answer(&mut game, "screen_items 1").unwrap();
+    answer(&mut game, "screen_close").unwrap();
+    answer(&mut game, "screen_items 2").unwrap();
+    answer(&mut game, "screen 1").unwrap();
+    assert!(game.canvas_screen().unwrap().items.is_empty());
+    answer(&mut game, "box_items 1").unwrap(); // No box: ignored.
+    answer(&mut game, "placed 0 0 0 32 32 1").unwrap();
+    assert!(game.canvas().unwrap().items.is_empty());
+    answer(&mut game, "box_items 300 4 5 1").unwrap();
+    assert_eq!(game.canvas().unwrap().items.len(), 256);
+    // Separate screen/box ownership and lifetimes.
+    answer(&mut game, "screen_items 2").unwrap();
+    assert_eq!(game.canvas().unwrap().items.len(), 256);
+    answer(&mut game, "placed 0 0 0 32 32 1").unwrap();
+    assert!(game.canvas().unwrap().items.is_empty());
+    answer(&mut game, "box_items 1").unwrap();
+    answer(&mut game, "box 0").unwrap(); // set-corner also resets.
+    assert!(game.canvas().unwrap().items.is_empty());
+    answer(&mut game, "box_items 1").unwrap();
+    answer(&mut game, "clear").unwrap();
+    assert!(game.canvas().is_none());
+    assert_eq!(game.canvas_screen().unwrap().items.len(), 2);
+    assert_eq!(game.status(), &Status::Running);
+}
+
 /// Two mods' images share the page without overlapping, and a mod's go
 /// when it stops.
 #[test]
@@ -2578,6 +2629,8 @@ fn canvas_example_opens_on_its_key() {
     let screen = mods.canvas_screen(0).unwrap();
     assert_eq!(screen.title, "Canvas test");
     assert_eq!(screen.shapes.len(), 1);
+    assert_eq!(screen.items.len(), 1);
+    assert_eq!(screen.items[0].item, "minecraft:diamond");
     assert!(mods.drain().contains(&Output::OpenScreen { owner: 0 }));
 }
 
@@ -3301,6 +3354,53 @@ fn api26_storage_reservations_and_block_use_cross_the_sandbox() {
         mods.drain()
             .iter()
             .any(|o| matches!(o,Output::Channel {data: sent,..} if *sent == data))
+    );
+
+    // Read-only inventory queries: final slot order, name/UUID, metadata, absent
+    // inventory and a disconnected player even if stale storage still exists.
+    let mut inventory = vec![None; 36];
+    inventory[35] = Some(StorageStack {
+        info: horizon_mods::StackInfo {
+            item: "minecraft:stone".into(),
+            count: 12,
+            display_key: "named-enchanted".into(),
+            custom_name: Some("Named".into()),
+        },
+        max: 64,
+    });
+    let slots = [(L::Player(p.id.clone()), inventory)].into();
+    let expected = StorageView {
+        slots,
+        ..Default::default()
+    };
+    let before = expected.slots.clone();
+    mods.lend_world(Box::new(View(expected)));
+    assert!(mods.server_command(&p, "player_peek26"));
+    let out = mods.drain();
+    assert!(
+        matches!(&out[..], [Output::Reply { text, error: false, .. }] if text == "player slots checked"),
+        "{out:?}"
+    );
+    let mut world = mods.take_world().unwrap();
+    assert_eq!(world.storage().unwrap().slots, before);
+    mods.lend_world(world);
+    mods.set_snapshot(Snapshot::default());
+    assert!(mods.server_command(&p, "player_peek26"));
+    let out = mods.drain();
+    assert!(
+        matches!(&out[..], [Output::Reply { text, error: false, .. }] if text == "no player inventory"),
+        "{out:?}"
+    );
+    mods.set_snapshot(Snapshot {
+        players: vec![p.clone()],
+        ..Default::default()
+    });
+    mods.lend_world(Box::new(View(StorageView::default())));
+    assert!(mods.server_command(&p, "player_peek26"));
+    let out = mods.drain();
+    assert!(
+        matches!(&out[..], [Output::Reply { text, error: false, .. }] if text == "no player inventory"),
+        "{out:?}"
     );
 }
 

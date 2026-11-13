@@ -1,6 +1,7 @@
 //! An example of capability `render`'s canvas and capability `world-read`
-//! (API level 18): a 64 × 64 gradient the mod paints itself, shown round in
-//! a box at the top right, and the top block of the column under the
+//! (API level 26): a 64 × 64 gradient the mod paints itself, shown round in
+//! a box at the top right and behind an item icon on its canvas screen, and
+//! the top block of the column under the
 //! player, read from the chunk with `client-world.columns`, said in chat
 //! whenever it changes (`/top` says it again).
 use horizon_mod_sdk::{
@@ -9,7 +10,7 @@ use horizon_mod_sdk::{
     chat,
     client_world::{self, BlockStates, Layer},
     game, input,
-    render::{Corner, FillShape, Rect},
+    render::{Corner, FillShape, ItemShape, Point, Rect},
 };
 
 /// The image's side in texels, and the box's margin around it.
@@ -58,6 +59,11 @@ impl CanvasTest {
                 round: false,
             })],
         );
+        canvas::set_screen_items(&[ItemShape {
+            item: "minecraft:diamond".into(),
+            at: Point { x: 16.0, y: 16.0 },
+            scale: 2.0,
+        }]);
     }
     /// The block id of state `id`, reading the table again when the packs
     /// reloaded or it holds no such state.

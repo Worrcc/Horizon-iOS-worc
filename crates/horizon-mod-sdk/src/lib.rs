@@ -1,5 +1,9 @@
 //! Write Horizon mods in Rust (`docs/mods.md`).
 //!
+//! API level 26: [`canvas::set_screen_items`] and [`canvas::set_box_items`]
+//! draw item icons on canvases; [`server::world::player_stacks`] reads an online
+//! player's main inventory, including earlier storage reservations in the batch.
+//!
 //! A mod is a type implementing [`Mod`], exported with [`export_mod!`] from
 //! a `cdylib` crate built for `wasm32-unknown-unknown`;
 //! `cargo horizon-mod build` turns it into the component the game loads.

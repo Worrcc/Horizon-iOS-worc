@@ -17,7 +17,7 @@ pub use super::render_bindings::horizon::mods::canvas::{
     ImageShape as CanvasImageShape, Shape as CanvasShape,
 };
 use super::{
-    Mods, RenderCorner, SHAPES, State, clip,
+    ItemShape, Mods, RenderCorner, SHAPES, State, clip,
     render_bindings::horizon::mods::canvas::{self, Image as ImageId},
 };
 use std::{
@@ -163,6 +163,7 @@ pub struct CanvasPanel {
     pub width: f32,
     pub height: f32,
     pub shapes: Vec<CanvasShape>,
+    pub items: Vec<ItemShape>,
 }
 
 impl CanvasPanel {
@@ -192,9 +193,12 @@ impl CanvasPanel {
 pub struct CanvasScreen {
     pub title: String,
     pub shapes: Vec<CanvasShape>,
+    pub items: Vec<ItemShape>,
 }
 /// The most shapes a full-window canvas may hold.
 pub const SCREEN_SHAPES: usize = 4096;
+/// The most items on one canvas screen or box.
+pub const CANVAS_ITEMS: usize = 256;
 
 /// The granted frame budget and how fast the mod burns fuel here.
 #[derive(Clone, Copy, Debug)]
@@ -449,7 +453,35 @@ fn clip_canvas(shapes: Vec<CanvasShape>, limit: usize) -> Vec<CanvasShape> {
         .collect()
 }
 
+fn clip_items(items: Vec<ItemShape>) -> Vec<ItemShape> {
+    items
+        .into_iter()
+        .take(CANVAS_ITEMS)
+        .map(|mut item| {
+            item.item = clip(item.item);
+            item.at.x = finite(item.at.x);
+            item.at.y = finite(item.at.y);
+            item.scale = if item.scale.is_finite() {
+                item.scale.clamp(0.0, 16.0)
+            } else {
+                1.0
+            };
+            item
+        })
+        .collect()
+}
+
 impl canvas::Host for State {
+    fn set_screen_items(&mut self, items: Vec<ItemShape>) {
+        if let Some(screen) = &mut self.canvas.screen {
+            screen.items = clip_items(items);
+        }
+    }
+    fn set_box_items(&mut self, items: Vec<ItemShape>) {
+        if let Some(panel) = &mut self.canvas.panel {
+            panel.items = clip_items(items);
+        }
+    }
     fn set_box_key(&mut self, name: Option<String>) -> Result<(), String> {
         if let Some(name) = &name
             && !self.input.keys.iter().any(|k| &k.name == name)
@@ -537,6 +569,7 @@ impl canvas::Host for State {
             width: size(width),
             height: size(height),
             shapes: clip_canvas(shapes, SHAPES),
+            items: Vec::new(),
         });
     }
     fn set_placed(
@@ -556,6 +589,7 @@ impl canvas::Host for State {
         self.canvas.set_screen(Some(CanvasScreen {
             title: clip(title),
             shapes: clip_canvas(shapes, SCREEN_SHAPES),
+            items: Vec::new(),
         }));
         self.ui.open = true;
         self.ui.close = false;

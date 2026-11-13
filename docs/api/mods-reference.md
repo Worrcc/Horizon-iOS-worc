@@ -674,6 +674,10 @@ Capability `render` (experimental), API level 17: the mod's own pixels on the HU
 
 `type text-shape = text-shape`
 
+### type `item-shape`
+
+`type item-shape = item-shape`
+
 ### type `image`
 
 An image of the mod's, from `create-image`.
@@ -714,6 +718,8 @@ What a canvas corner box holds.
 | `set-box-key` | `func(name: option<string>) -> result<_, string>` | API level 21: a finger on the drawn canvas box sends key-down for this input.register-key name, and lifting sends key-up. Only while playing with touch controls shown; consumes the touch. Game and mod touch buttons win overlaps. none restores the default of taking no touches. An unknown key name is an error. |
 | `open-canvas-screen` | `func(title: string, shapes: list<shape>)` | API level 18: opens the mod's full-window canvas (capabilities ui and render). Up to 4096 shapes in GUI pixels from the window top left, clipped to the window. Hides its HUD box; Escape sends ui-events.closed. |
 | `set-canvas-screen` | `func(shapes: list<shape>)` | Replaces the open canvas screen's shapes; ignored without a screen. |
+| `set-screen-items` | `func(items: list<item-shape>)` | API level 26: replaces the open canvas screen's item layer (ui and render). Ignored without this mod's canvas screen. First 256 items; unknown ids draw nothing. render.item-shape: GUI-pixel top left, scale 1 = 16 x 16, scale clamped to 0..16 (nonfinite becomes 1); nonfinite positions become 0. When nonempty, draw non-text shapes in list order, then items in list order, then text shapes in list order. No count overlays; use text. set-canvas-screen retains items; opening/reopening or closing clears them. |
+| `set-box-items` | `func(items: list<item-shape>)` | API level 26: same item layer for the existing corner/placed box, in GUI pixels from its top left. First 256; same sanitizing and draw order as set-screen-items. Placed boxes clip items too. Ignored without a box; set-corner, set-placed and clear-corner clear its items. Needs render only. |
 | `close-canvas-screen` | `func()` | Closes the mod's canvas screen without a closed event. |
 | `clear-corner` | `func()` | Removes the mod's canvas box. |
 | `request-frame-budget` | `func(micros: u32) -> u32` | Asks for a CPU budget for each `frame` call, in microseconds: 100 by default, at most 500, or 4000 while this mod's canvas screen is open. Remembers the request: closing the screen immediately restores the 500 maximum; reopening reapplies a larger request. Thermal pressure may limit screens to 500 too. Returns what is granted now (the Mods page shows it). The frame hook's hard fuel cap always wins, with headroom to return. The mod has no clock: `work-left` says how much of the soft budget is left. |
@@ -1346,6 +1352,7 @@ A plain item stack; components are not carried by this API.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `container-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack-info>>>` | API level 26: one loaded block's slots (one half of a double chest). |
+| `player-stacks` | `func(player: string) -> option<list<option<stack-info>>>` | API level 26: read an online player's 36 main inventory slots, hotbar first (0..35, as player-to-container's inv-slot); no armor/offhand. UUID or exact online name; none for unknown/offline players. Same stack metadata as container-stacks. Server-thread reservation view at call time: includes earlier moves in this hook batch; read-only. |
 | `container-move` | `func(dimension: string, source: block-change-pos, source-slot: u32, destination: block-change-pos, destination-slot: option<u32>, count: u32) -> result<u32, string>` | API level 26: reserve a component-preserving transfer after hooks return. Moves min(count, source count), all or nothing if capacity is insufficient. None selects matching stacks then empty slots. Same-slot moves return zero. Revalidated on apply; a changed endpoint cancels the entire transfer. Bulk storage containers only; special machine slots are read-only. The result is the reserved count; reread next tick to observe completion. |
 | `container-to-player` | `func(dimension: string, pos: block-change-pos, slot: u32, count: u32, player: string) -> result<u32, string>` | API level 26: as container-move, into the online player's main inventory. No creative exemption, overflow drops, armor or offhand slots. |
 | `player-to-container` | `func(player: string, inv-slot: u32, dimension: string, pos: block-change-pos, count: u32) -> result<u32, string>` | API level 26: main inventory slot 0..35 (hotbar first) into a container. |

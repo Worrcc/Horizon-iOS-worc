@@ -202,7 +202,7 @@ impl Game<'_> {
             self.player.is_some(),
         );
         let start = batch.vertices.len();
-        self.draw_canvas_shapes(batch, owner, &screen.shapes, (0.0, 0.0));
+        self.draw_canvas_shapes(batch, owner, &screen.shapes, &screen.items, (0.0, 0.0));
         batch.clip_since(start, 0.0, 0.0, batch.width, batch.height);
         true
     }
