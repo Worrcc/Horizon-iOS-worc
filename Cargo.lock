@@ -1955,6 +1955,7 @@ name = "horizon-mods"
 version = "0.1.0"
 dependencies = [
  "horizon-shader-api",
+ "libc",
  "log",
  "minisign-verify",
  "semver",

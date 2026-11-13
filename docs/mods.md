@@ -130,7 +130,7 @@ wasmtime 48 is a long-term-support line (security fixes until August 2028)
 and needs Rust 1.95. It reads WebAssembly with the same wasm-tools release
 (0.254) as the `wit-component` that packs mods and the SDK's `wit-bindgen`, so
 the build carries one copy of them. Only its `runtime`, `cranelift`,
-`component-model` and `std` features are on: no WASI, no async, no GC
+`component-model`, `std` and `pulley` features are on: no WASI, no async, no GC
 proposal, no profiling. Its cranelift backend generates native code for x86-64
 and ARM64 on Windows, macOS and Linux, which is why one `.hmod` serves them
 all.
@@ -141,6 +141,33 @@ on (`release.yml`), and a build from source needs
 Without it (the tests and probes) wasmtime and cranelift aren't built, a
 quarter of a clean build; content mods still load, and the game logs why the
 code mods don't start.
+
+### Native code or Pulley
+
+WebAssembly mods normally run as Cranelift machine code on desktop. On iOS,
+`auto` uses native code only when `csops` reports the process's `CS_DEBUGGED`
+flag (for example after enabling JIT with StikDebug in LiveContainer).
+Otherwise it uses the Pulley interpreter. A failed flag query means no JIT.
+Both iOS engines use explicit bounds checks, no signal-based traps, and no
+memory reservation or guard region.
+
+Set `HORIZON_MODS_ENGINE=auto|native|pulley` before starting the game (`auto`
+is the default). `pulley` selects the interpreter on every platform, useful
+for timing comparisons without rebuilding. `native` attempts machine code
+even without the iOS flag, for testing. Unknown values warn and use `auto`.
+The `force-pulley` build feature changes the `auto` default to Pulley;
+an explicit environment override takes precedence.
+
+If native engine creation, linker setup, or compilation of the first code
+mod fails, Horizon warns with the reason and rebuilds the engine and linker
+once for Pulley. A Pulley failure is reported as a mod error. The finalized
+engine is shared by client/server mods and retained across world and dev-mod
+reloads; later compilation errors fail that mod without switching engines.
+Look in the game log for the single selection line, emitted when the first
+code mod is loaded: `Horizon: mods run on native (<reason>)` or
+`Horizon: mods run on pulley (<reason>)`. Changing the override or enabling
+JIT after that requires restarting the game. Native code still depends on
+wasmtime being allowed to map executable memory on that iOS installation.
 
 ### Performance
 
@@ -179,7 +206,7 @@ fullscreen canvas screen is open, with `canvas.request-frame-budget` and
 stops when `canvas.work-left` says it is
 spent (`the_frame_budget_converges` in the sandbox tests: a 300 µs budget
 holds to within a few percent, with Cranelift and on Pulley,
-`--features force-pulley`, as iOS runs mods). The runtime keeps each mod's
+`--features force-pulley`, as iOS runs mods without JIT). The runtime keeps each mod's
 average call time (`Entry::cost`); the Mods page will show it, and a mod over
 budget for long will be flagged, then paused.
 

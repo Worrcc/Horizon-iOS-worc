@@ -11,11 +11,12 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use wasmtime::{
-    Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
-    component::{Component, HasSelf, Instance, Linker, TypedFunc, Val},
+    Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
+    component::{HasSelf, Instance, Linker, TypedFunc, Val},
 };
 
 mod container_host;
+mod engine;
 pub use container_host::{
     ContainerButton, ContainerPart, ContainerPointerKind, ContainerReply, ContainerRequest,
     ContainerShift, ContainerSlot, ContainerStack, ContainerState,
@@ -914,7 +915,6 @@ struct State {
 pub struct Mods {
     container_bridge: container_host::Bridge,
     container_shift: ContainerShift,
-    engine: Option<(Engine, Linker<State>)>,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
@@ -1138,86 +1138,6 @@ impl Mods {
         }
     }
 
-    fn engine(&mut self) -> Result<&(Engine, Linker<State>), String> {
-        if self.engine.is_none() {
-            let mut config = Config::new();
-            config.wasm_component_model(true).consume_fuel(true);
-            // iOS: Pulley bytecode in place of machine code, which only a JIT entitlement (or a
-            // debugger attached) could run; bounds checks in place of guard pages and signal
-            // handlers, and memories that grow by copying, not inside a 4 GiB reservation an
-            // app's address space has no room for. `force-pulley` does the
-            // same on any host, to test and time mods as iOS runs them.
-            #[cfg(any(target_os = "ios", feature = "force-pulley"))]
-            config
-                .target("pulley64")
-                .map_err(|e| e.to_string())?
-                .signals_based_traps(false)
-                .memory_reservation(0)
-                .memory_guard_size(0);
-            let engine = Engine::new(&config).map_err(|e| e.to_string())?;
-            let mut linker = Linker::new(&engine);
-            HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            channel_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
-            players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            // Orders are imported by mods. Their variant grows over time, but
-            // Wasmtime's typed bindings require an identical case list. Decode
-            // by case name so components built against earlier subsets keep
-            // their own discriminants and still reach the same validation.
-            linker.allow_shadowing(true);
-            linker
-                .instance("horizon:mods/entities@0.1.0")
-                .map_err(|e| e.to_string())?
-                .func_new("give-orders", |mut store, _, params, results| {
-                    let result = decode_orders(params)
-                        .and_then(|orders| entities::Host::give_orders(store.data_mut(), orders));
-                    let [output] = results else {
-                        return Err(wasmtime::Error::msg("give-orders returns one result"));
-                    };
-                    *output = Val::Result(
-                        result
-                            .map(|()| None)
-                            .map_err(|error| Some(Box::new(Val::String(error)))),
-                    );
-                    Ok(())
-                })
-                .map_err(|e| e.to_string())?;
-            linker.allow_shadowing(false);
-            ContainerHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            // `work-left` reads the store's fuel, which a plain host
-            // function has no way to.
-            linker.allow_shadowing(true);
-            linker
-                .instance("horizon:mods/canvas@0.1.0")
-                .map_err(|e| e.to_string())?
-                .func_wrap(
-                    "work-left",
-                    |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
-                        let fuel = store.get_fuel()?;
-                        Ok((canvas_host::work_left(store.data().canvas.work, fuel),))
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-            linker.allow_shadowing(false);
-            WorldReadHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            self.engine = Some((engine, linker));
-        }
-        Ok(self.engine.as_ref().expect("made above"))
-    }
-
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
     /// nothing to run (the game reads its content before the world loads).
     /// `path` is the mod's own `.hmod` or folder, for capability `storage`'s
@@ -1259,9 +1179,11 @@ impl Mods {
         let container_shift = self.container_shift.clone();
         let mut canvas = canvas_host::CanvasState::new(page);
         canvas.limit_screen_budget(self.canvas_screen_budget_limited);
-        let (engine, linker) = self.engine()?;
-        let component =
-            Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = engine::compile(wasm)?;
         let ty = component.component_type();
         let imports: Vec<String> = ty
             .imports(engine)
@@ -2202,6 +2124,68 @@ impl Mods {
         }
         any
     }
+}
+
+fn linker(engine: &Engine) -> Result<Linker<State>, String> {
+    let mut linker = Linker::new(engine);
+    HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    channel_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
+    players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    // Orders are imported by mods. Their variant grows over time, but
+    // Wasmtime's typed bindings require an identical case list. Decode
+    // by case name so components built against earlier subsets keep
+    // their own discriminants and still reach the same validation.
+    linker.allow_shadowing(true);
+    linker
+        .instance("horizon:mods/entities@0.1.0")
+        .map_err(|e| e.to_string())?
+        .func_new("give-orders", |mut store, _, params, results| {
+            let result = decode_orders(params)
+                .and_then(|orders| entities::Host::give_orders(store.data_mut(), orders));
+            let [output] = results else {
+                return Err(wasmtime::Error::msg("give-orders returns one result"));
+            };
+            *output = Val::Result(
+                result
+                    .map(|()| None)
+                    .map_err(|error| Some(Box::new(Val::String(error)))),
+            );
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+    linker.allow_shadowing(false);
+    ContainerHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    // `work-left` reads the store's fuel, which a plain host
+    // function has no way to.
+    linker.allow_shadowing(true);
+    linker
+        .instance("horizon:mods/canvas@0.1.0")
+        .map_err(|e| e.to_string())?
+        .func_wrap(
+            "work-left",
+            |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
+                let fuel = store.get_fuel()?;
+                Ok((canvas_host::work_left(store.data().canvas.work, fuel),))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    linker.allow_shadowing(false);
+    WorldReadHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    Ok(linker)
 }
 
 /// A command's arguments are well formed: names given and distinct,
@@ -4433,9 +4417,11 @@ mod entity_tests {
                 )
                 .0 < level
             );
-            let mut mods = Mods::default();
-            let (engine, linker) = mods.engine().unwrap();
-            let component = Component::new(engine, wasm).unwrap();
+            let engine::Compiled {
+                engine,
+                linker,
+                component,
+            } = engine::compile(&wasm).unwrap();
             let mut store = Store::new(engine, state());
             store.set_fuel(FUEL_INIT).unwrap();
             linker.instantiate(&mut store, &component).unwrap();
@@ -4823,9 +4809,11 @@ mod entity_tests {
             crate::api_level::needed(functions.iter().map(String::as_str)).0,
             17
         );
-        let mut mods = Mods::default();
-        let (engine, linker) = mods.engine().unwrap();
-        let component = Component::new(engine, wasm).unwrap();
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = engine::compile(&wasm).unwrap();
         let mut store = Store::new(engine, state());
         store.set_fuel(FUEL_INIT).unwrap();
         let result = linker.instantiate(&mut store, &component);
@@ -4881,9 +4869,11 @@ mod entity_tests {
             crate::api_level::needed(functions.iter().map(String::as_str)).0,
             2
         );
-        let mut mods = Mods::default();
-        let (engine, linker) = mods.engine().unwrap();
-        let component = Component::new(engine, wasm).unwrap();
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = engine::compile(&wasm).unwrap();
         let mut store = Store::new(engine, state());
         store.set_fuel(FUEL_INIT).unwrap();
         linker.instantiate(&mut store, &component).unwrap();
@@ -5004,9 +4994,11 @@ mod entity_tests {
             .unwrap()
             .encode()
             .unwrap();
-        let mut mods = Mods::default();
-        let (engine, linker) = mods.engine().unwrap();
-        let component = Component::new(engine, wasm).unwrap();
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = engine::compile(&wasm).unwrap();
         let mut store = Store::new(engine, state());
         store.set_fuel(FUEL_INIT).unwrap();
         let instance = linker.instantiate(&mut store, &component).unwrap();
