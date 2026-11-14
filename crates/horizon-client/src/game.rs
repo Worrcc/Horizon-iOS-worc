@@ -337,6 +337,8 @@ mod server_links;
 #[cfg(feature = "mods")]
 mod server_mod_actions;
 #[cfg(feature = "mods")]
+mod server_mod_effects;
+#[cfg(feature = "mods")]
 mod server_mod_machines;
 #[cfg(feature = "mods")]
 mod server_mod_storage;

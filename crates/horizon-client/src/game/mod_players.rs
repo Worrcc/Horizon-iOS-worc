@@ -30,6 +30,11 @@ impl Game<'_> {
                 )
             })
             .clone();
+        let item_tags = self
+            .mods
+            .item_tags
+            .get_or_insert_with(|| Arc::new(self.res.items().item_tags.clone()))
+            .clone();
         let mut players = HashMap::new();
         if self.options.execution_role.is_client() && self.remote.is_none() && self.player.is_some()
         {
@@ -61,9 +66,11 @@ impl Game<'_> {
                 );
             }
         }
-        self.mods
-            .mods
-            .lend_inventories(Box::new(Inventories { items, players }));
+        self.mods.mods.lend_inventories(Box::new(Inventories {
+            items,
+            item_tags,
+            players,
+        }));
     }
     pub(super) fn return_mod_inventories(&mut self, host: Option<&mut LanHost>) {
         let Some(loan) = self.mods.mods.take_inventories() else {

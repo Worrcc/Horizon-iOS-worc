@@ -80,6 +80,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "horizon-mods-test-api20-server-guest",
                 "-p",
+                "phase-c-demo",
+                "-p",
                 "canvas-test",
                 "--target-dir",
             ])
@@ -118,6 +120,11 @@ fn mods_dir() -> &'static Path {
             (
                 "horizon_mods_test_canvas_guest",
                 CANVAS_MANIFEST.to_string(),
+            ),
+            (
+                "phase_c_demo",
+                std::fs::read_to_string(root.join("mods/official/phase-c-demo/horizon-mod.toml"))
+                    .unwrap(),
             ),
             ("canvas_test", example("canvas-test")),
             (
@@ -3725,7 +3732,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     }
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        30
+        31
     );
 }
 
@@ -3818,3 +3825,5 @@ mod behaviour;
 mod stack_data;
 
 mod machines;
+#[path = "player_world/mod.rs"]
+mod player_world;

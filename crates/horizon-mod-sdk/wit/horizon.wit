@@ -1332,12 +1332,103 @@ interface players {
     /// before that dimension's next tick. At most 100 stacks per call, as
     /// /give. Unknown items or offline players are errors.
     give-item: func(player: string, item: string, count: u32) -> result<_, string>;
+    /// API 31: a player's death as the server saw it, polled like damage-taken.
+    record player-death {
+        /// The player's UUID.
+        player: string,
+        /// Dimension id where they died.
+        dimension: string,
+        /// Feet position at death.
+        at: point,
+        /// The death message's translation key (`death.attack.lava`); none when built from combat.
+        cause: option<string>,
+    }
+    /// API 31: a player placed by a respawn.
+    record player-respawn { player: string, dimension: string, at: point }
+    /// API 31: food and experience; health is in `player`.
+    record player-vitals {
+        /// 0..20.
+        food: u32,
+        /// 0..food.
+        saturation: f32,
+        xp-level: u32,
+        /// Progress toward the next level, 0..1.
+        xp-progress: f32,
+        xp-total: u32,
+    }
+    /// API 31: one active status effect.
+    record active-effect {
+        /// Namespaced id, `minecraft:speed`.
+        id: string,
+        /// Remaining ticks; -1 is infinite.
+        ticks: s32,
+        amplifier: u8,
+    }
+    /// API 31: which stacks clear-items removes.
+    variant item-filter {
+        /// An exact item id.
+        item(string),
+        /// An item tag, without `#`.
+        tag(string),
+        /// Stacks with the calling mod's custom data: some(v) only value v, none any value.
+        mod-data(option<string>),
+    }
+    /// API 31: players who died during the last tick, oldest first, at most 256.
+    deaths: func() -> list<player-death>;
+    /// API 31: players placed by a respawn during the last tick, at most 256.
+    respawns: func() -> list<player-respawn>;
+    /// API 31: an online player's food and experience as at the start of the tick; none when offline.
+    vitals: func(player: string) -> option<player-vitals>;
+    /// API 31: an online player's active effects (at most 64) at the start of the tick; none when offline.
+    effects: func(player: string) -> option<list<active-effect>>;
+    /// API 31: health 0 < h <= 1024, capped at max health; never kills or revives. Deferred.
+    set-health: func(player: string, health: f32) -> result<_, string>;
+    /// API 31: hurt as vanilla damage of a registered type, 0 < amount <= 1024; armour applies, can kill; creative immune. Deferred.
+    hurt: func(player: string, amount: f32, damage-type: string) -> result<_, string>;
+    /// API 31: food 0..20 and saturation 0..food. Deferred.
+    set-food: func(player: string, food: u32, saturation: f32) -> result<_, string>;
+    /// API 31: Player.giveExperiencePoints, 0..100000 points (no Mending). Deferred.
+    give-experience: func(player: string, points: u32) -> result<_, string>;
+    /// API 31: Player.giveExperienceLevels, -1000..1000; never below level 0. Deferred.
+    give-levels: func(player: string, levels: s32) -> result<_, string>;
+    /// API 31: remove the effects active at the start of the tick. Deferred.
+    clear-effects: func(player: string) -> result<_, string>;
+    /// API 31: like /clear, in main inventory, armour and off hand (main hand first); the items are
+    /// destroyed, also in creative. max 0 only counts. Returns the count removed (or matching for 0).
+    clear-items: func(player: string, filter: item-filter, max: u32) -> result<u32, string>;
+    /// API 31: a sound only this player hears, at their position; volume 0..4, pitch 0.5..2.
+    play-sound-to: func(player: string, name: string, volume: f32, pitch: f32) -> result<_, string>;
 }
 
 /// Capability `world`, server mods only (manifest `api = "0.3"`,
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    /// API 31: particle options: rgb 0xRRGGBB and scale 0.01..4.
+    record dust-color { rgb: u32, scale: f32 }
+    /// API 31: a vanilla particle burst. `block` is required for minecraft:block, block_marker,
+    /// falling_dust, dust_pillar and block_crumble; `dust` for minecraft:dust; others take neither.
+    record particle-burst {
+        name: string,
+        at: point,
+        delta: point,
+        speed: f32,
+        /// 0..256; zero sends one moving delta * speed.
+        count: u32,
+        block: option<string>,
+        dust: option<dust-color>,
+    }
+    /// API 31: what an explosion breaks.
+    enum blast-kind { keep, block, tnt }
+    /// API 31: 64 calls and 4096 particles/mod/tick, sent to players near `at`. Deferred.
+    spawn-particles: func(dimension: string, particles: particle-burst) -> result<_, string>;
+    /// API 31: Level.explode with no source, 0 < radius <= 8, 4/mod/tick; mob_griefing off keeps blocks and fire. Deferred.
+    explode: func(dimension: string, center: point, radius: f32, fire: bool, blast: blast-kind) -> result<_, string>;
+    /// API 31: turn an existing block into a falling block. expected-state must equal get-block now
+    /// and when applied; velocity each axis |v| <= 3.9; 16/mod/tick. Deferred.
+    make-block-fall: func(dimension: string, pos: block-change-pos, expected-state: string, velocity: point, hurts: bool) -> result<_, string>;
+    /// API 31: FluidState.getFlow, the normalised current; none for unloaded chunks or unknown dimensions.
+    fluid-flow: func(dimension: string, pos: block-change-pos) -> option<point>;
     /// API 30: only the calling mod's saved UTF-8 value, at most 4096 bytes.
     block-data: func(dimension: string, pos: block-change-pos) -> result<option<string>, string>;
     /// Deferred, preimage-checked; success is a queue receipt.

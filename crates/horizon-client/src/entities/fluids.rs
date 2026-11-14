@@ -45,6 +45,62 @@ pub fn fluid_flow(world: &World, fluids: &FluidResources, pos: [i32; 3]) -> [f64
     let flow = flow_at(&mut scene, state, at).unwrap_or(Vec3::ZERO);
     [flow.x, flow.y, flow.z]
 }
+/// [`fluid_flow`] over bare chunks, for a world that is not a [`World`] (the
+/// server mods' lent dimensions): the same current, with unloaded columns
+/// reading as `air`.
+pub fn fluid_flow_in_chunks(
+    chunks: &crate::chunk_map::ChunkMap,
+    air: BlockStateId,
+    fluids: &FluidResources,
+    pos: [i32; 3],
+) -> [f64; 3] {
+    let mut scene = ChunkFlowWorld {
+        chunks,
+        air,
+        fluids,
+    };
+    let at = BlockPos::new(pos[0], pos[1], pos[2]);
+    let state = fluids.fluid(scene.read(pos[0], pos[1], pos[2]));
+    let flow = flow_at(&mut scene, state, at).unwrap_or(Vec3::ZERO);
+    [flow.x, flow.y, flow.z]
+}
+/// What [`fluid_flow_in_chunks`] reads: `World::block` over a chunk map.
+struct ChunkFlowWorld<'a> {
+    chunks: &'a crate::chunk_map::ChunkMap,
+    air: BlockStateId,
+    fluids: &'a FluidResources,
+}
+impl ChunkFlowWorld<'_> {
+    fn read(&self, x: i32, y: i32, z: i32) -> BlockStateId {
+        self.chunks
+            .get(&(x >> 4, z >> 4))
+            .map_or(self.air, |chunk| chunk.block(x & 15, y, z & 15))
+    }
+}
+impl FluidFlowWorld for ChunkFlowWorld<'_> {
+    type Error = Error;
+    type Block = BlockStateId;
+    fn fluid(&mut self, p: BlockPos) -> Result<FluidState, Error> {
+        Ok(self.fluids.fluid(self.read(p.x, p.y, p.z)))
+    }
+    fn block(&mut self, p: BlockPos) -> Result<BlockStateId, Error> {
+        Ok(self.read(p.x, p.y, p.z))
+    }
+    fn blocks_fluid_flow(&self, s: BlockStateId) -> bool {
+        self.fluids.blocks_flow(s)
+    }
+    fn is_ice_class(&self, s: BlockStateId) -> bool {
+        self.fluids.ice(s)
+    }
+    fn is_face_sturdy(
+        &mut self,
+        s: BlockStateId,
+        _: BlockPos,
+        d: Direction,
+    ) -> Result<bool, Error> {
+        Ok(self.fluids.sturdy(s, d))
+    }
+}
 /// `Entity.baseTick`'s fluid step for an entity that is pushed by fluid: its
 /// immersion heights, then the current of each fluid it sits in, added to
 /// `velocity` with vanilla's scales (water 0.014, lava 0.007 fast or
@@ -271,6 +327,14 @@ mod tests {
         assert_eq!(fluid_flow(&world, &fluids, [20, 4, 18]), [1.0, 0.0, 0.0]);
         for still in [[18, 4, 18], [17, 4, 17], [21, 4, 18]] {
             assert_eq!(fluid_flow(&world, &fluids, still), [0.0; 3], "{still:?}");
+        }
+        // The chunk-map twin agrees at every position sampled.
+        for p in [[20, 4, 18], [18, 4, 18], [17, 4, 17], [21, 4, 18]] {
+            assert_eq!(
+                fluid_flow_in_chunks(&world.chunks, world.air, &fluids, p),
+                fluid_flow(&world, &fluids, p),
+                "{p:?}"
+            );
         }
     }
     #[test]

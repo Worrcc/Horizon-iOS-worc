@@ -329,12 +329,14 @@ pub mod server {
         Particles, Point, Rider, Sound, StrikeHit, Target, Walk,
     };
     pub use horizon::mods::players::{
-        self, Attack, BlockHit, EquipmentSlots, GameMode, ItemUse, Look, Player, PlayerDamage,
-        Point as PlayerPoint, TeleportTarget,
+        self, ActiveEffect, Attack, BlockHit, EquipmentSlots, GameMode, ItemFilter, ItemUse, Look,
+        Player, PlayerDamage, PlayerDeath, PlayerRespawn, PlayerVitals, Point as PlayerPoint,
+        TeleportTarget,
     };
     pub use horizon::mods::world::{
-        self, BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack, Point as WorldPoint,
-        Stack as MachineStack, StackInfo, StackInfoWithData, WorldTime,
+        self, BlastKind, BlockChange, BlockChangePos, BreakOptions, ChunkPos, DustColor, ItemStack,
+        ParticleBurst, Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData,
+        WorldTime,
     };
     pub use horizon::mods::{channel, menus, server_hooks};
     pub use menus::MenuItem;

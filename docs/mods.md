@@ -1753,3 +1753,19 @@ collection spawns the intact drops and returns an error after the break.
 with a distinct negative id per mod. No fake players, fluids, energy or pipes.
 See [Phase B](api-expansion-b.md) for signatures, exact limits, lifecycle,
 collection semantics and the two-part `mods/official/machine-demo` live scenario.
+
+## API level 31: player events, setters and world effects
+
+Part 1 of Phase C adds sixteen imports, no export. Server capability `players`:
+`deaths`/`respawns` (last tick, at most 256, reading does not consume), `vitals`
+and `effects` (start-of-tick snapshot), the deferred setters `set-health` (never
+kills or revives), `hurt` (armour applies, can kill), `set-food`,
+`give-experience`, `give-levels`, `clear-effects` and `play-sound-to` (64
+changes per mod per tick), and the synchronous `clear-items` (item id, item tag
+or this mod's stack data; destroys items, creative included; 64 calls per mod
+per tick). Capability `world`: `spawn-particles` (64 calls, 4096 particles),
+`explode` (radius <= 8, 4 per tick, `mob_griefing` off keeps blocks and fire),
+`make-block-fall` (preimage-checked, 16 per tick, never creates blocks) and
+`fluid-flow`. Scoreboards, teams, boss bars and tags/registries/loot are part 2.
+See [Phase C](api-expansion-c.md) for exact limits and the
+`mods/official/phase-c-demo` live scenario.

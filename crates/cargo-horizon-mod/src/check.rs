@@ -288,6 +288,32 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
     mods.player_left(&steve);
     for out in mods.drain() {
         report.output.push(match out {
+            Output::PlayerSetHealth { player, health } => {
+                format!("queued health {health} for {player}")
+            }
+            Output::PlayerHurt { player, amount, .. } => {
+                format!("queued {amount} damage for {player}")
+            }
+            Output::PlayerSetFood { player, food, .. } => {
+                format!("queued food {food} for {player}")
+            }
+            Output::PlayerGiveExperience { player, points } => {
+                format!("queued {points} experience for {player}")
+            }
+            Output::PlayerGiveLevels { player, levels } => {
+                format!("queued {levels} levels for {player}")
+            }
+            Output::PlayerClearEffects { player, ids } => {
+                format!("queued clearing {} effects for {player}", ids.len())
+            }
+            Output::PlaySoundTo { player, sound } => {
+                format!("queued sound {} for {player}", sound.name)
+            }
+            Output::SpawnParticles { particles, .. } => {
+                format!("queued particles {}", particles.name)
+            }
+            Output::Explode { radius, .. } => format!("queued explosion r{radius}"),
+            Output::MakeBlockFall { pos, .. } => format!("queued falling block at {pos:?}"),
             Output::Menu(operation) => format!("queued menu: {operation:?}"),
             Output::BlockDataWrite(plan) => format!("queued block data for {}", plan.mod_id),
             Output::BreakProgress { pos, stage, .. } => {

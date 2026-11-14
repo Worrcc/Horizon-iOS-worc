@@ -4,6 +4,7 @@ use horizon_mod_sdk::server::{
     TeleportTarget, channel, players, server_hooks, world,
 };
 mod machines30;
+mod player_world31;
 struct Guest;
 impl ServerMod for Guest {
     fn init() -> Result<(Self, Registration), String> {
@@ -16,6 +17,7 @@ impl ServerMod for Guest {
                 .command("storage28")
                 .command("data29")
                 .command("machines30")
+                .command("pw31")
                 .command("behaviour29")
                 .command("schedule29")
                 .command("filters29")
@@ -134,6 +136,9 @@ impl ServerMod for Guest {
         name: &str,
         args: &Args,
     ) -> Result<Option<String>, String> {
+        if name == "pw31" {
+            return player_world31::run(player, args.text());
+        }
         if name == "machines30" {
             return machines30::run(player, args.text());
         }

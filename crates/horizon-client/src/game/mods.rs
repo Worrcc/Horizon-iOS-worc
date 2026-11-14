@@ -127,16 +127,28 @@ pub(super) struct ModsState {
     #[cfg(feature = "mods")]
     pub(super) player_damage: Vec<horizon_mods::PlayerDamage>,
     #[cfg(feature = "mods")]
+    pub(super) player_deaths: Vec<horizon_mods::PlayerDeath>,
+    #[cfg(feature = "mods")]
+    pub(super) player_respawns: Vec<horizon_mods::PlayerRespawn>,
+    #[cfg(feature = "mods")]
     pub(super) last_hurt_events: std::sync::Arc<[horizon_mods::HurtEvent]>,
     #[cfg(feature = "mods")]
     pub(super) last_deaths: std::sync::Arc<[horizon_mods::Death]>,
     #[cfg(feature = "mods")]
     pub(super) last_player_damage: std::sync::Arc<[horizon_mods::PlayerDamage]>,
+    #[cfg(feature = "mods")]
+    pub(super) last_player_deaths: std::sync::Arc<[horizon_mods::PlayerDeath]>,
+    #[cfg(feature = "mods")]
+    pub(super) last_player_respawns: std::sync::Arc<[horizon_mods::PlayerRespawn]>,
     /// Published actions remain visible to commands until the next tick.
     #[cfg(feature = "mods")]
     pub(super) last_item_uses: std::sync::Arc<[horizon_mods::PlayerItemUse]>,
     #[cfg(feature = "mods")]
     pub(super) last_attacks: std::sync::Arc<[horizon_mods::PlayerAttack]>,
+    #[cfg(feature = "mods")]
+    pub(super) item_tags: Option<
+        std::sync::Arc<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    >,
     #[cfg(feature = "mods")]
     pub(super) block_tags: Option<
         std::sync::Arc<std::collections::HashMap<String, std::collections::HashSet<String>>>,
@@ -1059,6 +1071,9 @@ impl Game<'_> {
             hurt_events: self.mods.last_hurt_events.clone(),
             deaths: self.mods.last_deaths.clone(),
             player_damage: self.mods.last_player_damage.clone(),
+            player_deaths: self.mods.last_player_deaths.clone(),
+            player_respawns: self.mods.last_player_respawns.clone(),
+            player_vitals: Default::default(),
             effect_ids: horizon_client::brewing::EFFECTS
                 .iter()
                 .map(|e| format!("minecraft:{}", e.id))
@@ -1392,6 +1407,16 @@ impl Game<'_> {
                 | Output::Ride { .. }
                 | Output::PlayerEffect { .. }
                 | Output::Orders { .. }
+                | Output::PlayerSetHealth { .. }
+                | Output::PlayerHurt { .. }
+                | Output::PlayerSetFood { .. }
+                | Output::PlayerGiveExperience { .. }
+                | Output::PlayerGiveLevels { .. }
+                | Output::PlayerClearEffects { .. }
+                | Output::PlaySoundTo { .. }
+                | Output::SpawnParticles { .. }
+                | Output::Explode { .. }
+                | Output::MakeBlockFall { .. }
                 | Output::Spawn { .. }) => {
                     self.route_server_output(host.as_deref_mut(), server);
                     continue;

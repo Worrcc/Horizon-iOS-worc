@@ -3871,6 +3871,16 @@ impl Game<'_> {
         // helpers reach them (as for native_perform_command).
         let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
         self.as_guest(host, conn, |g| g.native_player_respawned(respawned, &name));
+        #[cfg(feature = "mods")]
+        {
+            let g = &host.hub.guests[i];
+            let (dimension, at) = (g.dimension.clone(), g.position);
+            self.collect_mod_player_respawn(
+                super::server_mods::run::uuid_string(respawned),
+                dimension,
+                at,
+            );
+        }
         // The player left another level for the respawn point's: placed for
         // good they tell the mods now, else the trip that is still carrying
         // them (a bed or anchor in another level, the world spawn's free
@@ -4101,8 +4111,17 @@ impl Game<'_> {
             // ServerPlayer.die: dropAllDeathLoot unless a spectator, from the eyes less 0.3.
             let drops = (g.game_mode != SPECTATOR)
                 .then(|| [at[0], at[1] + g.eye_height() - f64::from(0.3f32), at[2]]);
+            #[cfg(feature = "mods")]
+            let death_dimension = g.dimension.clone();
             let cause = host.play.get_mut(&conn).and_then(|p| p.death_cause.take());
             self.native_player_died(uuid, cause.as_deref());
+            #[cfg(feature = "mods")]
+            self.collect_mod_player_death(
+                super::server_mods::run::uuid_string(uuid),
+                death_dimension,
+                at,
+                cause.clone(),
+            );
             // ServerPlayer.die: the neutral mobs near a guest in this level
             // forget their anger at them.
             if here {

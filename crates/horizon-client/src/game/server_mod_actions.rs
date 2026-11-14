@@ -144,6 +144,46 @@ impl Game<'_> {
                     ),
             );
     }
+    pub(super) fn collect_mod_player_death(
+        &mut self,
+        player: String,
+        dimension: String,
+        at: [f64; 3],
+        cause: Option<String>,
+    ) {
+        if !self.mods.server || self.mods.player_deaths.len() >= 256 {
+            return;
+        }
+        self.mods.player_deaths.push(horizon_mods::PlayerDeath {
+            player,
+            dimension,
+            at: horizon_mods::PlayerPoint {
+                x: at[0],
+                y: at[1],
+                z: at[2],
+            },
+            cause,
+        });
+    }
+    pub(super) fn collect_mod_player_respawn(
+        &mut self,
+        player: String,
+        dimension: String,
+        at: [f64; 3],
+    ) {
+        if !self.mods.server || self.mods.player_respawns.len() >= 256 {
+            return;
+        }
+        self.mods.player_respawns.push(horizon_mods::PlayerRespawn {
+            player,
+            dimension,
+            at: horizon_mods::PlayerPoint {
+                x: at[0],
+                y: at[1],
+                z: at[2],
+            },
+        });
+    }
     pub(super) fn mod_credit_player_hurts(&mut self, mob: u32) {
         let player = self
             .lan_acting_uuid

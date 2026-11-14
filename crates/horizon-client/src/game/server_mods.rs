@@ -200,6 +200,8 @@ pub(super) mod run {
         items: std::sync::Arc<std::collections::HashMap<String, u32>>,
         resources: std::path::PathBuf,
         world_root: std::path::PathBuf,
+        res: std::sync::Arc<crate::game::Resources>,
+        air: horizon_world::registry::BlockStateId,
     }
     impl WorldView for LentWorld {
         fn block_data(
@@ -289,6 +291,21 @@ pub(super) mod run {
                 .is_some_and(|(_, chunks)| {
                     horizon_client::mod_world::can_see_sky(chunks, dimension, x, y, z)
                 })
+        }
+        fn fluid_flow(
+            &self,
+            dimension: &str,
+            pos: horizon_mods::BlockChangePos,
+        ) -> Option<[f64; 3]> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            chunks.contains_key(&(pos.x >> 4, pos.z >> 4)).then(|| {
+                horizon_client::entities::fluid_flow_in_chunks(
+                    chunks,
+                    self.air,
+                    &self.res.motion().fluids,
+                    [pos.x, pos.y, pos.z],
+                )
+            })
         }
         fn has_dimension(&self, dimension: &str) -> bool {
             matches!(
@@ -434,6 +451,65 @@ pub(super) mod run {
                 dimension: g.dimension.clone(),
                 game_mode: mode(g.game_mode),
                 health: g.health,
+            }));
+            out
+        }
+
+        /// Food, experience and effects of every server player, for the
+        /// snapshot's `players.vitals` and `players.effects`.
+        fn player_vitals(
+            &self,
+            host: Option<&LanHost>,
+        ) -> Vec<(
+            String,
+            horizon_mods::PlayerVitals,
+            Vec<horizon_mods::ActiveEffect>,
+        )> {
+            fn effects(
+                saved: Vec<(String, i32, i32, bool, bool)>,
+            ) -> Vec<horizon_mods::ActiveEffect> {
+                saved
+                    .into_iter()
+                    .take(64)
+                    .map(|(id, ticks, amp, _, _)| horizon_mods::ActiveEffect {
+                        id,
+                        ticks,
+                        amplifier: amp.clamp(0, 255) as u8,
+                    })
+                    .collect()
+            }
+            let mut out = Vec::new();
+            if self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && let Some(p) = &self.player
+            {
+                let food = &p.health.food;
+                let vitals = horizon_mods::PlayerVitals {
+                    food: food.food.max(0) as u32,
+                    saturation: food.saturation,
+                    xp_level: self.experience.level.max(0) as u32,
+                    xp_progress: self.experience.progress,
+                    xp_total: self.experience.total.max(0) as u32,
+                };
+                out.push((
+                    self.player_uuid_string(),
+                    vitals,
+                    effects(self.potions.effects.saved()),
+                ));
+            }
+            let guests = host
+                .or(self.lan.as_ref())
+                .into_iter()
+                .flat_map(|h| &h.hub.guests);
+            out.extend(guests.filter(|g| g.placed).map(|g| {
+                let vitals = horizon_mods::PlayerVitals {
+                    food: g.food.max(0) as u32,
+                    saturation: g.saturation,
+                    xp_level: g.xp_level.max(0) as u32,
+                    xp_progress: g.xp_progress,
+                    xp_total: g.xp_total.max(0) as u32,
+                };
+                (uuid_string(g.uuid), vitals, effects(g.effects.saved()))
             }));
             out
         }
@@ -708,6 +784,8 @@ pub(super) mod run {
                 self.mods.hurt_events.clear();
                 self.mods.deaths.clear();
                 self.mods.player_damage.clear();
+                self.mods.player_deaths.clear();
+                self.mods.player_respawns.clear();
                 if let Some(p) = self.player.as_mut() {
                     p.mod_hurts.clear();
                 }
@@ -721,6 +799,8 @@ pub(super) mod run {
             self.mods.last_hurt_events = std::mem::take(&mut self.mods.hurt_events).into();
             self.mods.last_deaths = std::mem::take(&mut self.mods.deaths).into();
             self.mods.last_player_damage = std::mem::take(&mut self.mods.player_damage).into();
+            self.mods.last_player_deaths = std::mem::take(&mut self.mods.player_deaths).into();
+            self.mods.last_player_respawns = std::mem::take(&mut self.mods.player_respawns).into();
             self.mods.last_item_uses = std::mem::take(&mut self.mods.item_uses).into();
             self.mods.use_fallbacks.clear();
             self.mods.last_attacks = std::mem::take(&mut self.mods.attacks).into();
@@ -866,6 +946,8 @@ pub(super) mod run {
                 items,
                 resources: self.options.resources.clone(),
                 world_root: self.world_root.clone(),
+                res: self.res.clone(),
+                air: self.world.air,
             }));
         }
 
@@ -954,6 +1036,9 @@ pub(super) mod run {
         ) -> Snapshot {
             let mut snapshot = self.mod_snapshot_with(players);
             snapshot.player_looks = self.player_looks(host).into();
+            if self.mods.mods.wants_players() {
+                snapshot.player_vitals = self.player_vitals(host).into();
+            }
             let host = host.or(self.lan.as_ref());
             snapshot.player_permissions = snapshot
                 .players
@@ -1034,7 +1119,7 @@ pub(super) mod run {
                 let kinds = kinds.filter(|k| !k.starts_with("minecraft:")).cloned();
                 snapshot.mob_kinds = kinds.collect::<Vec<_>>().into();
             }
-            if self.mods.entities || self.mods.world {
+            if self.mods.entities || self.mods.world || self.mods.mods.wants_players() {
                 let root = &self.options.resources;
                 if self
                     .mods
@@ -1671,6 +1756,9 @@ pub(super) mod run {
                     | Output::PlaySound { dimension, .. }
                     | Output::SpawnItemWithData { dimension, .. }
                     | Output::SpawnItem { dimension, .. }
+                    | Output::SpawnParticles { dimension, .. }
+                    | Output::Explode { dimension, .. }
+                    | Output::MakeBlockFall { dimension, .. }
                     | Output::BreakBlocksAs { dimension, .. } => dimension == dim,
                     _ => false,
                 });
@@ -1764,6 +1852,30 @@ pub(super) mod run {
                     } => self.place_mod_template(&id, [pos.0, pos.1, pos.2], rotation, mirror),
                     Output::SetSpawner { pos, entity, .. } => {
                         self.apply_mod_spawner([pos.0, pos.1, pos.2], &entity)
+                    }
+                    Output::SpawnParticles { particles, .. } => {
+                        self.apply_mod_particles(&particles);
+                        Ok(())
+                    }
+                    Output::Explode {
+                        dimension,
+                        center,
+                        radius,
+                        fire,
+                        blast,
+                    } => {
+                        self.apply_mod_explode(&dimension, center, radius, fire, blast);
+                        Ok(())
+                    }
+                    Output::MakeBlockFall {
+                        dimension,
+                        pos,
+                        expected,
+                        velocity,
+                        hurts,
+                    } => {
+                        self.apply_mod_block_fall(&dimension, pos, &expected, velocity, hurts);
+                        Ok(())
                     }
                     _ => unreachable!(),
                 };
@@ -2190,6 +2302,35 @@ pub(super) mod run {
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
+                Output::PlayerSetHealth { player, health } => {
+                    self.apply_mod_set_health(host, &player, health);
+                }
+                Output::PlayerHurt {
+                    player,
+                    amount,
+                    damage_type,
+                } => {
+                    self.apply_mod_hurt(host, &player, amount, &damage_type);
+                }
+                Output::PlayerSetFood {
+                    player,
+                    food,
+                    saturation,
+                } => {
+                    self.apply_mod_set_food(host, &player, food, saturation);
+                }
+                Output::PlayerGiveExperience { player, points } => {
+                    self.apply_mod_give_experience(host, &player, points);
+                }
+                Output::PlayerGiveLevels { player, levels } => {
+                    self.apply_mod_give_levels(host, &player, levels);
+                }
+                Output::PlayerClearEffects { player, ids } => {
+                    self.apply_mod_clear_effects(host, &player, ids);
+                }
+                Output::PlaySoundTo { player, sound } => {
+                    self.apply_mod_sound_to(host, &player, &sound);
+                }
                 operation @ (Output::BlockDataWrite(_)
                 | Output::BreakProgress { .. }
                 | Output::GiveItemWithData { .. }
@@ -2201,6 +2342,9 @@ pub(super) mod run {
                 | Output::PlaceStructure { .. }
                 | Output::SetSpawner { .. }
                 | Output::PlaySound { .. }
+                | Output::SpawnParticles { .. }
+                | Output::Explode { .. }
+                | Output::MakeBlockFall { .. }
                 | Output::SpawnItem { .. }) => {
                     if self.mods.world_operations.len() < MAX_QUEUED_WRITES {
                         self.mods.world_operations.push(operation);

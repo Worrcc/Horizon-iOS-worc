@@ -1287,6 +1287,59 @@ The block a player clicked, and its face (down, up, north, south, west, east).
 | `target-player` | `option<string>` |  |
 | `damage` | `f32` |  |
 
+### record `player-death`
+
+API 31: a player's death as the server saw it, polled like damage-taken.
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` | The player's UUID. |
+| `dimension` | `string` | Dimension id where they died. |
+| `at` | `point` | Feet position at death. |
+| `cause` | `option<string>` | The death message's translation key (`death.attack.lava`); none when built from combat. |
+
+### record `player-respawn`
+
+API 31: a player placed by a respawn.
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` |  |
+| `dimension` | `string` |  |
+| `at` | `point` |  |
+
+### record `player-vitals`
+
+API 31: food and experience; health is in `player`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `food` | `u32` | 0..20. |
+| `saturation` | `f32` | 0..food. |
+| `xp-level` | `u32` |  |
+| `xp-progress` | `f32` | Progress toward the next level, 0..1. |
+| `xp-total` | `u32` |  |
+
+### record `active-effect`
+
+API 31: one active status effect.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | Namespaced id, `minecraft:speed`. |
+| `ticks` | `s32` | Remaining ticks; -1 is infinite. |
+| `amplifier` | `u8` |  |
+
+### variant `item-filter`
+
+API 31: which stacks clear-items removes.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `item` | `string` | An exact item id. |
+| `tag` | `string` | An item tag, without `#`. |
+| `mod-data` | `option<string>` | Stacks with the calling mod's custom data: some(v) only value v, none any value. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `damage-taken` | `func() -> list<player-damage>` | Last tick's accepted damage, at most 256. Reading does not consume it. |
@@ -1306,12 +1359,43 @@ The block a player clicked, and its face (down, up, north, south, west, east).
 | `broadcast` | `func(text: string)` | A system message to every player and the server's log, after the mod's name. Counts toward the same 8 per call. |
 | `take-item` | `func(player: string, item: string, count: u32) -> result<u32, string>` | Remove up to count by registry id, main hand first, then the rest of the inventory (including armor and off hand). Creative consumes none but reports count. The return value and subsequent calls see the real inventory now; unknown items or offline players are errors. |
 | `give-item` | `func(player: string, item: string, count: u32) -> result<_, string>` | Add plain items to a player's inventory; drop overflow at their feet before that dimension's next tick. At most 100 stacks per call, as /give. Unknown items or offline players are errors. |
+| `deaths` | `func() -> list<player-death>` | API 31: players who died during the last tick, oldest first, at most 256. |
+| `respawns` | `func() -> list<player-respawn>` | API 31: players placed by a respawn during the last tick, at most 256. |
+| `vitals` | `func(player: string) -> option<player-vitals>` | API 31: an online player's food and experience as at the start of the tick; none when offline. |
+| `effects` | `func(player: string) -> option<list<active-effect>>` | API 31: an online player's active effects (at most 64) at the start of the tick; none when offline. |
+| `set-health` | `func(player: string, health: f32) -> result<_, string>` | API 31: health 0 < h <= 1024, capped at max health; never kills or revives. Deferred. |
+| `hurt` | `func(player: string, amount: f32, damage-type: string) -> result<_, string>` | API 31: hurt as vanilla damage of a registered type, 0 < amount <= 1024; armour applies, can kill; creative immune. Deferred. |
+| `set-food` | `func(player: string, food: u32, saturation: f32) -> result<_, string>` | API 31: food 0..20 and saturation 0..food. Deferred. |
+| `give-experience` | `func(player: string, points: u32) -> result<_, string>` | API 31: Player.giveExperiencePoints, 0..100000 points (no Mending). Deferred. |
+| `give-levels` | `func(player: string, levels: s32) -> result<_, string>` | API 31: Player.giveExperienceLevels, -1000..1000; never below level 0. Deferred. |
+| `clear-effects` | `func(player: string) -> result<_, string>` | API 31: remove the effects active at the start of the tick. Deferred. |
+| `clear-items` | `func(player: string, filter: item-filter, max: u32) -> result<u32, string>` | API 31: like /clear, in main inventory, armour and off hand (main hand first); the items are destroyed, also in creative. max 0 only counts. Returns the count removed (or matching for 0). |
+| `play-sound-to` | `func(player: string, name: string, volume: f32, pitch: f32) -> result<_, string>` | API 31: a sound only this player hears, at their position; volume 0..4, pitch 0.5..2. |
 
 ## `world`
 
 Access: capability `world`.
 
 Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the blocks of the server's loaded chunks, and changes to them through the server's own block updates.
+
+### record `dust-color`
+
+API 31: particle options: rgb 0xRRGGBB and scale 0.01..4.
+
+| Field | Type | |
+| --- | --- | --- |
+| `rgb` | `u32` |  |
+| `scale` | `f32` |  |
+
+### enum `blast-kind`
+
+API 31: what an explosion breaks.
+
+| Case | |
+| --- | --- |
+| `keep` |  |
+| `block` |  |
+| `tnt` |  |
 
 ### record `stack`
 
@@ -1358,6 +1442,20 @@ A vector or position in blocks, with finite components.
 | `x` | `f64` |  |
 | `y` | `f64` |  |
 | `z` | `f64` |  |
+
+### record `particle-burst`
+
+API 31: a vanilla particle burst. `block` is required for minecraft:block, block_marker, falling_dust, dust_pillar and block_crumble; `dust` for minecraft:dust; others take neither.
+
+| Field | Type | |
+| --- | --- | --- |
+| `name` | `string` |  |
+| `at` | `point` |  |
+| `delta` | `point` |  |
+| `speed` | `f32` |  |
+| `count` | `u32` | 0..256; zero sends one moving delta * speed. |
+| `block` | `option<string>` |  |
+| `dust` | `option<dust-color>` |  |
 
 ### record `break-options`
 
@@ -1407,6 +1505,10 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `spawn-particles` | `func(dimension: string, particles: particle-burst) -> result<_, string>` | API 31: 64 calls and 4096 particles/mod/tick, sent to players near `at`. Deferred. |
+| `explode` | `func(dimension: string, center: point, radius: f32, fire: bool, blast: blast-kind) -> result<_, string>` | API 31: Level.explode with no source, 0 < radius <= 8, 4/mod/tick; mob_griefing off keeps blocks and fire. Deferred. |
+| `make-block-fall` | `func(dimension: string, pos: block-change-pos, expected-state: string, velocity: point, hurts: bool) -> result<_, string>` | API 31: turn an existing block into a falling block. expected-state must equal get-block now and when applied; velocity each axis \|v\| <= 3.9; 16/mod/tick. Deferred. |
+| `fluid-flow` | `func(dimension: string, pos: block-change-pos) -> option<point>` | API 31: FluidState.getFlow, the normalised current; none for unloaded chunks or unknown dimensions. |
 | `block-data` | `func(dimension: string, pos: block-change-pos) -> result<option<string>, string>` | API 30: only the calling mod's saved UTF-8 value, at most 4096 bytes. |
 | `set-block-data` | `func(dimension: string, pos: block-change-pos, data: option<string>) -> result<_, string>` | Deferred, preimage-checked; success is a queue receipt. |
 | `destroy-block` | `func(dimension: string, pos: block-change-pos, tool: option<string>, collect: bool) -> result<list<stack>, string>` | Engine loot with a plain tool, 64 requests/mod/tick. Collect returns drops. At most 256 stacks, 64 KiB components/stack, 1 MiB total. On overflow, drops are spawned intact and an error is returned after the break. |

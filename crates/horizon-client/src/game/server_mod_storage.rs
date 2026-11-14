@@ -347,6 +347,7 @@ impl Game<'_> {
                 return;
             };
             let mut inventories = Inventories {
+                item_tags: Default::default(),
                 items: std::sync::Arc::new([(item.to_owned(), info.max_stack)].into()),
                 players: [(
                     player.to_owned(),

@@ -75,13 +75,15 @@ pub use server_bindings::{
     },
     horizon::mods::menus::MenuItem,
     horizon::mods::players::{
-        Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
-        ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer, PlayerDamage,
-        Point as PlayerPoint, TeleportTarget,
+        ActiveEffect, Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
+        ItemFilter, ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer,
+        PlayerDamage, PlayerDeath, PlayerRespawn, PlayerVitals, Point as PlayerPoint,
+        TeleportTarget,
     },
     horizon::mods::world::{
-        BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
-        Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData, WorldTime,
+        BlastKind, BlockChange, BlockChangePos, BreakOptions, ChunkPos, DustColor,
+        ItemStack as ContainerItemStack, ParticleBurst, Point as WorldPoint, Stack as MachineStack,
+        StackInfo, StackInfoWithData, WorldTime,
     },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
@@ -93,6 +95,7 @@ pub use storage_api::*;
 mod machines;
 pub use machines::*;
 mod behaviour;
+mod player_world;
 pub use behaviour::*;
 pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
 mod channel_host;
@@ -317,6 +320,11 @@ pub struct Snapshot {
     pub hurt_events: Arc<[HurtEvent]>,
     pub deaths: Arc<[Death]>,
     pub player_damage: Arc<[PlayerDamage]>,
+    /// API 31: last tick's player deaths and respawns, at most 256 each.
+    pub player_deaths: Arc<[PlayerDeath]>,
+    pub player_respawns: Arc<[PlayerRespawn]>,
+    /// API 31: (uuid, vitals, effects <= 64), filled only while a running mod has capability players.
+    pub player_vitals: Arc<[(String, PlayerVitals, Vec<ActiveEffect>)]>,
     /// Status effects from the game registry, including for players-only mods.
     pub effect_ids: Arc<std::collections::HashSet<String>>,
     /// Where each online server player looks, by UUID, for `players.facing`.
@@ -611,6 +619,55 @@ pub enum Output {
         count: u32,
         components: String,
     },
+    PlayerSetHealth {
+        player: String,
+        health: f32,
+    },
+    PlayerHurt {
+        player: String,
+        amount: f32,
+        damage_type: String,
+    },
+    PlayerSetFood {
+        player: String,
+        food: u32,
+        saturation: f32,
+    },
+    PlayerGiveExperience {
+        player: String,
+        points: u32,
+    },
+    PlayerGiveLevels {
+        player: String,
+        levels: i32,
+    },
+    /// Ids from the snapshot's active effects at call time.
+    PlayerClearEffects {
+        player: String,
+        ids: Vec<String>,
+    },
+    PlaySoundTo {
+        player: String,
+        sound: EntitySound,
+    },
+    SpawnParticles {
+        dimension: String,
+        particles: ParticleBurst,
+    },
+    Explode {
+        dimension: String,
+        center: WorldPoint,
+        radius: f32,
+        fire: bool,
+        blast: BlastKind,
+    },
+    MakeBlockFall {
+        dimension: String,
+        pos: BlockChangePos,
+        expected: String,
+        velocity: WorldPoint,
+        hurts: bool,
+    },
 }
 
 /// The game's world as capability `world` reads it during a call: the
@@ -673,6 +730,9 @@ pub trait WorldView: std::any::Any + Send {
     }
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
+    fn fluid_flow(&self, _dimension: &str, _pos: BlockChangePos) -> Option<[f64; 3]> {
+        None
+    }
     /// `Err` (why) for a state string that names no block state.
     fn check_state(&self, state: &str) -> Result<(), String>;
 }
@@ -687,6 +747,16 @@ pub trait PlayerInventories: std::any::Any + Send {
         None
     }
     fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String>;
+    /// API 31: remove up to max matching stacks' items (0 only counts); the game resolves tags and mod data.
+    fn clear_items(
+        &mut self,
+        _player: &str,
+        _filter: &ItemFilter,
+        _mod_id: &str,
+        _max: u32,
+    ) -> Result<u32, String> {
+        Err("clear-items unavailable".into())
+    }
     fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String>;
     fn give_item_with_data(
         &mut self,
@@ -935,6 +1005,7 @@ impl BrowserExtState {
 
 struct State {
     call_budget: budget::CallBudget,
+    player_world: player_world::Budgets,
     name: String,
     id: String,
     snapshot: Arc<Snapshot>,
@@ -1318,6 +1389,7 @@ impl Mods {
             .join(&m.id);
         let state = State {
             call_budget: budget::CallBudget::default(),
+            player_world: Default::default(),
             name: m.name.clone(),
             id: m.id.clone(),
             snapshot,
@@ -3038,6 +3110,128 @@ impl mod_world::Host for State {
         });
         Ok(())
     }
+    fn spawn_particles(
+        &mut self,
+        dimension: String,
+        particles: ParticleBurst,
+    ) -> Result<(), String> {
+        {
+            let view = self.world.lock().map_err(|_| "world unavailable")?;
+            let view = view.as_ref().ok_or("world unavailable")?;
+            if !view.has_dimension(&dimension) {
+                return Err(format!("no dimension {dimension}"));
+            }
+            player_world::check_particles(&particles, &self.snapshot.entity_resources, |s| {
+                view.check_state(s)
+            })?;
+        }
+        let tick = self.snapshot.tick;
+        if !player_world::spend(
+            &mut self.player_world.particle_calls,
+            tick,
+            1,
+            player_world::PARTICLE_CALLS,
+        ) {
+            return Err("at most 64 particle calls per mod per tick".into());
+        }
+        if !player_world::spend(
+            &mut self.player_world.particles,
+            tick,
+            (particles.count as usize).max(1),
+            player_world::PARTICLES,
+        ) {
+            return Err("at most 4096 particles per mod per tick".into());
+        }
+        self.out.push(Output::SpawnParticles {
+            dimension,
+            particles,
+        });
+        Ok(())
+    }
+    fn explode(
+        &mut self,
+        dimension: String,
+        center: WorldPoint,
+        radius: f32,
+        fire: bool,
+        blast: BlastKind,
+    ) -> Result<(), String> {
+        {
+            let view = self.world.lock().map_err(|_| "world unavailable")?;
+            if !view
+                .as_ref()
+                .ok_or("world unavailable")?
+                .has_dimension(&dimension)
+            {
+                return Err(format!("no dimension {dimension}"));
+            }
+        }
+        player_world::check_blast(&center, radius)?;
+        if !player_world::spend(
+            &mut self.player_world.blasts,
+            self.snapshot.tick,
+            1,
+            player_world::BLASTS,
+        ) {
+            return Err("at most 4 explosions per mod per tick".into());
+        }
+        self.out.push(Output::Explode {
+            dimension,
+            center,
+            radius,
+            fire,
+            blast,
+        });
+        Ok(())
+    }
+    fn make_block_fall(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        expected_state: String,
+        velocity: WorldPoint,
+        hurts: bool,
+    ) -> Result<(), String> {
+        {
+            let view = self.world.lock().map_err(|_| "world unavailable")?;
+            let view = view.as_ref().ok_or("world unavailable")?;
+            if !view.has_dimension(&dimension) {
+                return Err(format!("no dimension {dimension}"));
+            }
+            player_world::check_fall(&expected_state, &velocity)?;
+            let now = view
+                .block(&dimension, pos.x, pos.y, pos.z)
+                .ok_or("not loaded")?;
+            if now != expected_state {
+                return Err("block changed".into());
+            }
+            if view.block_has_tag(&expected_state, "minecraft:wither_immune") {
+                return Err("unbreakable block".into());
+            }
+        }
+        if !player_world::spend(
+            &mut self.player_world.falls,
+            self.snapshot.tick,
+            1,
+            player_world::FALLS,
+        ) {
+            return Err("at most 16 falling blocks per mod per tick".into());
+        }
+        self.out.push(Output::MakeBlockFall {
+            dimension,
+            pos,
+            expected: expected_state,
+            velocity,
+            hurts,
+        });
+        Ok(())
+    }
+    fn fluid_flow(&mut self, dimension: String, pos: BlockChangePos) -> Option<WorldPoint> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?
+            .fluid_flow(&dimension, pos)
+            .map(|[x, y, z]| WorldPoint { x, y, z })
+    }
     fn block_has_tag(&mut self, block: String, tag: String) -> bool {
         self.world
             .lock()
@@ -3716,6 +3910,18 @@ impl entities::Host for State {
     }
 }
 impl State {
+    fn charge_player_change(&mut self) -> Result<(), String> {
+        if player_world::spend(
+            &mut self.player_world.changes,
+            self.snapshot.tick,
+            1,
+            player_world::PLAYER_CHANGES,
+        ) {
+            Ok(())
+        } else {
+            Err("at most 64 player changes per mod per tick".into())
+        }
+    }
     fn online_player(&self, player: &str) -> Result<(), String> {
         if self.snapshot.players.iter().any(|p| p.id == player) {
             Ok(())
@@ -3766,6 +3972,142 @@ impl players::Host for State {
             .take(256)
             .cloned()
             .collect()
+    }
+    fn deaths(&mut self) -> Vec<PlayerDeath> {
+        (self.snapshot.player_deaths.iter())
+            .take(player_world::EVENTS)
+            .cloned()
+            .collect()
+    }
+    fn respawns(&mut self) -> Vec<PlayerRespawn> {
+        (self.snapshot.player_respawns.iter())
+            .take(player_world::EVENTS)
+            .cloned()
+            .collect()
+    }
+    fn vitals(&mut self, player: String) -> Option<PlayerVitals> {
+        self.online_player(&player).ok()?;
+        (self.snapshot.player_vitals.iter())
+            .find(|(id, _, _)| *id == player)
+            .map(|(_, vitals, _)| *vitals)
+    }
+    fn effects(&mut self, player: String) -> Option<Vec<ActiveEffect>> {
+        self.online_player(&player).ok()?;
+        (self.snapshot.player_vitals.iter())
+            .find(|(id, _, _)| *id == player)
+            .map(|(_, _, effects)| {
+                effects
+                    .iter()
+                    .take(player_world::LISTED_EFFECTS)
+                    .cloned()
+                    .collect()
+            })
+    }
+    fn set_health(&mut self, player: String, health: f32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_health(health)?;
+        self.charge_player_change()?;
+        self.out.push(Output::PlayerSetHealth { player, health });
+        Ok(())
+    }
+    fn hurt(&mut self, player: String, amount: f32, damage_type: String) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_hurt(amount, &damage_type)?;
+        self.charge_player_change()?;
+        self.out.push(Output::PlayerHurt {
+            player,
+            amount,
+            damage_type,
+        });
+        Ok(())
+    }
+    fn set_food(&mut self, player: String, food: u32, saturation: f32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_food(food, saturation)?;
+        self.charge_player_change()?;
+        self.out.push(Output::PlayerSetFood {
+            player,
+            food,
+            saturation,
+        });
+        Ok(())
+    }
+    fn give_experience(&mut self, player: String, points: u32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_points(points)?;
+        self.charge_player_change()?;
+        if points > 0 {
+            self.out
+                .push(Output::PlayerGiveExperience { player, points });
+        }
+        Ok(())
+    }
+    fn give_levels(&mut self, player: String, levels: i32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_levels(levels)?;
+        self.charge_player_change()?;
+        if levels != 0 {
+            self.out.push(Output::PlayerGiveLevels { player, levels });
+        }
+        Ok(())
+    }
+    fn clear_effects(&mut self, player: String) -> Result<(), String> {
+        self.online_player(&player)?;
+        self.charge_player_change()?;
+        let ids = (self.snapshot.player_vitals.iter())
+            .find(|(id, _, _)| *id == player)
+            .map(|(_, _, effects)| effects.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default();
+        self.out.push(Output::PlayerClearEffects { player, ids });
+        Ok(())
+    }
+    fn clear_items(&mut self, player: String, filter: ItemFilter, max: u32) -> Result<u32, String> {
+        self.online_player(&player)?;
+        match &filter {
+            ItemFilter::Item(id) | ItemFilter::Tag(id) if !resource_id(id) => {
+                return Err("invalid item or tag id".into());
+            }
+            ItemFilter::ModData(value) => storage_api::validate_data(value.as_deref())?,
+            _ => {}
+        }
+        if !player_world::spend(
+            &mut self.player_world.clears,
+            self.snapshot.tick,
+            1,
+            player_world::CLEARS,
+        ) {
+            return Err("at most 64 clear-items calls per mod per tick".into());
+        }
+        let mut slot = self
+            .inventories
+            .lock()
+            .map_err(|_| "inventories unavailable")?;
+        slot.as_mut()
+            .ok_or("inventories unavailable")?
+            .clear_items(&player, &filter, &self.id, max)
+    }
+    fn play_sound_to(
+        &mut self,
+        player: String,
+        name: String,
+        volume: f32,
+        pitch: f32,
+    ) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_sound(volume, pitch)?;
+        if !self.snapshot.entity_resources.sounds.contains(&name) {
+            return Err("unknown sound event".into());
+        }
+        self.charge_player_change()?;
+        self.out.push(Output::PlaySoundTo {
+            player,
+            sound: EntitySound {
+                name,
+                volume,
+                pitch,
+            },
+        });
+        Ok(())
     }
     fn heal(&mut self, player: String, amount: f32) -> Result<(), String> {
         self.online_player(&player)?;
@@ -4630,6 +4972,7 @@ mod entity_tests {
     pub(super) fn state() -> State {
         State {
             call_budget: budget::CallBudget::default(),
+            player_world: Default::default(),
             name: "Mob Orders".into(),
             id: "mob_orders".into(),
             snapshot: Arc::new(Snapshot::default()),

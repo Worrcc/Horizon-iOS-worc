@@ -1,7 +1,11 @@
 //! Capability `players`: authoritative inventories moved into the mod runtime during hooks.
 use crate::items::ItemStack;
 use horizon_mods::PlayerInventories;
-use std::{collections::HashMap, sync::Arc};
+use horizon_mods::ItemFilter;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Default)]
 pub struct Inventory {
@@ -16,6 +20,8 @@ pub struct Inventory {
 /// Registry ids and stack limits include vanilla and loaded content mods.
 pub struct Inventories {
     pub items: Arc<HashMap<String, u32>>,
+    /// Item tags by id without `#`, for `clear-items`.
+    pub item_tags: Arc<HashMap<String, HashSet<String>>>,
     pub players: HashMap<String, Inventory>,
 }
 impl Inventories {
@@ -90,6 +96,82 @@ impl PlayerInventories for Inventories {
         }
         inv.changed |= left != count;
         Ok(count - left)
+    }
+    fn clear_items(
+        &mut self,
+        player: &str,
+        filter: &ItemFilter,
+        mod_id: &str,
+        max: u32,
+    ) -> Result<u32, String> {
+        match filter {
+            ItemFilter::Item(id) if !self.items.contains_key(id) => {
+                return Err(format!("unknown item {id}"));
+            }
+            ItemFilter::Tag(tag) if !self.item_tags.contains_key(tag) => {
+                return Err(format!("unknown item tag {tag}"));
+            }
+            _ => {}
+        }
+        let tag_items = match filter {
+            ItemFilter::Tag(tag) => self.item_tags.get(tag),
+            _ => None,
+        };
+        let inv = self
+            .players
+            .get_mut(player)
+            .ok_or_else(|| format!("no online player {player}"))?;
+        let matches = |stack: &ItemStack| match filter {
+            ItemFilter::Item(id) => &*stack.item == id.as_str(),
+            ItemFilter::Tag(_) => tag_items.is_some_and(|items| items.contains(&*stack.item)),
+            ItemFilter::ModData(want) => match stack.mod_data(mod_id) {
+                Ok(Some(value)) => want.as_ref().is_none_or(|w| *w == value),
+                _ => false,
+            },
+        };
+        let selected = inv.selected.min(inv.main.len());
+        let (main, rest) = inv.main.split_at_mut(selected);
+        let (held, after) = if rest.is_empty() {
+            (rest, &mut [][..])
+        } else {
+            rest.split_at_mut(1)
+        };
+        // The order of take_item: selected hand, other inventory slots, armor, off hand.
+        let slots = held
+            .iter_mut()
+            .chain(main)
+            .chain(after)
+            .chain(&mut inv.armor)
+            .chain(std::iter::once(&mut inv.offhand));
+        if max == 0 {
+            let mut total = 0u32;
+            for slot in slots {
+                if let Some(stack) = slot
+                    && matches(stack)
+                {
+                    total = total.saturating_add(stack.count);
+                }
+            }
+            return Ok(total);
+        }
+        let mut left = max;
+        for slot in slots {
+            if left == 0 {
+                break;
+            }
+            if let Some(stack) = slot
+                && matches(stack)
+            {
+                let taken = left.min(stack.count);
+                stack.count -= taken;
+                left -= taken;
+                if stack.count == 0 {
+                    *slot = None;
+                }
+            }
+        }
+        inv.changed |= left != max;
+        Ok(max - left)
     }
     fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String> {
         self.give_item_with_data(player, item, count, "", None)
@@ -236,6 +318,7 @@ mod tests {
     }
     fn inventories() -> Inventories {
         Inventories {
+            item_tags: Default::default(),
             items: Arc::new(
                 [
                     ("minecraft:beef".into(), 64),
@@ -264,6 +347,110 @@ mod tests {
             ]
             .into(),
         }
+    }
+    fn clear_fixture() -> Inventories {
+        let mut all = inventories();
+        all.item_tags = Arc::new(
+            [(
+                "test:meat".to_owned(),
+                ["minecraft:beef".to_owned()].into_iter().collect(),
+            )]
+            .into(),
+        );
+        let a = all.players.get_mut(ALICE).unwrap();
+        a.main[0] = Some(ItemStack::new("minecraft:stone", 64));
+        let mut tagged = ItemStack::new("minecraft:stone", 10);
+        tagged.set_mod_data("m", Some("a")).unwrap();
+        a.main[3] = Some(tagged);
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 5));
+        a.offhand = Some(ItemStack::new("minecraft:stone", 1));
+        all
+    }
+    fn count(all: &Inventories, item: &str) -> u32 {
+        let inv = &all.players[ALICE];
+        inv.main
+            .iter()
+            .chain(&inv.armor)
+            .chain(std::iter::once(&inv.offhand))
+            .flatten()
+            .filter(|s| &*s.item == item)
+            .map(|s| s.count)
+            .sum()
+    }
+    #[test]
+    fn clear_items_destroys_only_matches_conserves_the_rest() {
+        let stone = ItemFilter::Item("minecraft:stone".into());
+        let mut all = clear_fixture();
+        let before = count(&all, "minecraft:stone");
+        assert_eq!(before, 75);
+        // Selected slot first (beef, no match), then main from slot 0.
+        assert_eq!(all.clear_items(ALICE, &stone, "m", 70).unwrap(), 70);
+        assert_eq!(before - count(&all, "minecraft:stone"), 70);
+        let inv = &all.players[ALICE];
+        assert!(inv.changed);
+        assert!(inv.main[0].is_none(), "the first stack went entirely");
+        let kept = inv.main[3].as_ref().unwrap();
+        assert_eq!(kept.count, 4);
+        assert_eq!(kept.mod_data("m").unwrap().as_deref(), Some("a"));
+        assert_eq!(inv.main[5].as_ref().unwrap().count, 5);
+        assert_eq!(inv.offhand.as_ref().unwrap().count, 1);
+
+        // max 0 counts and changes nothing.
+        let mut all = clear_fixture();
+        assert_eq!(all.clear_items(ALICE, &stone, "m", 0).unwrap(), 75);
+        assert_eq!(count(&all, "minecraft:stone"), 75);
+        assert!(!all.players[ALICE].changed);
+
+        // Mod data: only the tagged stack, scoped by mod id.
+        let mut all = clear_fixture();
+        let data = ItemFilter::ModData(Some("a".into()));
+        assert_eq!(all.clear_items(ALICE, &data, "m", u32::MAX).unwrap(), 10);
+        assert!(all.players[ALICE].main[3].is_none());
+        assert_eq!(count(&all, "minecraft:stone"), 65);
+        let mut all = clear_fixture();
+        assert_eq!(
+            all.clear_items(ALICE, &ItemFilter::ModData(None), "n", u32::MAX)
+                .unwrap(),
+            0
+        );
+        assert!(!all.players[ALICE].changed);
+        assert_eq!(
+            all.clear_items(ALICE, &ItemFilter::ModData(None), "m", u32::MAX)
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            all.clear_items(ALICE, &ItemFilter::ModData(Some("b".into())), "m", u32::MAX)
+                .unwrap(),
+            0
+        );
+
+        // Tags.
+        let mut all = clear_fixture();
+        let meat = ItemFilter::Tag("test:meat".into());
+        assert_eq!(all.clear_items(ALICE, &meat, "m", u32::MAX).unwrap(), 5);
+        assert!(all.players[ALICE].main[5].is_none());
+        assert_eq!(count(&all, "minecraft:stone"), 75);
+
+        // Creative players lose items too.
+        let mut all = clear_fixture();
+        all.players.get_mut(ALICE).unwrap().creative = true;
+        assert_eq!(all.clear_items(ALICE, &stone, "m", u32::MAX).unwrap(), 75);
+        assert_eq!(count(&all, "minecraft:stone"), 0);
+
+        // Errors change nothing.
+        let mut all = clear_fixture();
+        assert!(
+            all.clear_items(ALICE, &ItemFilter::Item("nope:x".into()), "m", 1)
+                .is_err()
+        );
+        assert!(
+            all.clear_items(ALICE, &ItemFilter::Tag("nope:x".into()), "m", 1)
+                .is_err()
+        );
+        assert!(all.clear_items("offline", &stone, "m", 1).is_err());
+        assert_eq!(count(&all, "minecraft:stone"), 75);
+        assert!(!all.players[ALICE].changed);
     }
     #[test]
     fn equipment_reads_guest_armor_selected_hand_offhand_and_nine_slots() {
