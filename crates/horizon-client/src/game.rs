@@ -292,6 +292,8 @@ mod paintings;
 mod pandas;
 mod particle_culling;
 mod passengers;
+#[cfg(any(target_os = "ios", test))]
+mod perf_log;
 mod persist;
 mod perspective;
 mod pick_entity;
@@ -2794,6 +2796,8 @@ struct Game<'a> {
     view: horizon_client::camera::Camera,
     /// `FramerateLimiter` and its clock.
     limiter: horizon_client::window::FramerateLimiter,
+    #[cfg(target_os = "ios")]
+    phone_perf: perf_log::PhonePerf,
     frame_clock: horizon_client::window::SystemClock,
     /// Hud.scopeScale (spyglass overlay size).
     scope_scale: f32,
@@ -16174,6 +16178,8 @@ impl Game<'_> {
         });
     }
     fn render(&mut self) -> Result<bool> {
+        #[cfg(target_os = "ios")]
+        self.update_phone_performance();
         // The window's GPU holds the atlas: its copy in memory is kept
         // compressed (a no-op once it is).
         if self.renderer.is_some() {
@@ -19225,7 +19231,11 @@ impl Game<'_> {
                         }
                     }
                     self.extras_frame(elapsed);
+                    #[cfg(target_os = "ios")]
+                    let mods_span = horizon_client::spans::guard("mods_frame");
                     self.mods_frame(elapsed);
+                    #[cfg(target_os = "ios")]
+                    drop(mods_span);
                     self.poll_moved_extras();
                     self.extras_retry()?;
                     self.apply_mouse_look(elapsed.as_secs_f32());
@@ -19274,6 +19284,15 @@ impl Game<'_> {
                                 horizon_client::spans::describe(&spans)
                             );
                         }
+                    }
+                    #[cfg(target_os = "ios")]
+                    {
+                        let cpu = now.elapsed().saturating_sub(
+                            self.renderer
+                                .as_ref()
+                                .map_or(Duration::ZERO, |r| r.last_wait),
+                        );
+                        self.log_phone_performance(rendered, cpu, &frame_spans);
                     }
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
@@ -19819,6 +19838,8 @@ impl<'a> Game<'a> {
             crossbow_sounds: [false; 2],
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
+            #[cfg(target_os = "ios")]
+            phone_perf: Default::default(),
             frame_clock: Default::default(),
             scope_scale: 0.5,
             frame_ticks: 0.0,
@@ -22033,7 +22054,12 @@ impl Loading {
         }
         horizon_client::telemetry::note_display(&window);
         #[cfg(target_os = "ios")]
-        ios::log_window(&window);
+        ios::log_window(
+            &window,
+            self.settings
+                .horizon
+                .battery_limit(self.settings.max_fps as i32, false, true),
+        );
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
         // keep repainting it as the console's lines arrive; the wgpu frames
@@ -22591,11 +22617,12 @@ pub fn run_with() -> Result<()> {
         options.spikes = Some(dedicated::SLOW_TICK_MS);
     }
     horizon_client::spans::enable(options.spikes.is_some());
-    // A player who allows performance statistics also says what their slow frames spent their
-    // time in: this thread, which draws the frames, times its steps (wall time only).
+    // Always time the phone's render thread; worker threads need no additional recording.
+    // Opt-in desktop statistics keep their existing wall-only spans.
     if options.execution_role.is_client()
-        && horizon_telemetry::Consent::load(&horizon_client::logging::game_home())
-            .allows(horizon_telemetry::Kind::Perf)
+        && (cfg!(target_os = "ios")
+            || horizon_telemetry::Consent::load(&horizon_client::logging::game_home())
+                .allows(horizon_telemetry::Kind::Perf))
     {
         horizon_client::spans::record_here(true);
     }

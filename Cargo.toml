@@ -111,6 +111,11 @@ debug = "line-tables-only"
 lto = "thin"
 codegen-units = 1
 
+[profile.ios-release]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # Optimized but quick-to-link builds for iteration: cargo build --profile fast
 [profile.fast]
 inherits = "release"

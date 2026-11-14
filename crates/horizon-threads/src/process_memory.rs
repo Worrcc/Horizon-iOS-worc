@@ -51,11 +51,34 @@ pub fn resident_bytes() -> Option<u64> {
     }
 }
 
+/// iOS exposes Mach task information without macOS's libproc API.
+#[cfg(target_os = "ios")]
+pub fn resident_bytes() -> Option<u64> {
+    // libc exposes this Mach symbol only on macOS, but iOS exports it too.
+    unsafe extern "C" {
+        static mach_task_self_: libc::mach_port_t;
+    }
+    // SAFETY: the task is our own; count describes the writable C struct in integer units.
+    unsafe {
+        let mut info: libc::mach_task_basic_info = std::mem::zeroed();
+        let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
+        let result = libc::task_info(
+            mach_task_self_,
+            libc::MACH_TASK_BASIC_INFO,
+            (&raw mut info).cast(),
+            &mut count,
+        );
+        (result == libc::KERN_SUCCESS && count == libc::MACH_TASK_BASIC_INFO_COUNT)
+            .then_some(info.resident_size)
+    }
+}
+
 /// The memory this process holds in RAM, in bytes: not known on this system.
 #[cfg(not(any(
     windows,
     target_os = "linux",
     target_os = "android",
+    target_os = "ios",
     target_os = "macos"
 )))]
 pub fn resident_bytes() -> Option<u64> {

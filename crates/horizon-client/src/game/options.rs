@@ -554,6 +554,10 @@ impl Game<'_> {
         }
         self.apply_fullscreen();
         let s = &self.settings;
+        #[cfg(target_os = "ios")]
+        let resolution_scale = self.phone_resolution_scale();
+        #[cfg(not(target_os = "ios"))]
+        let resolution_scale = s.horizon.resolution_scale;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;
             r.fullbright = s.extras.fullbright;
@@ -567,7 +571,7 @@ impl Game<'_> {
                 s.file.int("maxAnisotropyBit"),
             );
             r.set_world_post(
-                s.horizon.resolution_scale as f32 / 100.0,
+                resolution_scale as f32 / 100.0,
                 s.horizon.fxaa,
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
@@ -689,6 +693,8 @@ impl Game<'_> {
             .settings
             .horizon
             .battery_limit(limit, self.title.is_none(), self.focused);
+        #[cfg(target_os = "ios")]
+        let limit = self.phone_frame_cap(limit);
         // A native mod may only lower it (`native_framerate_limit`).
         let mut hooked = limit;
         self.native_framerate_limit(
@@ -707,6 +713,8 @@ impl Game<'_> {
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
+        #[cfg(target_os = "ios")]
+        self.phone_display_cap(self.framerate_limit());
         if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }

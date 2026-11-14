@@ -29,6 +29,32 @@ pub fn worker_count() -> usize {
     })
 }
 
+/// Physical performance and efficiency core counts (`hw.perflevel0/1`), on
+/// Apple chips that report both; `None` where either sysctl fails.
+#[cfg(target_vendor = "apple")]
+pub fn core_levels() -> Option<(usize, usize)> {
+    fn physical_cpus(name: &'static [u8]) -> Option<usize> {
+        let mut count: libc::c_int = 0;
+        let mut size = std::mem::size_of_val(&count);
+        // SAFETY: `name` is NUL-terminated and `count`/`size` are valid outputs.
+        let result = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr().cast(),
+                (&mut count as *mut libc::c_int).cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (result == 0 && size == std::mem::size_of_val(&count) && count > 0)
+            .then_some(count as usize)
+    }
+    Some((
+        physical_cpus(b"hw.perflevel0.physicalcpu\0")?,
+        physical_cpus(b"hw.perflevel1.physicalcpu\0")?,
+    ))
+}
+
 /// `Some(n)` when `value` names a positive count (`" 4 "` counts; `"0"`,
 /// `"lots"`, a missing variable don't).
 fn parse_worker_count(value: Option<String>) -> Option<usize> {
@@ -127,8 +153,7 @@ pub fn put_helpers_behind() {
 
 /// Called by a helper thread as it starts (world generation, lighting and
 /// meshing, a connection's packet writer): work no tick or frame waits for.
-/// Once `put_helpers_behind` was called, on Linux and Android, where the server and
-/// render threads can't be raised (`favour_current`), the helper lowers
+/// Once `put_helpers_behind` was called, on Linux and Android the helper lowers
 /// itself instead, which an unprivileged thread may: 10 nice levels below
 /// the process, or, where nice runs out (a game started under nice 10 or
 /// more), the idle class, which runs the thread only when no ordinary thread
@@ -154,7 +179,13 @@ fn behind() -> bool {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(target_os = "ios")]
+fn behind() -> bool {
+    // SAFETY: sets the calling thread's own QoS class; no pointers.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) == 0 }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "ios")))]
 fn behind() -> bool {
     false
 }

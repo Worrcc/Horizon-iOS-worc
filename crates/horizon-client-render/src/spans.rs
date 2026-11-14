@@ -14,7 +14,7 @@ use std::{
 static ENABLED: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static SPANS: RefCell<Vec<Span>> = const { RefCell::new(Vec::new()) };
-    /// Spans recorded on this thread alone, wall time only ([`record_here`]).
+    /// Spans recorded on this thread alone ([`record_here`]).
     static HERE: Cell<bool> = const { Cell::new(false) };
     /// How many timed spans the thread is inside: the next span's [`Span::depth`].
     static DEPTH: Cell<u8> = const { Cell::new(0) };
@@ -44,7 +44,7 @@ pub fn enable(on: bool) {
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
-/// Record this thread's spans even with spans off, their wall time only (no CPU clock read):
+/// Record this thread's spans even with spans off, wall time only (plus CPU time on iOS):
 /// what the render thread's slow frames spent their time in, for the opt-in performance
 /// statistics (`telemetry::Session::frame`). The thread takes them every frame ([`take`]).
 pub fn record_here(on: bool) {
@@ -55,11 +55,10 @@ pub fn record_here(on: bool) {
 pub fn recording_here() -> bool {
     ENABLED.load(Ordering::Relaxed) || HERE.with(Cell::get)
 }
-/// The thread's CPU time when spans are on for every thread (`HORIZON_SPIKES`): only they
-/// print it.
+/// Thread CPU time for HORIZON_SPIKES, or the phone's render-thread diagnostics.
 #[inline]
 fn cpu_if_enabled() -> Option<Duration> {
-    if ENABLED.load(Ordering::Relaxed) {
+    if ENABLED.load(Ordering::Relaxed) || (cfg!(target_os = "ios") && HERE.with(Cell::get)) {
         thread_cpu()
     } else {
         None

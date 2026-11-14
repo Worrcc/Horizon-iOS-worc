@@ -14,7 +14,7 @@ raw-window-handle = "0.6.2"
 block2 = "0.5.1"
 objc2 = "0.5.2"
 objc2-uniform-type-identifiers = { version = "0.2.2", default-features = false, features = ["std", "UTType"] }
-objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSObjCRuntime", "NSRunLoop", "NSString", "NSThread", "NSURL"] }
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSGeometry", "NSObjCRuntime", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSURL"] }
 # Controllers (gilrs has no iOS backend).
 objc2-game-controller = { version = "0.2.2", default-features = false, features = [
     "std",
