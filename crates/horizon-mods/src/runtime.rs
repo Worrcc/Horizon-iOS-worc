@@ -688,6 +688,10 @@ pub trait WorldView: std::any::Any + Send {
     /// The block state at a position, `minecraft:oak_log[axis=y]`; `None`
     /// where no chunk of that dimension is loaded.
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// OCEAN_FLOOR first-available heights of a loaded chunk, in local z * 16 + x order.
+    fn heightmap(&self, _dimension: &str, _x: i32, _z: i32) -> Option<Vec<i32>> {
+        None
+    }
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// Sky light 15 at the position; false when no chunk can be read.
@@ -3412,6 +3416,10 @@ impl mod_world::Host for State {
     fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.block(&dimension, x, y, z)
+    }
+    fn heightmap(&mut self, dimension: String, x: i32, z: i32) -> Option<Vec<i32>> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.heightmap(&dimension, x, z)
     }
     fn generated_chunks(&mut self) -> Vec<ChunkPos> {
         (self.snapshot.generated_chunks.iter())

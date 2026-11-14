@@ -53,6 +53,7 @@
 //! scoped UTF-8 data in minecraft:custom_data (1024 bytes; JSON/base64 allowed).
 //! Data writes and creation share storage moves' 64 requests/mod/tick and apply
 //! after hooks. [`server::StackInfoWithData`] leaves the older record unchanged.
+//! Level 32 adds [`server::world::heightmap`]: a loaded chunk's 256 OCEAN_FLOOR heights.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
