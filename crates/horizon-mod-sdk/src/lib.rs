@@ -58,7 +58,8 @@
 //! by time of day, a weighted mix the game cross-fades to ([`atmosphere::set_mix`], or
 //! [`atmosphere_mix::show`] and [`atmosphere_mix::clear`]) and the camera's conditions; and
 //! particle effects the game simulates ([`atmosphere::define_effect`], emitters started, moved and
-//! stopped by id, builders in [`atmosphere_fx`]).
+//! stopped by id, builders in [`atmosphere_fx`]); and up to 256 sky sprites the game moves and
+//! fades on the sky dome ([`atmosphere::set_sky_sprites`], builders in [`atmosphere_sky`]).
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -198,6 +199,50 @@ pub mod atmosphere_fx {
     /// Both halves.
     pub fn effect(emitter: Emitter, particle: Particle) -> Effect {
         Effect { emitter, particle }
+    }
+}
+
+/// Builders for [`atmosphere::set_sky_sprites`]' records (capability `atmosphere`, API level 33):
+/// start from [`atmosphere_sky::sprite`] and change fields.
+pub mod atmosphere_sky {
+    use super::atmosphere::{SkyBlend, SkySpace, SkySprite};
+    /// Horizon's soft round glow (a halo, a star, a meteor's head).
+    pub const GLOW: &str = "horizon:sky/glow";
+    /// Horizon's sharp-edged round disc (a moon, a planet).
+    pub const DISC: &str = "horizon:sky/disc";
+    /// Horizon's streak, bright at its right end and fading to the left (a meteor's trail).
+    pub const STREAK: &str = "horizon:sky/streak";
+    /// Horizon's curtain, bright along its bottom edge and fading upwards (an aurora's veil).
+    pub const VEIL: &str = "horizon:sky/veil";
+
+    /// A white, whole-texture, translucent sprite `size` degrees square at a compass `yaw` and
+    /// `elevation` (degrees), fixed to the compass, motionless and shown until removed.
+    pub fn sprite(key: u32, texture: &str, yaw: f32, elevation: f32, size: f32) -> SkySprite {
+        SkySprite {
+            key,
+            texture: texture.into(),
+            uv: (0.0, 0.0, 1.0, 1.0),
+            yaw,
+            elevation,
+            width: size,
+            height: size,
+            roll: 0.0,
+            tint: 0xFFFFFF,
+            alpha: 1.0,
+            blend: SkyBlend::Translucent,
+            space: SkySpace::Compass,
+            drift_yaw: 0.0,
+            drift_elevation: 0.0,
+            spin: 0.0,
+            lifetime: 0.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+        }
+    }
+    /// The same sprite adding light instead of covering the sky.
+    pub fn emissive(mut s: SkySprite) -> SkySprite {
+        s.blend = SkyBlend::Emissive;
+        s
     }
 }
 

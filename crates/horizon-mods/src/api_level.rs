@@ -13,7 +13,7 @@ pub const LEVEL: u32 = 33;
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 194] = [
+pub const FUNCTIONS: [(&str, u32); 195] = [
     ("atmosphere.define-profile", 33),
     ("atmosphere.set-mix", 33),
     ("atmosphere.conditions", 33),
@@ -21,6 +21,7 @@ pub const FUNCTIONS: [(&str, u32); 194] = [
     ("atmosphere.start-emitter", 33),
     ("atmosphere.move-emitter", 33),
     ("atmosphere.stop-emitter", 33),
+    ("atmosphere.set-sky-sprites", 33),
     ("world.heightmap", 32),
     ("players.deaths", 31),
     ("players.respawns", 31),

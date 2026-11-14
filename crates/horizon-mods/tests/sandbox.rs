@@ -4189,3 +4189,123 @@ fn api33_atmosphere_demo_starts_and_fades_a_motes_emitter() {
     assert_eq!(mods.take_atmosphere_fades(), [serial, second]);
     assert!(said(&mut mods, "atmo emit 9").1.len() == 1);
 }
+
+#[test]
+fn api33_atmosphere_sky_sprites_are_checked_replaced_capped_and_rate_limited() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    let sprites = |mods: &Mods| {
+        mods.atmosphere_sky_sprites()
+            .map(|(id, s)| (id.to_owned(), s.key, s.texture.clone(), s.alpha))
+            .collect::<Vec<_>>()
+    };
+    assert!(sprites(&mods).is_empty());
+    assert!(
+        said(&mut mods, "atmo_sky 2 horizon:sky/veil 0.5")
+            .1
+            .is_empty()
+    );
+    let shown = sprites(&mods);
+    assert_eq!(
+        shown,
+        [0, 1].map(|k| (
+            "test_ui_guest".to_owned(),
+            k,
+            "horizon:sky/veil".to_owned(),
+            0.5
+        ))
+    );
+    let first = mods.atmosphere_sky_sprites().nth(1).unwrap().1.clone();
+    assert_eq!((first.yaw, first.drift[0]), (1.0, 2.0));
+    assert_eq!(first.blend, horizon_mods::atmosphere_sky::Blend::Emissive);
+    // A refused list keeps the last one.
+    for (bad, why) in [
+        ("atmo_sky 1 other:sky/a", "not this mod's"),
+        ("atmo_sky 1 horizon:sky/sun", "Horizon's own"),
+        ("atmo_sky 1 Bad", "<namespace>:<path>"),
+        ("atmo_sky 1 horizon:sky/glow 1.5", "alpha"),
+        ("atmo_sky 2 horizon:sky/glow 1 dup", "used twice"),
+        ("atmo_sky 257", "256"),
+    ] {
+        let (_, errors) = said(&mut mods, bad);
+        assert!(
+            errors.len() == 1 && errors[0].contains(why),
+            "{bad}: {errors:?}"
+        );
+    }
+    assert_eq!(sprites(&mods), shown);
+    // Its own namespace and vanilla's are allowed; a new list replaces the old.
+    assert!(
+        said(&mut mods, "atmo_sky 3 test_ui_guest:sky/aurora")
+            .1
+            .is_empty()
+    );
+    assert!(
+        said(
+            &mut mods,
+            "atmo_sky 256 minecraft:environment/celestial/sun"
+        )
+        .1
+        .is_empty()
+    );
+    assert_eq!(mods.atmosphere_sky_sprites().count(), 256);
+    // 9 accepted or refused calls so far in this second; 20 are taken, then they fail.
+    for _ in 9..20 {
+        assert!(said(&mut mods, "atmo_sky 0").1.is_empty());
+    }
+    assert!(
+        mods.atmosphere_sky_sprites().next().is_none(),
+        "an empty list removes them"
+    );
+    let (_, errors) = said(&mut mods, "atmo_sky 1");
+    assert!(errors[0].contains("20"), "{errors:?}");
+    assert!(mods.atmosphere_sky_sprites().next().is_none());
+    mods.set_snapshot(Snapshot {
+        tick: 20,
+        ..Snapshot::default()
+    });
+    assert!(said(&mut mods, "atmo_sky 1").1.is_empty());
+    assert_eq!(mods.atmosphere_sky_sprites().count(), 1);
+}
+
+#[test]
+fn api33_atmosphere_demo_shows_and_clears_its_sky() {
+    use horizon_mods::atmosphere_sky::{Blend, Space};
+    let mut mods = load("atmosphere_demo.hmod");
+    let (chat, errors) = said(&mut mods, "atmo sky");
+    assert!(errors.is_empty(), "{chat:?} {errors:?}");
+    let sky: Vec<_> = mods
+        .atmosphere_sky_sprites()
+        .map(|(_, s)| s.clone())
+        .collect();
+    let named = |t: &str| sky.iter().filter(|s| s.texture == t).count();
+    assert!(named("horizon:sky/veil") >= 8, "an aurora of veils");
+    assert!(named("horizon:sky/streak") >= 1, "meteors");
+    assert!(
+        named("minecraft:environment/celestial/sun") == 1,
+        "a vanilla texture"
+    );
+    let lights = |t: &str| {
+        sky.iter()
+            .filter(|s| s.texture == t)
+            .all(|s| s.blend == Blend::Emissive)
+    };
+    assert!(lights("horizon:sky/veil") && lights("horizon:sky/streak"));
+    assert!(
+        sky.iter().any(|s| s.blend == Blend::Translucent),
+        "the dark moon"
+    );
+    // The aurora drifts, the meteors fly and burn out, the far sun turns with the stars.
+    assert!(
+        sky.iter()
+            .filter(|s| s.texture == "horizon:sky/veil")
+            .all(|s| s.drift[0] != 0.0)
+    );
+    assert!(
+        sky.iter()
+            .filter(|s| s.texture == "horizon:sky/streak")
+            .all(|s| s.lifetime > 0.0)
+    );
+    assert!(sky.iter().any(|s| s.space == Space::Stars));
+    assert!(said(&mut mods, "atmo sky off").1.is_empty());
+    assert!(mods.atmosphere_sky_sprites().next().is_none());
+}

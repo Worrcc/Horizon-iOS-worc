@@ -201,6 +201,7 @@ pub mod panorama;
 mod readback;
 mod resident;
 mod reuse;
+pub mod sky_sprites;
 mod stars;
 pub mod submit;
 mod sunrise_fan;
@@ -960,6 +961,9 @@ pub struct Frame<'a> {
     /// the sky's rotation (camera-relative world from star space) and the
     /// star brightness.
     pub stars: Option<(Mat4, f32)>,
+    /// Client mods' sky sprites (capability `atmosphere`), drawn after the stars, before
+    /// the dark disc, clouds and terrain.
+    pub sky_sprites: sky_sprites::Input<'a>,
     /// First-person hand and held item, drawn after clearing depth.
     pub hand: &'a [Vertex],
     /// Where the arm and each held item start in `hand` (first vertex), with the
@@ -1184,6 +1188,7 @@ pub struct Renderer {
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
+    sky_sprites: sky_sprites::SkySprites,
     /// The glowing entities' outline (`LevelRenderer.entityOutlineTarget`).
     entity_outline: entity_outline::EntityOutline,
     panorama: panorama::Panorama,
@@ -4481,6 +4486,7 @@ impl Renderer {
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, frame_format);
+        let sky_sprites = sky_sprites::SkySprites::new(&device, frame_format);
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
@@ -4603,6 +4609,7 @@ impl Renderer {
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
             stars,
+            sky_sprites,
             entity_outline,
             panorama,
             border_pipeline,
@@ -5231,6 +5238,10 @@ impl Renderer {
 
     pub fn has_section(&self, key: SectionKey) -> bool {
         self.sections.contains(key)
+    }
+    /// Client mods' sky sprites drawn last frame, and their textures on the page.
+    pub fn sky_sprite_stats(&self) -> (usize, usize) {
+        self.sky_sprites.stats()
     }
     /// Bring the cave culling graph up to date for `camera` without waiting:
     /// a search this starts runs on its worker while the frame is prepared,
@@ -8671,6 +8682,17 @@ impl Renderer {
                 brightness,
             );
         }
+        self.sky_sprites.prepare(
+            &self.device,
+            &mut self.uploads,
+            &mut encoder,
+            if frame.title {
+                Default::default()
+            } else {
+                frame.sky_sprites
+            },
+            jittered,
+        );
         let celestial_vertices = frame.celestial.len().min(2048 * 4);
         if frame.end_sky && !frame.title {
             self.end_sky.prepare(&self.device, frame.end_sky_sprite);
@@ -9440,6 +9462,10 @@ impl Renderer {
                     .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
                 if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
                     self.stars.draw(&mut pass);
+                    pass.set_bind_group(0, &self.group, &[]);
+                }
+                if !frame.title && !pack_draws_sky && !frame.sky_sprites.sprites.is_empty() {
+                    self.sky_sprites.draw(&mut pass);
                     pass.set_bind_group(0, &self.group, &[]);
                 }
                 if !frame.title && frame.dark_disc && !pack_draws_sky {

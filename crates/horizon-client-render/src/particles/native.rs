@@ -160,12 +160,27 @@ mod tests {
         assert_eq!(e.sprite_set_len("minecraft:smoke"), Some(2));
         assert_eq!(e.sprite_set_len("minecraft:flame"), None);
         let at = |x| [x, 0.0, 0.0];
-        assert!(e.curve_particle("example:orbit", at(60.0), true, 64.0, Moving(0)).is_some());
-        assert!(e.curve_particle("minecraft:smoke", at(60.0), false, 64.0, Moving(0)).is_some());
-        assert!(e.curve_particle("example:orbit", at(65.0), true, 64.0, Moving(0)).is_none());
-        assert!(e.curve_particle("example:missing", at(0.0), true, 64.0, Moving(0)).is_none());
+        assert!(
+            e.curve_particle("example:orbit", at(60.0), true, 64.0, Moving(0))
+                .is_some()
+        );
+        assert!(
+            e.curve_particle("minecraft:smoke", at(60.0), false, 64.0, Moving(0))
+                .is_some()
+        );
+        assert!(
+            e.curve_particle("example:orbit", at(65.0), true, 64.0, Moving(0))
+                .is_none()
+        );
+        assert!(
+            e.curve_particle("example:missing", at(0.0), true, 64.0, Moving(0))
+                .is_none()
+        );
         e.particle_level = 2;
-        assert!(e.curve_particle("example:orbit", at(0.0), true, 64.0, Moving(0)).is_none());
+        assert!(
+            e.curve_particle("example:orbit", at(0.0), true, 64.0, Moving(0))
+                .is_none()
+        );
     }
     #[test]
     fn controlled_spawn_respects_distance_settings_and_declared_sprite_sets() {

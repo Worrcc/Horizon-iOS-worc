@@ -21,3 +21,4 @@ with feature `mods`. `tools/live_atmosphere.py` does this and checks the fog col
 | `/atmo fog RRGGBB START END` | defines a plain fog and sky profile and shows it at once |
 | `/atmo conditions` | rain, thunder, day time, moon phase, camera height, light, sky |
 | `/atmo emit [DENSITY]` | glowing motes around the camera (an API 33 particle effect on vanilla end-rod sprites); again replaces it, `stop` fades it |
+| `/atmo sky` | an aurora of drifting veils low in the north, a meteor every few seconds, a dark second moon and vanilla's sun far off turning with the stars (API 33 sky sprites); `off` removes them |

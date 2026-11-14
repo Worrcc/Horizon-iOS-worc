@@ -555,6 +555,7 @@ impl Scene {
             stars: f
                 .stars
                 .map(|(rotation, brightness)| (Mat4::from_cols_array(&rotation), brightness)),
+            sky_sprites: Default::default(),
             hand: &[],
             hand_fov_degrees: f.hand_fov_degrees,
             screen: &[],

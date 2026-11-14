@@ -10,7 +10,10 @@ Sets a distinctive fog colour (#ff00ff, fog full at 4 blocks, sky the same colou
 middle of a screenshot turns magenta, then `/atmo off` and checks it fades back. Then `/atmo emit`
 starts the motes emitter and the live count of the demo's particles (`horizon-ctl status`,
 `mod_particles`) must rise within its cap of 400, and fall to none after `/atmo emit stop` once the
-motes' 6-second lives end. Prints one line per check and exits non-zero on a failed one.
+motes' 6-second lives end. Last, at midnight facing north and up, `/atmo sky` puts its aurora on
+the sky: `mod_sky_sprites` must report sprites drawn and textures on the page, and the screen must
+gain green aurora light the night sky did not have; `/atmo sky off` removes them again. Prints
+one line per check and exits non-zero on a failed one.
 """
 import argparse, json, os, struct, subprocess, sys, tempfile, time, zlib
 
@@ -104,6 +107,27 @@ def middle_colour(name):
     return tuple(sum(p[i] for p in box) // len(box) for i in range(3))
 
 
+def green_pixels(name):
+    """How many pixels (every second row and column) are aurora green: green above red and blue."""
+    path = f"{home}/{name}.png"
+    ctl("screenshot", path)
+    for _ in range(40):
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            break
+        time.sleep(0.25)
+    time.sleep(0.3)
+    w, h, rows = png_pixels(path)
+    return sum(1 for y in range(0, h, 2) for (r, g, b) in rows[y][::2] if g > 40 and g > r + 20 and g > b)
+
+
+def sky_status():
+    try:
+        status = json.loads((ctl("status").splitlines() or ["{}"])[-1])
+    except ValueError:
+        return None
+    return status.get("mod_sky_sprites")
+
+
 def magenta(c):
     r, g, b = c
     return r > 180 and b > 180 and g < 90
@@ -156,8 +180,24 @@ try:
     time.sleep(7.5)
     count = live_particles()
     check("motes fade out after stop", count == 0, f"live {count}")
+    # Sky sprites: midnight, facing north (yaw 180) and 25 degrees up, where the aurora hangs.
+    ctl("command", "time set 18000")
+    ctl("look", 180, -25)
+    time.sleep(1.5)
+    before = green_pixels("night")
+    out = say("/atmo sky", 1.0)
+    check("sky sprites set", any("sky:" in m for m in out), out[-2:])
+    time.sleep(4.0)  # the veils fade in over 3 s
+    sky = sky_status()
+    check("sky sprites drawn", bool(sky) and sky.get("drawn", 0) >= 8 and sky.get("textures", 0) >= 1, f"status {sky}")
+    after = green_pixels("aurora")
+    check("aurora green on screen", after > before + 500, f"green pixels {before} -> {after}")
+    say("/atmo sky off", 1.0)
+    sky = sky_status()
+    check("sky sprites removed", bool(sky) and sky.get("drawn") == 0, f"status {sky}")
     logs = ctl("logs", "--lines", 400)
-    bad = [l[-160:] for l in logs.splitlines() if "atmosphere" in l.lower() and ("warn" in l.lower() or "error" in l.lower())]
+    bad = [l[-160:] for l in logs.splitlines()
+           if ("atmosphere" in l.lower() or "sky sprite" in l.lower()) and ("warn" in l.lower() or "error" in l.lower())]
     check("no atmosphere warnings", not bad, bad[-3:])
 finally:
     ctl("quit", timeout=30)

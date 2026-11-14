@@ -23,7 +23,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `world-read` | [`client-world`](#client-world) | see the blocks, biomes and light your game has loaded around you |
 | `container` | [`container`](#container) | inspect and click your open inventory and container screens |
 | `channel` | [`channel`](#channel) | exchange mod messages with the server and its players |
-| `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky, and show particle effects |
+| `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky, and show particle effects and sky sprites |
 
 ## World `channel-host`
 
@@ -2194,6 +2194,49 @@ What an emitter is placed at: the camera (followed, world axes) or a fixed point
 | `camera` |  |  |
 | `point` | `tuple<f64, f64, f64>` |  |
 
+### enum `sky-blend`
+
+How a sky sprite goes over the sky: alpha blended, or adding light (aurora, meteors).
+
+| Case | |
+| --- | --- |
+| `translucent` |  |
+| `emissive` |  |
+
+### enum `sky-space`
+
+What a sky sprite's direction is fixed to: the compass (the world's axes), or the stars (turning with the sun, moon and stars through the day).
+
+| Case | |
+| --- | --- |
+| `compass` |  |
+| `stars` |  |
+
+### record `sky-sprite`
+
+A textured quad on the sky dome, drawn after the sky and stars, before clouds and terrain.
+
+| Field | Type | |
+| --- | --- | --- |
+| `key` | `u32` | The mod's key: a sprite set again under the same key keeps its age (drift, lifetime). |
+| `texture` | `string` | `<namespace>:<path>`, the PNG `assets/<namespace>/textures/<path>.png` of the game's resources: `minecraft`, one of this mod's namespaces (its own content needs capability `registries`), or Horizon's own `horizon:sky/glow`, `disc`, `streak` or `veil`. |
+| `uv` | `tuple<f32, f32, f32, f32>` | The part of the texture shown: u0, v0, u1, v1 in 0..1. |
+| `yaw` | `f32` | Compass direction in degrees, as the player's yaw (0 south, 90 west). |
+| `elevation` | `f32` | Height above the horizon in degrees, -90..90 (up is positive). |
+| `width` | `f32` | Angular width and height in degrees, 0..120. |
+| `height` | `f32` |  |
+| `roll` | `f32` | Turn about the direction, in degrees. |
+| `tint` | `u32` | 0xRRGGBB multiplied with the texture, and an alpha 0..1. |
+| `alpha` | `f32` |  |
+| `blend` | `sky-blend` |  |
+| `space` | `sky-space` |  |
+| `drift-yaw` | `f32` | Degrees per second the game adds to yaw, elevation and roll, each -360..360. |
+| `drift-elevation` | `f32` |  |
+| `spin` | `f32` |  |
+| `lifetime` | `f32` | Seconds from the key's first showing until it is gone, 0 (forever) or 0.05..600; it fades in over `fade-in` seconds and out over the last `fade-out` (each 0..lifetime, `fade-in` 0..60 without a lifetime). |
+| `fade-in` | `f32` |  |
+| `fade-out` | `f32` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `define-profile` | `func(profile: profile) -> result<u32, string>` | Stores a profile (at most 64 per mod) and returns its id. Profiles are never removed. |
@@ -2203,6 +2246,7 @@ What an emitter is placed at: the camera (followed, world axes) or a fixed point
 | `start-emitter` | `func(effect: u32, anchor: anchor, density: f32, tint: u32) -> result<u32, string>` | Starts an emitter of one of this mod's effects (at most 48 live per mod); `density` 0..4 scales a density-scaled rate, `tint` (0xRRGGBB) multiplies the colour. The game simulates its particles; a mod's live particles are capped at 3072 and its spawns at 512 per tick. Nothing spawns on the title screen, while paused, with Particles: Minimal, or more than 64 blocks from the camera. A one-shot emitter's id frees when it ends. |
 | `move-emitter` | `func(emitter: u32, anchor: anchor) -> result<_, string>` | Moves a live emitter. |
 | `stop-emitter` | `func(emitter: u32, fade: bool) -> result<_, string>` | Stops a live emitter; with `fade` its particles live out their lives, without they go at once. Its id may be reused. |
+| `set-sky-sprites` | `func(sprites: list<sky-sprite>) -> result<_, string>` | Replaces this mod's sky sprites (at most 256; an empty list removes them). The game moves and fades them each frame, so a mod sets them only when they change; at most 20 calls in 20 ticks are taken, later ones fail. Not drawn on the title screen, where the sky is not (the Nether, Horizon's sky option off), under blindness or darkness, or with a shader pack that draws its own sky. |
 
 ## `channel`
 

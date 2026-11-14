@@ -382,6 +382,7 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         shadow_only: &[],
         celestial: &[],
         stars: None,
+        sky_sprites: Default::default(),
         hand: &[],
         hand_items: &[],
         hand_fov_degrees: 70.0,

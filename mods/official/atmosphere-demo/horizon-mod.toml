@@ -1,7 +1,7 @@
 id = "atmosphere_demo"
 name = "Atmosphere Demo"
 version = "0.1.0"
-description = "API 33 fog and sky profiles: a misty day cycle, a storm mix when it rains, /atmo to pick or define one, and /atmo emit for particle motes."
+description = "API 33 fog and sky profiles: a misty day cycle, a storm mix when it rains, /atmo to pick or define one, /atmo emit for particle motes and /atmo sky for an aurora and meteors."
 authors = ["Horizon"]
 api = "0.1"
 side = "client"

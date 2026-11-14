@@ -96,6 +96,9 @@ pub(super) struct ModsState {
     /// Capability `atmosphere`'s emitters and live particle counts.
     #[cfg(feature = "mods")]
     pub(super) particles: super::mod_particles::ModParticles,
+    /// Capability `atmosphere`'s sky sprite ages.
+    #[cfg(feature = "mods")]
+    pub(super) sky: super::mod_sky::SkyAges,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.

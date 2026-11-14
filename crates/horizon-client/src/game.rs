@@ -216,6 +216,7 @@ mod mod_particles;
 #[cfg(feature = "mods")]
 mod mod_players;
 mod mod_render;
+mod mod_sky;
 #[cfg(feature = "mods")]
 mod mod_target;
 mod modpack_import;
@@ -16638,6 +16639,18 @@ impl Game<'_> {
             self.dragon_fireball_geometry(camera, alpha, &mut dragon);
             entities.extend(dragon);
         }
+        // Capability `atmosphere`'s sky sprites, placed at their ages and culled to the view.
+        let sky_sprites = self.mod_sky_sprites(
+            title,
+            mod_sky::SkyView {
+                yaw,
+                pitch,
+                fov_degrees,
+                aspect: size[0] as f32 / size[1].max(1) as f32,
+                star_angle: sky.star_angle,
+                now: self.ticks as f64 + alpha,
+            },
+        );
         let (celestial, stars) = if title {
             (Vec::new(), None)
         } else if self.dim == Dim::Overworld
@@ -16811,6 +16824,10 @@ impl Game<'_> {
                 &[]
             },
             stars: stars.filter(|_| self.settings.horizon.sky || title),
+            sky_sprites: horizon_client::gfx::sky_sprites::Input {
+                root: Some(&self.options.resources),
+                sprites: &sky_sprites,
+            },
             hand: &hand,
             hand_items: &hand_items,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
@@ -21704,6 +21721,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         shadow_only: &[],
         celestial: &[],
         stars: None,
+        sky_sprites: Default::default(),
         hand: &[],
         hand_items: &[],
         hand_fov_degrees: 70.0,

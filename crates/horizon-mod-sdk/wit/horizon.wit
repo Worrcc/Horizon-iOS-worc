@@ -2299,6 +2299,53 @@ interface atmosphere {
     /// Stops a live emitter; with `fade` its particles live out their lives, without they go
     /// at once. Its id may be reused.
     stop-emitter: func(emitter: u32, fade: bool) -> result<_, string>;
+
+    /// How a sky sprite goes over the sky: alpha blended, or adding light (aurora, meteors).
+    enum sky-blend { translucent, emissive }
+    /// What a sky sprite's direction is fixed to: the compass (the world's axes), or the stars
+    /// (turning with the sun, moon and stars through the day).
+    enum sky-space { compass, stars }
+    /// A textured quad on the sky dome, drawn after the sky and stars, before clouds and terrain.
+    record sky-sprite {
+        /// The mod's key: a sprite set again under the same key keeps its age (drift, lifetime).
+        key: u32,
+        /// `<namespace>:<path>`, the PNG `assets/<namespace>/textures/<path>.png` of the game's
+        /// resources: `minecraft`, one of this mod's namespaces (its own content needs capability
+        /// `registries`), or Horizon's own `horizon:sky/glow`, `disc`, `streak` or `veil`.
+        texture: string,
+        /// The part of the texture shown: u0, v0, u1, v1 in 0..1.
+        uv: tuple<f32, f32, f32, f32>,
+        /// Compass direction in degrees, as the player's yaw (0 south, 90 west).
+        yaw: f32,
+        /// Height above the horizon in degrees, -90..90 (up is positive).
+        elevation: f32,
+        /// Angular width and height in degrees, 0..120.
+        width: f32,
+        height: f32,
+        /// Turn about the direction, in degrees.
+        roll: f32,
+        /// 0xRRGGBB multiplied with the texture, and an alpha 0..1.
+        tint: u32,
+        alpha: f32,
+        blend: sky-blend,
+        space: sky-space,
+        /// Degrees per second the game adds to yaw, elevation and roll, each -360..360.
+        drift-yaw: f32,
+        drift-elevation: f32,
+        spin: f32,
+        /// Seconds from the key's first showing until it is gone, 0 (forever) or 0.05..600;
+        /// it fades in over `fade-in` seconds and out over the last `fade-out` (each 0..lifetime,
+        /// `fade-in` 0..60 without a lifetime).
+        lifetime: f32,
+        fade-in: f32,
+        fade-out: f32,
+    }
+    /// Replaces this mod's sky sprites (at most 256; an empty list removes them). The game moves
+    /// and fades them each frame, so a mod sets them only when they change; at most 20 calls in
+    /// 20 ticks are taken, later ones fail. Not drawn on the title screen, where the sky is not
+    /// (the Nether, Horizon's sky option off), under blindness or darkness, or with a shader pack
+    /// that draws its own sky.
+    set-sky-sprites: func(sprites: list<sky-sprite>) -> result<_, string>;
 }
 
 /// API level 28: experimental capability `channel`, on either side.

@@ -5,6 +5,7 @@
 use super::{Mods, State, Status};
 use crate::atmosphere::{self as atmo, FogKeyIn, Profile, SkyKeyIn, WaterFogIn};
 use crate::atmosphere_fx as fx;
+use crate::atmosphere_sky as sky;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasmtime::component::{HasSelf, Linker};
@@ -71,6 +72,10 @@ pub(super) struct AtmosphereState {
     /// First tick of the current second and the calls in it.
     calls: (Option<u64>, usize),
     warned: bool,
+    /// The sky sprites the mod set last, and its `set-sky-sprites` calls
+    /// in the current second (first tick, count).
+    sky: Vec<sky::SkySprite>,
+    sky_calls: (Option<u64>, usize),
 }
 
 impl AtmosphereState {
@@ -267,6 +272,58 @@ impl atmosphere::Host for State {
         }
         Ok(())
     }
+
+    fn set_sky_sprites(&mut self, sprites: Vec<atmosphere::SkySprite>) -> Result<(), String> {
+        if self.server {
+            return Err("atmosphere is client only".into());
+        }
+        let tick = self.snapshot.tick;
+        let calls = &mut self.atmosphere.sky_calls;
+        match calls.0 {
+            Some(start) if tick.saturating_sub(start) < 20 => {}
+            _ => *calls = (Some(tick), 0),
+        }
+        if calls.1 >= sky::CALLS_PER_SECOND {
+            return Err(format!(
+                "at most {} set-sky-sprites calls a second",
+                sky::CALLS_PER_SECOND
+            ));
+        }
+        calls.1 += 1;
+        let namespaces = &self.atmosphere.namespaces;
+        let id = &self.id;
+        let own = |ns: &str| ns == id || namespaces.iter().any(|n| n == ns);
+        let list = sky::check_list(sprites.into_iter().map(convert_sky).collect(), &own)?;
+        self.atmosphere.sky = list;
+        Ok(())
+    }
+}
+
+fn convert_sky(s: atmosphere::SkySprite) -> sky::SkySprite {
+    sky::SkySprite {
+        key: s.key,
+        texture: s.texture,
+        uv: [s.uv.0, s.uv.1, s.uv.2, s.uv.3],
+        yaw: s.yaw,
+        elevation: s.elevation,
+        width: s.width,
+        height: s.height,
+        roll: s.roll,
+        tint: s.tint,
+        alpha: s.alpha,
+        blend: match s.blend {
+            atmosphere::SkyBlend::Translucent => sky::Blend::Translucent,
+            atmosphere::SkyBlend::Emissive => sky::Blend::Emissive,
+        },
+        space: match s.space {
+            atmosphere::SkySpace::Compass => sky::Space::Compass,
+            atmosphere::SkySpace::Stars => sky::Space::Stars,
+        },
+        drift: [s.drift_yaw, s.drift_elevation, s.spin],
+        lifetime: s.lifetime,
+        fade_in: s.fade_in,
+        fade_out: s.fade_out,
+    }
 }
 
 fn span(s: atmosphere::Span) -> fx::Span {
@@ -403,6 +460,20 @@ impl Mods {
                         tint: slot.tint,
                     })
                 })
+            })
+    }
+    /// Every running mod's sky sprites, in load order (each mod's in its
+    /// list's order), with the mod's id.
+    pub fn atmosphere_sky_sprites(&self) -> impl Iterator<Item = (&str, &sky::SkySprite)> {
+        self.entries
+            .iter()
+            .filter(|e| e.status == Status::Running)
+            .filter_map(|e| Some(e.run.as_ref()?.store.data()))
+            .flat_map(|s| {
+                s.atmosphere
+                    .sky
+                    .iter()
+                    .map(|sprite| (s.id.as_str(), sprite))
             })
     }
     /// The serials stopped with `fade` since the last call.

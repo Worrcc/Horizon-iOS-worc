@@ -132,6 +132,7 @@ impl Mod for Guest {
             "atmo_emit",
             "atmo_move",
             "atmo_stop",
+            "atmo_sky",
             "zoom",
             "minimap",
             "far_terrain",
@@ -465,6 +466,26 @@ impl Mod for Guest {
                 let mut words = args.split_whitespace();
                 let id = words.next().and_then(|w| w.parse().ok()).unwrap_or(u32::MAX);
                 atmosphere::stop_emitter(id, words.next() == Some("fade"))?;
+            }
+            // `/atmo_sky COUNT TEXTURE [ALPHA] [dup]`: COUNT sprites, keys 0.., all of TEXTURE.
+            "atmo_sky" => {
+                use horizon_mod_sdk::atmosphere_sky::{emissive, sprite};
+                let mut words = args.split_whitespace();
+                let count: u32 = words.next().and_then(|w| w.parse().ok()).unwrap_or(0);
+                let texture = words.next().unwrap_or("horizon:sky/glow");
+                let alpha = words.next().and_then(|w| w.parse().ok()).unwrap_or(1.0);
+                let mut list: Vec<_> = (0..count)
+                    .map(|key| {
+                        let mut s = emissive(sprite(key, texture, key as f32, 30.0, 8.0));
+                        s.alpha = alpha;
+                        s.drift_yaw = 2.0;
+                        s
+                    })
+                    .collect();
+                if words.next() == Some("dup") && count > 1 {
+                    list[1].key = 0;
+                }
+                atmosphere::set_sky_sprites(&list)?;
             }
             "atmo_conditions" => chat::show(&match atmosphere::conditions() {
                 None => "none".to_owned(),

@@ -627,6 +627,7 @@ pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         world_primitives: Default::default(),
         celestial: &[],
         stars: None,
+        sky_sprites: Default::default(),
         hand: &[],
         hand_items: &[],
         hand_fov_degrees: 70.0,

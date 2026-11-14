@@ -1496,6 +1496,11 @@ impl Game<'_> {
         #[cfg(feature = "mods")]
         {
             status["mod_particles"] = json!(self.mods.particles.live());
+            // Its sky sprites the renderer drew last frame, and their textures on its page.
+            if let Some(r) = self.renderer.as_ref() {
+                let (drawn, textures) = r.sky_sprite_stats();
+                status["mod_sky_sprites"] = json!({"drawn": drawn, "textures": textures});
+            }
         }
         // The pickup particles made so far, by what was taken.
         status["pickups"] = json!(self.pickups.made());

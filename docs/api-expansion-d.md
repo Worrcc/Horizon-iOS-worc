@@ -1,7 +1,7 @@
-# Phase D: API level 33 atmosphere (fog, sky and particle effects)
+# Phase D: API level 33 atmosphere (fog, sky, particle effects and sky sprites)
 
 API level **33** adds interface `atmosphere`, granted by the new experimental capability
-`atmosphere` (client mods only; `experimental = ["atmosphere"]`). Seven imports, no export, no
+`atmosphere` (client mods only; `experimental = ["atmosphere"]`). Eight imports, no export, no
 change to any earlier record, function or callback. A mod that does not import them pays nothing;
 one that does is refused on an older Horizon with "update Horizon".
 
@@ -116,13 +116,61 @@ layer, lit by the world or full bright. Not in this level: `facing` modes other 
 additive blending (use `translucent` + `emissive`), collisions, events and sprite sub-grids; the
 compiler maps those effects to the nearest supported look.
 
+## Sky sprites
+
+`set-sky-sprites(list<sky-sprite>) -> result<_, string>` replaces the mod's sky sprites: up to
+**256** textured quads on the sky dome (radius 100, as the stars); an empty list removes them. The
+game moves and fades them every frame, so the mod calls it only when the list changes (the demo:
+when a meteor starts or burns out). More than **20** calls in 20 ticks fail ("at most 20").
+
+| Field | Content | Checks |
+|---|---|---|
+| `key` | the mod's id for the sprite: set again under the same key it keeps its age | unique in the list |
+| `texture`, `uv` | `<namespace>:<path>` = `assets/<namespace>/textures/<path>.png`; the part shown (u0, v0, u1, v1; flipped to mirror) | namespace `minecraft`, the mod's own (id or `namespaces`), or `horizon` for `horizon:sky/glow`, `disc`, `streak`, `veil`; at most 128 characters; uv 0..1 |
+| `yaw`, `elevation` | compass direction as the player's yaw (0 south, 90 west) and height above the horizon (up positive) | finite; elevation -90..90 |
+| `width`, `height`, `roll` | angular size in degrees, turn about the direction | sizes above 0 up to 120; roll finite |
+| `tint`, `alpha`, `blend` | colour multiplied with the texels; `translucent` (alpha blended) or `emissive` (adds light) | tint <= 0xFFFFFF, alpha 0..1 |
+| `space` | `compass` (world axes) or `stars` (turns with the sun, moon and stars) | |
+| `drift-yaw`, `drift-elevation`, `spin` | degrees per second the game adds to yaw, elevation and roll | each -360..360 |
+| `lifetime`, `fade-in`, `fade-out` | seconds from the key's first showing until it is gone (0: until removed), fading in over the first and out over the last | lifetime 0 or 0.05..600; fades 0..lifetime (fade-in 0..60 and no fade-out without a lifetime) |
+
+Errors name the sprite's index and field and keep the previous list. A sprite's age runs from the
+frame its key first appears in the mod's list (game ticks plus the partial tick, so it pauses with
+the game); a key missing from a later list is forgotten, and when shown again starts at 0. Drifting
+past the zenith carries a sprite on down the far side.
+
+**Textures.** The game reads the PNG from the resource root (through `prepared_files`, so vanilla's
+prepared textures and resource packs' overrides both work) on first use, at most 4 new textures a
+frame, onto a 1024x1024 page of its own; a texture is at most 512x512. The plan's open check,
+answered as for particle sprites: a mod's own textures reach the resource root only with
+capability `registries` (`api = "0.2"`, `assets/` beside `mod.wasm`); a plain `api = "0.1"` client
+mod uses `minecraft:` textures or Horizon's four built-ins, which the game makes itself: `glow` (a
+soft round halo), `disc` (a sharp disc), `streak` (bright at its right end, a tail to the left: a
+meteor, turned along its path with `roll`) and `veil` (bright along its bottom edge, fading up and
+to its sides: aurora curtains side by side). They are white with the shape in alpha, so `tint`
+colours them. The plan draws aurora and meteors as sprites rather than shaders; these built-ins
+are what make that work for any mod: an aurora is a row of drifting `veil`s, a meteor a `streak`
+with a lifetime and drift. A texture that cannot be read, is too large or does not fit the page is
+not drawn (warned once in the log). `canvas` images are not sky textures in this level.
+
+**Drawing** (`crates/horizon-client-render/src/gfx/sky_sprites.rs`, `sky_sprites.wgsl`, glue
+`crates/horizon-client/src/game/mod_sky.rs`): after the sky, sunrise, sun, moon and stars, before
+the dark lower disc, clouds and terrain, with no depth test or write; at the far plane, so a short
+render distance does not cut them off. Alpha-blended sprites first, then light-adding ones, each in
+load and list order; the frame's alpha (HDR output's mark) stays the sky's. Sprites whose quad
+cannot reach the screen are culled on the CPU. Not drawn on the title screen, wherever the world
+pass does not draw the sky (the Nether, under water or lava, Horizon's sky option off), under
+blindness or darkness, or with a shader pack that draws its own sky. `horizon-ctl status` reports
+`mod_sky_sprites` (`drawn` last frame, `textures` on the page).
+
 ## Cost
 
 Host only: sampling at most 4 profiles is a few dozen multiplies per frame; when no mod has a mix the
 frame does one check. The guest calls `set-mix` when its decision changes (the demo: twice a second,
 only when rain moves by a tenth). Particles cost the engine's own per-particle work plus a curve
-sample or two per tick; with no emitter the particle tick does one empty check. The guest pays only
-for its `define-effect` and emitter calls.
+sample or two per tick; with no emitter the particle tick does one empty check. Sky sprites cost a
+few dozen multiplies each per frame plus one or two draw calls; with none the frame does one
+empty check. The guest pays only for its `define-effect`, emitter and `set-sky-sprites` calls.
 
 ## Tests and tools
 
@@ -134,12 +182,17 @@ for its `define-effect` and emitter calls.
 - `crates/horizon-client-render/src/particles/native.rs`: curve particles reach 64 blocks and name
   vanilla sets; `crates/horizon-client/src/game/mod_particles.rs` is the controller and emitter glue.
 - `crates/horizon-client/src/game/mod_atmosphere.rs`: fog/water/sky application and the skip rules.
+- `crates/horizon-mods/src/atmosphere_sky.rs`: directions on the compass and at the zenith, corners
+  and roll, drift over the zenith, lifetime and fades, checks per field and texture rule, list caps,
+  culling. `crates/horizon-client-render/src/gfx/sky_sprites.rs`: the page packer, the built-in
+  textures' shapes, quad UVs, and a GPU draw (beyond a near far plane, blend order, the frame's
+  alpha kept, a quad behind the camera and a missing texture drawing nothing).
 - `crates/horizon-mods/tests/sandbox.rs` `api33_*`: profiles, caps, mix rate limit, conditions, effects
   (sprite sets loaded and owned, field checks, 256 cap), emitters (start, move, stop, fades, id
-  reuse, 48 cap) and the demo mod across the sandbox.
-- Demo: `mods/official/atmosphere-demo` (`/atmo auto|misty|storm|crimson|off|fog RRGGBB S E|conditions|emit [DENSITY|stop]`).
+  reuse, 48 cap), sky sprites (texture namespaces, keys, 256 cap, refused lists kept, 20 calls a
+  second) and the demo mod across the sandbox.
+- Demo: `mods/official/atmosphere-demo` (`/atmo auto|misty|storm|crimson|off|fog RRGGBB S E|conditions|emit [DENSITY|stop]|sky [off]`).
 - Live: `tools/live_atmosphere.py` loads the demo in a scratch game, sets a distinctive fog colour and
   checks it in a screenshot, then starts the motes and reads their live count from `horizon-ctl
-  status` (`mod_particles`).
-
-Later part of level 33 (plan `api-d-plan.md`): sky sprites (M3).
+  status` (`mod_particles`); then `/atmo sky` at night facing the aurora: `mod_sky_sprites` must
+  report drawn sprites and the upper screen must gain green aurora light over the night sky.

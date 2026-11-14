@@ -1,12 +1,17 @@
 //! Capability `atmosphere` (API level 33) in a few lines: three profiles
 //! keyed by time of day, mixed by the weather twice a second, and `/atmo`
 //! to pick one, define a plain fog colour, read the conditions or start a
-//! particle emitter of glowing motes around the camera (`/atmo emit`).
+//! particle emitter of glowing motes around the camera (`/atmo emit`), or
+//! put an aurora, meteors and two far bodies on the sky (`/atmo sky`).
 use horizon_mod_sdk::{
     Mod, Registration,
-    atmosphere::{self, EmitterShape, FogKey, FrameMode, Medium, Profile, SkyKey, WaterFog},
+    atmosphere::{
+        self, EmitterShape, FogKey, FrameMode, Medium, Profile, SkyKey, SkySpace, SkySprite,
+        WaterFog,
+    },
     atmosphere_fx::{constant, effect, emitter, fade, flat, particle, span, span3},
     atmosphere_mix::{clear, rgb, show},
+    atmosphere_sky::{DISC, STREAK, VEIL, emissive, sprite},
     chat,
 };
 
@@ -29,6 +34,95 @@ struct Demo {
     /// The motes effect, defined on the first `/atmo emit`, and its live emitter.
     motes: Option<u32>,
     emitter: Option<u32>,
+    /// `/atmo sky`: the lasting sprites, the meteors in flight and when each burns
+    /// out (tick), the next meteor's tick and key, and a small random state.
+    sky: Option<Sky>,
+    /// The last tick seen.
+    tick: u64,
+}
+
+struct Sky {
+    lasting: Vec<SkySprite>,
+    meteors: Vec<(SkySprite, u64)>,
+    next_meteor: u64,
+    next_key: u32,
+    seed: u32,
+}
+
+impl Sky {
+    fn random(&mut self) -> f32 {
+        // Numerical Recipes' LCG: plenty for where a meteor falls.
+        self.seed = self
+            .seed
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        (self.seed >> 8) as f32 / (1 << 24) as f32
+    }
+    /// A meteor streaking down-sky for a second: its head (the streak's bright right end)
+    /// leads, turned along its path.
+    fn meteor(&mut self, tick: u64) {
+        let yaw = self.random() * 360.0;
+        let elevation = 35.0 + self.random() * 40.0;
+        let drift_yaw = (self.random() - 0.5) * 50.0;
+        let drift_elevation = -18.0 - self.random() * 14.0;
+        let mut m = emissive(sprite(self.next_key, STREAK, yaw, elevation, 14.0));
+        m.height = 1.0;
+        m.roll = drift_elevation
+            .atan2(drift_yaw * elevation.to_radians().cos())
+            .to_degrees();
+        m.tint = rgb(0xFF, 0xF0, 0xD0);
+        m.drift_yaw = drift_yaw;
+        m.drift_elevation = drift_elevation;
+        m.lifetime = 1.2;
+        m.fade_in = 0.1;
+        m.fade_out = 0.5;
+        self.next_key = self.next_key.wrapping_add(1).max(1000);
+        self.meteors.push((m, tick + 25));
+    }
+    fn show(&self) -> Result<(), String> {
+        let mut all = self.lasting.clone();
+        all.extend(self.meteors.iter().map(|(m, _)| m.clone()));
+        atmosphere::set_sky_sprites(&all)
+    }
+}
+
+/// An aurora of twelve green to violet veils low in the north, slowly drifting; a dark
+/// second moon (alpha blended, not adding light); and vanilla's sun far off as a small
+/// warm body turning with the stars.
+fn lasting_sky() -> Vec<SkySprite> {
+    let mut out = Vec::new();
+    let tints = [
+        rgb(0x40, 0xFF, 0x90),
+        rgb(0x30, 0xE0, 0xC0),
+        rgb(0x50, 0xFF, 0x70),
+        rgb(0xA0, 0x60, 0xFF),
+    ];
+    for i in 0..12u32 {
+        let mut v = emissive(sprite(i, VEIL, 140.0 + i as f32 * 7.0, 22.0, 12.0));
+        v.height = 34.0;
+        v.elevation = 20.0 + (i % 3) as f32 * 3.0;
+        v.roll = (i as f32 * 1.7).sin() * 6.0;
+        v.tint = tints[i as usize % tints.len()];
+        v.alpha = 0.6;
+        v.drift_yaw = 0.6;
+        v.fade_in = 3.0;
+        out.push(v);
+    }
+    let mut moon = sprite(100, DISC, 200.0, 50.0, 5.0);
+    moon.tint = rgb(0x20, 0x28, 0x38);
+    moon.alpha = 0.85;
+    out.push(moon);
+    let mut sun = emissive(sprite(
+        101,
+        "minecraft:environment/celestial/sun",
+        60.0,
+        20.0,
+        6.0,
+    ));
+    sun.tint = rgb(0xFF, 0xB0, 0x80);
+    sun.space = SkySpace::Stars;
+    out.push(sun);
+    out
 }
 
 /// Warm motes drifting up in a 12-block box around the camera, swaying, fading
@@ -209,11 +303,28 @@ impl Mod for Demo {
             rain: None,
             motes: None,
             emitter: None,
+            sky: None,
+            tick: 0,
         };
         demo.apply(0.0)?;
         Ok((demo, Registration::new().on_tick().command("atmo")))
     }
     fn tick(&mut self, tick: u64) {
+        self.tick = tick;
+        // The sky's meteors: one every two to five seconds, gone after their second.
+        if let Some(sky) = self.sky.as_mut() {
+            let before = sky.meteors.len();
+            sky.meteors.retain(|(_, end)| *end > tick);
+            let mut changed = sky.meteors.len() != before;
+            if tick >= sky.next_meteor {
+                sky.meteor(tick);
+                sky.next_meteor = tick + 40 + (sky.random() * 60.0) as u64;
+                changed = true;
+            }
+            if changed {
+                let _ = sky.show();
+            }
+        }
         // Twice a second, and only when the rain moved by a tenth.
         if self.mode != Mode::Auto || tick % 10 != 0 {
             return;
@@ -291,6 +402,29 @@ impl Mod for Demo {
                 self.emitter = Some(id);
                 return Ok(Some(format!("emitter {id}: motes at density {density}")));
             }
+            // `/atmo sky`: aurora, meteors, a dark moon and a far sun; `/atmo sky off`.
+            "sky" => {
+                if words.next() == Some("off") {
+                    self.sky = None;
+                    atmosphere::set_sky_sprites(&[])?;
+                    return Ok(Some("sky sprites off".into()));
+                }
+                let mut sky = Sky {
+                    lasting: lasting_sky(),
+                    meteors: Vec::new(),
+                    next_meteor: self.tick + 40,
+                    next_key: 1000,
+                    seed: 0x5EED,
+                };
+                sky.meteor(self.tick);
+                sky.meteor(self.tick);
+                sky.show()?;
+                let count = sky.lasting.len() + sky.meteors.len();
+                self.sky = Some(sky);
+                return Ok(Some(format!(
+                    "sky: {count} sprites, meteors every few seconds"
+                )));
+            }
             "conditions" => {
                 let text = match atmosphere::conditions() {
                     None => "no conditions".to_owned(),
@@ -311,7 +445,7 @@ impl Mod for Demo {
             }
             _ => {
                 return Err(
-                    "usage: /atmo auto|misty|storm|crimson|off|conditions|emit [DENSITY|stop]|fog RRGGBB START END"
+                    "usage: /atmo auto|misty|storm|crimson|off|conditions|emit [DENSITY|stop]|sky [off]|fog RRGGBB START END"
                         .into(),
                 );
             }
