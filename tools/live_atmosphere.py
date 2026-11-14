@@ -7,8 +7,10 @@ Builds nothing: needs `target/fast/horizon-client` (feature `mods`), `target/fas
     python3 tools/live_atmosphere.py [--fork DIR] [--resources DIR] [--keep]
 
 Sets a distinctive fog colour (#ff00ff, fog full at 4 blocks, sky the same colour) and checks that the
-middle of a screenshot turns magenta, then `/atmo off` and checks it fades back. Prints one line per
-check and exits non-zero on a failed one.
+middle of a screenshot turns magenta, then `/atmo off` and checks it fades back. Then `/atmo emit`
+starts the motes emitter and the live count of the demo's particles (`horizon-ctl status`,
+`mod_particles`) must rise within its cap of 400, and fall to none after `/atmo emit stop` once the
+motes' 6-second lives end. Prints one line per check and exits non-zero on a failed one.
 """
 import argparse, json, os, struct, subprocess, sys, tempfile, time, zlib
 
@@ -110,6 +112,15 @@ def magenta(c):
 failed = []
 
 
+def live_particles():
+    """The demo's live particles from `horizon-ctl status`, or None when unreadable."""
+    try:
+        status = json.loads((ctl("status").splitlines() or ["{}"])[-1])
+    except ValueError:
+        return None
+    return status.get("mod_particles", {}).get("atmosphere_demo", 0)
+
+
 def check(name, ok, detail):
     print(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}")
     if not ok:
@@ -136,6 +147,15 @@ try:
     back = middle_colour("back")
     check("off fades back to vanilla", not magenta(back) and sum(abs(a - b) for a, b in zip(back, vanilla)) < 60,
           f"middle {back} vs {vanilla}")
+    out = say("/atmo emit 1", 1.0)
+    check("emitter started", any("emitter" in m for m in out), out[-2:])
+    time.sleep(4.0)
+    count = live_particles()
+    check("motes live within the cap", count is not None and 0 < count <= 400, f"live {count}")
+    say("/atmo emit stop", 0.5)
+    time.sleep(7.5)
+    count = live_particles()
+    check("motes fade out after stop", count == 0, f"live {count}")
     logs = ctl("logs", "--lines", 400)
     bad = [l[-160:] for l in logs.splitlines() if "atmosphere" in l.lower() and ("warn" in l.lower() or "error" in l.lower())]
     check("no atmosphere warnings", not bad, bad[-3:])

@@ -2139,6 +2139,166 @@ interface atmosphere {
     }
     /// None on the title screen.
     conditions: func() -> option<scene>;
+
+    /// A value range: each particle (or spawn) draws one uniformly in lo..=hi; lo <= hi.
+    record span {
+        lo: f32,
+        hi: f32,
+    }
+    /// One range per world axis.
+    record span3 {
+        x: span,
+        y: span,
+        z: span,
+    }
+    /// `amplitude * sin(2 pi (age / period + phase))`, age in seconds; each particle draws its
+    /// own amplitude, period (0.01..600 s) and phase (turns).
+    record wave {
+        amplitude: span,
+        period: span,
+        phase: span,
+    }
+    /// How a curve goes from one key to the next.
+    enum ease { linear, smooth, step }
+    /// A curve's value at a fraction `t` (0..1) of the particle's life.
+    record curve-key {
+        t: f32,
+        value: f32,
+    }
+    /// `base * keys(life) + wave(age)`: the base is drawn once per particle; no keys means 1,
+    /// one key is constant, and up to 8 keys are sorted by `t` and eased between.
+    record curve {
+        base: span,
+        keys: list<curve-key>,
+        ease: ease,
+        wave: option<wave>,
+    }
+    /// A colour (0xRRGGBB) at a fraction `t` of the life, blended linearly.
+    record color-key {
+        t: f32,
+        color: u32,
+    }
+    record curve3 {
+        x: curve,
+        y: curve,
+        z: curve,
+    }
+    /// Where an emitter spawns around its anchor plus `offset`.
+    enum emitter-shape {
+        /// At the offset.
+        point,
+        /// In the box of `half-size` (on a face with `surface`).
+        box,
+        /// In a flat horizontal disc of `radius` (on its rim with `surface`).
+        disc,
+        /// In a ball of `radius` (on its shell with `surface`).
+        sphere,
+    }
+    record emitter {
+        /// Loops forever, or spawns for `duration` seconds and ends.
+        looping: bool,
+        /// Seconds, 0.05..600.
+        duration: f32,
+        /// Particles per second, 0..2048.
+        rate: f32,
+        /// The rate scales with `start-emitter`'s density.
+        density-scaled: bool,
+        /// This emitter's live particles at most, 1..512.
+        max: u32,
+        /// Spawned at once when it starts, 0..512 (counted in `max`).
+        burst: u32,
+        shape: emitter-shape,
+        /// From the anchor, drawn per particle: blocks, -64..64.
+        offset: span3,
+        /// The box's half extents: blocks 0..64.
+        half-size: tuple<f32, f32, f32>,
+        /// The disc's or ball's radius, drawn per particle: blocks 0..64.
+        radius: span,
+        surface: bool,
+        /// The direction `speed` pushes along, normalised; none: outwards from the shape's
+        /// centre (a random direction for a point).
+        direction: option<span3>,
+    }
+    /// Where a particle may live: it dies on leaving it.
+    enum medium { anywhere, air, water }
+    /// Which sprite of the set a particle shows.
+    enum frame-mode {
+        first,
+        /// One picked at spawn.
+        random,
+        /// First to last over the life.
+        over-life,
+        /// Cycling at `frame-rate` per second.
+        loop,
+    }
+    record particle {
+        /// A sprite set: `<namespace>:<name>` for `assets/<namespace>/particles/<name>.json` in
+        /// the mod's own content (a namespace it owns, capability `registries`), or
+        /// `minecraft:<type>` for a vanilla particle type's sprites.
+        sprite: string,
+        frame: frame-mode,
+        /// Sprites per second for `loop`, 0..60.
+        frame-rate: f32,
+        /// Seconds, 0.05..60.
+        lifetime: span,
+        /// Blocks per second along the direction, -64..64.
+        speed: span,
+        /// Added to the start velocity: blocks per second, -64..64.
+        velocity: span3,
+        /// Velocity lost per second (`v *= exp(-drag * dt)`), 0..20.
+        drag: f32,
+        /// Downwards, blocks per second squared, -40..40.
+        gravity: f32,
+        /// Blocks per second squared per axis; curve values -64..64.
+        acceleration: option<curve3>,
+        /// Quad size in blocks, 0..16.
+        size: curve,
+        /// 0..1 (clamped after sampling).
+        alpha: curve,
+        /// 0xRRGGBB, used when `color-keys` is empty.
+        color: u32,
+        /// Up to 8.
+        color-keys: list<color-key>,
+        /// Each particle darkens by up to this fraction, 0..1.
+        shade: f32,
+        /// Start roll in degrees and roll per second.
+        spin: span,
+        spin-rate: span,
+        /// Invisible nearer than `lo` blocks from the camera, full from `hi` (0..128).
+        fade-near: option<span>,
+        /// Full until `lo` blocks from the camera, gone from `hi` (0..128).
+        fade-far: option<span>,
+        /// Full bright instead of the world's light.
+        emissive: bool,
+        /// Drawn on the translucent particle layer (otherwise cut out).
+        translucent: bool,
+        only-in: medium,
+        /// Dies when the camera comes nearer than this many blocks, 0 (off)..16.
+        die-nearer-than: f32,
+    }
+    /// A particle effect: how an emitter spawns and how each particle moves and looks.
+    record effect {
+        emitter: emitter,
+        particle: particle,
+    }
+    /// What an emitter is placed at: the camera (followed, world axes) or a fixed point.
+    variant anchor {
+        camera,
+        point(tuple<f64, f64, f64>),
+    }
+    /// Stores an effect (at most 256 per mod) and returns its id. Effects are never removed.
+    define-effect: func(effect: effect) -> result<u32, string>;
+    /// Starts an emitter of one of this mod's effects (at most 48 live per mod); `density`
+    /// 0..4 scales a density-scaled rate, `tint` (0xRRGGBB) multiplies the colour. The game
+    /// simulates its particles; a mod's live particles are capped at 3072 and its spawns at
+    /// 512 per tick. Nothing spawns on the title screen, while paused, with Particles: Minimal,
+    /// or more than 64 blocks from the camera. A one-shot emitter's id frees when it ends.
+    start-emitter: func(effect: u32, anchor: anchor, density: f32, tint: u32) -> result<u32, string>;
+    /// Moves a live emitter.
+    move-emitter: func(emitter: u32, anchor: anchor) -> result<_, string>;
+    /// Stops a live emitter; with `fade` its particles live out their lives, without they go
+    /// at once. Its id may be reused.
+    stop-emitter: func(emitter: u32, fade: bool) -> result<_, string>;
 }
 
 /// API level 28: experimental capability `channel`, on either side.

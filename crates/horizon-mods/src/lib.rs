@@ -7,6 +7,7 @@
 //! [`Mods`] makes no engine and every hook returns at once.
 pub mod api_level;
 pub mod atmosphere;
+pub mod atmosphere_fx;
 #[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;

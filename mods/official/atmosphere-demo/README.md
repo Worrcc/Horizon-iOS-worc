@@ -20,3 +20,4 @@ with feature `mods`. `tools/live_atmosphere.py` does this and checks the fog col
 | `/atmo off` | back to vanilla over 2 s |
 | `/atmo fog RRGGBB START END` | defines a plain fog and sky profile and shows it at once |
 | `/atmo conditions` | rain, thunder, day time, moon phase, camera height, light, sky |
+| `/atmo emit [DENSITY]` | glowing motes around the camera (an API 33 particle effect on vanilla end-rod sprites); again replaces it, `stop` fades it |

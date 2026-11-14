@@ -212,6 +212,8 @@ mod mod_input;
 #[cfg(feature = "mods")]
 mod mod_panel;
 #[cfg(feature = "mods")]
+mod mod_particles;
+#[cfg(feature = "mods")]
 mod mod_players;
 mod mod_render;
 #[cfg(feature = "mods")]

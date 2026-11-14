@@ -128,6 +128,10 @@ impl Mod for Guest {
             "atmo_profile",
             "atmo_mix",
             "atmo_conditions",
+            "atmo_effect",
+            "atmo_emit",
+            "atmo_move",
+            "atmo_stop",
             "zoom",
             "minimap",
             "far_terrain",
@@ -405,6 +409,62 @@ impl Mod for Guest {
                     })
                     .collect();
                 atmosphere::set_mix(&weights, seconds)?;
+            }
+            // `/atmo_effect SPRITE [RATE] [MAX] [nan-size]`: a simple effect; says its id.
+            "atmo_effect" => {
+                use horizon_mod_sdk::atmosphere_fx::{constant, effect, emitter, fade, particle};
+                let mut words = args.split_whitespace();
+                let sprite = words.next().unwrap_or("");
+                let rate = words.next().and_then(|w| w.parse().ok()).unwrap_or(10.0);
+                let max = words.next().and_then(|w| w.parse().ok()).unwrap_or(64);
+                let mut p = particle(sprite);
+                p.size = fade(constant(0.2), 0.2, 0.2);
+                if words.next() == Some("nan-size") {
+                    p.size.base.hi = f32::NAN;
+                }
+                let mut e = emitter(rate);
+                e.max = max;
+                let id = atmosphere::define_effect(&effect(e, p))?;
+                chat::show(&format!("effect {id}"));
+            }
+            // `/atmo_emit EFFECT camera|X Y Z [DENSITY] [TINT]`: says the emitter id.
+            "atmo_emit" => {
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let effect = words.first().and_then(|w| w.parse().ok()).unwrap_or(u32::MAX);
+                let number = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok());
+                let (anchor, rest) = if words.get(1) == Some(&"camera") {
+                    (atmosphere::Anchor::Camera, 2)
+                } else {
+                    let p = (
+                        number(1).unwrap_or(f64::NAN),
+                        number(2).unwrap_or(f64::NAN),
+                        number(3).unwrap_or(f64::NAN),
+                    );
+                    (atmosphere::Anchor::Point(p), 4)
+                };
+                let density = number(rest).unwrap_or(1.0) as f32;
+                let tint = words
+                    .get(rest + 1)
+                    .and_then(|w| u32::from_str_radix(w, 16).ok())
+                    .unwrap_or(0xFFFFFF);
+                let id = atmosphere::start_emitter(effect, anchor, density, tint)?;
+                chat::show(&format!("emitter {id}"));
+            }
+            // `/atmo_move ID X Y Z`.
+            "atmo_move" => {
+                let words: Vec<f64> = args
+                    .split_whitespace()
+                    .map(|w| w.parse().unwrap_or(f64::NAN))
+                    .collect();
+                let id = words.first().copied().unwrap_or(f64::NAN) as u32;
+                let at = |i: usize| words.get(i).copied().unwrap_or(f64::NAN);
+                atmosphere::move_emitter(id, atmosphere::Anchor::Point((at(1), at(2), at(3))))?;
+            }
+            // `/atmo_stop ID [fade]`.
+            "atmo_stop" => {
+                let mut words = args.split_whitespace();
+                let id = words.next().and_then(|w| w.parse().ok()).unwrap_or(u32::MAX);
+                atmosphere::stop_emitter(id, words.next() == Some("fade"))?;
             }
             "atmo_conditions" => chat::show(&match atmosphere::conditions() {
                 None => "none".to_owned(),

@@ -1492,6 +1492,11 @@ impl Game<'_> {
         status["maps"] = json!(self.maps_status());
         // The particles made so far, by type.
         status["particles"] = json!(self.particles.made());
+        // Capability `atmosphere`'s live particles, by mod.
+        #[cfg(feature = "mods")]
+        {
+            status["mod_particles"] = json!(self.mods.particles.live());
+        }
         // The pickup particles made so far, by what was taken.
         status["pickups"] = json!(self.pickups.made());
         // The world border this side knows of.

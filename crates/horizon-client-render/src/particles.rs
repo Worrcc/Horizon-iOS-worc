@@ -895,6 +895,10 @@ impl Particle {
     pub fn random(&mut self) -> &mut LegacyRandom {
         &mut self.random
     }
+    /// The quad's roll in radians; the previous roll stays for interpolation.
+    pub fn set_roll(&mut self, roll: f32) {
+        self.roll = roll;
+    }
     pub fn set_full_bright(&mut self, full_bright: bool) {
         self.light = if full_bright {
             Light::FullBright
@@ -1199,6 +1203,15 @@ impl ParticleLevel<'_> {
             p[1].floor() as i32,
             p[2].floor() as i32,
         ]
+    }
+    /// Water fills the block at `p`.
+    pub fn in_water(&self, p: [f64; 3]) -> bool {
+        self.fluid(Self::block_at(p)).0 == Fluid::Water
+    }
+    /// The block at `p` is air.
+    pub fn in_air(&self, p: [f64; 3]) -> bool {
+        let b = Self::block_at(p);
+        self.facts.is_air(self.world.block(b[0], b[1], b[2]))
     }
     /// The fluid at a block and `FluidState.getHeight`.
     fn fluid(&self, b: [i32; 3]) -> (Fluid, f64) {
@@ -1669,6 +1682,57 @@ impl ParticleEngine {
             return None;
         }
         let (set, _) = *self.mod_sets.get(name)?;
+        let mut random = LegacyRandom::new(self.seeds.next_long());
+        let mut particle = Particle::at(&mut random, ParticleType::Smoke, position);
+        particle.random = random;
+        particle.set = Some(set);
+        particle.sprite = Sprite::Index(*self.set_sprites.get(set as usize)?.first()?);
+        particle.behaviour = Behaviour::Controlled { translucent };
+        particle.controller = Some(Box::new(controller));
+        Some(particle)
+    }
+    /// Every sprite set by name: a mod's `<ns>:<name>` and vanilla's
+    /// `minecraft:<type>` (capability `atmosphere`'s effects name one).
+    pub fn sprite_set_names(&self) -> HashSet<String> {
+        let vanilla = self
+            .sets
+            .keys()
+            .map(|ty| format!("minecraft:{}", ty.name()));
+        self.mod_sets.keys().cloned().chain(vanilla).collect()
+    }
+    /// A set's handle by name (see [`Self::sprite_set_names`]) and its sprite count.
+    fn named_set(&self, name: &str) -> Option<(u32, usize)> {
+        let set = match self.mod_sets.get(name) {
+            Some(&(set, _)) => set,
+            None => self.set_of(ParticleType::from_name(name.strip_prefix("minecraft:")?)?)?,
+        };
+        let len = self.set_sprites.get(set as usize)?.len();
+        (len > 0).then_some((set, len))
+    }
+    /// How many sprites the named set has.
+    pub fn sprite_set_len(&self, name: &str) -> Option<usize> {
+        self.named_set(name).map(|(_, len)| len)
+    }
+    /// [`Self::controlled`] for a mod's own effect (capability `atmosphere`):
+    /// any named set, vanilla's included, within `radius` blocks of the
+    /// camera; none with Particles: Minimal (the caller thins for Decreased).
+    pub fn curve_particle<C: ParticleController>(
+        &mut self,
+        name: &str,
+        position: [f64; 3],
+        translucent: bool,
+        radius: f64,
+        controller: C,
+    ) -> Option<Particle> {
+        let distance: f64 = position
+            .iter()
+            .zip(self.camera)
+            .map(|(p, c)| (p - c).powi(2))
+            .sum();
+        if self.particle_level >= 2 || !distance.is_finite() || distance > radius * radius {
+            return None;
+        }
+        let (set, _) = self.named_set(name)?;
         let mut random = LegacyRandom::new(self.seeds.next_long());
         let mut particle = Particle::at(&mut random, ParticleType::Smoke, position);
         particle.random = random;

@@ -93,6 +93,9 @@ pub(super) struct ModsState {
     /// Capability `atmosphere`'s cross-fade between mixes.
     #[cfg(feature = "mods")]
     pub(super) atmosphere: super::mod_atmosphere::AtmosphereFade,
+    /// Capability `atmosphere`'s emitters and live particle counts.
+    #[cfg(feature = "mods")]
+    pub(super) particles: super::mod_particles::ModParticles,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.
@@ -900,6 +903,12 @@ impl Game<'_> {
         };
         self.return_client_world();
         self.mods.mods = Mods::default();
+        // `init` may define particle effects, checked against the loaded sprite sets.
+        let particle_sets = self.mod_particle_sets();
+        self.mods.mods.set_snapshot(Snapshot {
+            particle_sets,
+            ..Default::default()
+        });
         // The mods' `init` may read the world (capability `world-read`).
         self.lend_client_world(true);
         let runs = self.mod_runs();
@@ -1104,6 +1113,11 @@ impl Game<'_> {
                 super::aim_assist::LookDevice::Touch => horizon_mods::LookDeviceKind::Touch,
             },
             atmosphere: self.atmosphere_scene(),
+            particle_sets: if self.mods.mods.wants_atmosphere() {
+                self.mod_particle_sets()
+            } else {
+                Default::default()
+            },
             player,
             clock,
             gui_size: self.gui_size(),

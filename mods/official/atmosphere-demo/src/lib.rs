@@ -1,9 +1,11 @@
 //! Capability `atmosphere` (API level 33) in a few lines: three profiles
 //! keyed by time of day, mixed by the weather twice a second, and `/atmo`
-//! to pick one, define a plain fog colour or read the conditions.
+//! to pick one, define a plain fog colour, read the conditions or start a
+//! particle emitter of glowing motes around the camera (`/atmo emit`).
 use horizon_mod_sdk::{
     Mod, Registration,
-    atmosphere::{self, FogKey, Profile, SkyKey, WaterFog},
+    atmosphere::{self, EmitterShape, FogKey, FrameMode, Medium, Profile, SkyKey, WaterFog},
+    atmosphere_fx::{constant, effect, emitter, fade, flat, particle, span, span3},
     atmosphere_mix::{clear, rgb, show},
     chat,
 };
@@ -24,6 +26,65 @@ struct Demo {
     mode: Mode,
     /// The rain level the last mix was made for, in tenths.
     rain: Option<u8>,
+    /// The motes effect, defined on the first `/atmo emit`, and its live emitter.
+    motes: Option<u32>,
+    emitter: Option<u32>,
+}
+
+/// Warm motes drifting up in a 12-block box around the camera, swaying, fading
+/// in and out and away close to the camera. Vanilla's end rod sprites stand in
+/// for the mod's own (a mod with capability `registries` can ship its own set).
+fn define_motes() -> Result<u32, String> {
+    let mut e = emitter(40.0);
+    e.shape = EmitterShape::Box;
+    e.half_size = (12.0, 4.0, 12.0);
+    e.offset = span3(0.0, 0.0);
+    e.offset.y = constant(2.0);
+    e.max = 400;
+    e.direction = Some(atmosphere::Span3 {
+        x: span(-0.3, 0.3),
+        y: constant(1.0),
+        z: span(-0.3, 0.3),
+    });
+    let mut p = particle("minecraft:end_rod");
+    p.frame = FrameMode::OverLife;
+    p.lifetime = span(3.0, 6.0);
+    p.speed = span(0.2, 0.6);
+    p.drag = 0.4;
+    p.gravity = -0.05;
+    let sway = |period: f32| atmosphere::Curve {
+        base: constant(0.0),
+        keys: Vec::new(),
+        ease: atmosphere::Ease::Linear,
+        wave: Some(atmosphere::Wave {
+            amplitude: constant(0.3),
+            period: span(period, period * 1.5),
+            phase: span(0.0, 1.0),
+        }),
+    };
+    p.acceleration = Some(atmosphere::Curve3 {
+        x: sway(3.0),
+        y: flat(constant(0.0)),
+        z: sway(3.5),
+    });
+    p.size = fade(span(0.08, 0.16), 0.2, 0.3);
+    p.alpha = fade(constant(1.0), 0.2, 0.3);
+    p.color_keys = vec![
+        atmosphere::ColorKey {
+            t: 0.0,
+            color: rgb(0xFF, 0xE0, 0x90),
+        },
+        atmosphere::ColorKey {
+            t: 1.0,
+            color: rgb(0xFF, 0x90, 0x40),
+        },
+    ];
+    p.shade = 0.3;
+    p.fade_near = Some(span(0.5, 2.0));
+    p.emissive = true;
+    p.translucent = true;
+    p.only_in = Medium::Air;
+    atmosphere::define_effect(&effect(e, p))
 }
 
 fn fog(day_time: u32, color: u32, start: f32, end: f32) -> FogKey {
@@ -146,6 +207,8 @@ impl Mod for Demo {
             crimson,
             mode: Mode::Auto,
             rain: None,
+            motes: None,
+            emitter: None,
         };
         demo.apply(0.0)?;
         Ok((demo, Registration::new().on_tick().command("atmo")))
@@ -203,6 +266,31 @@ impl Mod for Demo {
                     "profile {id}: fog #{color:06x} {start}..{end}"
                 )));
             }
+            // `/atmo emit [DENSITY]`: motes around the camera; `/atmo emit stop`.
+            "emit" => {
+                if let Some(id) = self.emitter.take() {
+                    let _ = atmosphere::stop_emitter(id, true);
+                }
+                let arg = words.next().unwrap_or("1");
+                if arg == "stop" {
+                    return Ok(Some("emitter stopped".into()));
+                }
+                let density: f32 = arg
+                    .parse()
+                    .map_err(|_| "usage: /atmo emit [DENSITY|stop]")?;
+                let motes = match self.motes {
+                    Some(id) => id,
+                    None => *self.motes.insert(define_motes()?),
+                };
+                let id = atmosphere::start_emitter(
+                    motes,
+                    atmosphere::Anchor::Camera,
+                    density,
+                    0xFFFFFF,
+                )?;
+                self.emitter = Some(id);
+                return Ok(Some(format!("emitter {id}: motes at density {density}")));
+            }
             "conditions" => {
                 let text = match atmosphere::conditions() {
                     None => "no conditions".to_owned(),
@@ -223,7 +311,7 @@ impl Mod for Demo {
             }
             _ => {
                 return Err(
-                    "usage: /atmo auto|misty|storm|crimson|off|conditions|fog RRGGBB START END"
+                    "usage: /atmo auto|misty|storm|crimson|off|conditions|emit [DENSITY|stop]|fog RRGGBB START END"
                         .into(),
                 );
             }

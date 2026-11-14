@@ -221,7 +221,9 @@ impl Capability {
                 "see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them"
             }
             Capability::Channel => "exchange mod messages with the server and its players",
-            Capability::Atmosphere => "change the colours and distance of fog and the sky",
+            Capability::Atmosphere => {
+                "change the colours and distance of fog and the sky, and show particle effects"
+            }
             Capability::Container => "inspect and click your open inventory and container screens",
             Capability::WorldRead => {
                 "see the blocks, biomes and light your game has loaded around you"

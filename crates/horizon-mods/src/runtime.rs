@@ -101,7 +101,7 @@ pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
 mod channel_host;
 pub use channel_host::{CHANNEL_DATA, CHANNEL_MESSAGES, ChannelPeers};
 mod atmosphere_host;
-pub use atmosphere_host::{AtmosphereMix, AtmosphereScene, EyeMedium};
+pub use atmosphere_host::{AtmosphereEmitter, AtmosphereMix, AtmosphereScene, EyeMedium};
 /// Canvas-screen pointer actions (API level 18).
 pub use ui_bindings::exports::horizon::mods::ui_events::PointerKind;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
@@ -280,6 +280,10 @@ pub struct Snapshot {
     pub look_device: LookDeviceKind,
     /// API 33: what capability `atmosphere`'s `conditions` reads; none on the title.
     pub atmosphere: Option<AtmosphereScene>,
+    /// API 33: every sprite set the client's particle engine has, by name
+    /// (`<namespace>:<name>`, vanilla types as `minecraft:<type>`), which
+    /// `atmosphere.define-effect` checks a sprite against.
+    pub particle_sets: Arc<std::collections::HashSet<String>>,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -1429,7 +1433,7 @@ impl Mods {
             channel_budget: (None, 0),
             channel_receive_budget: (None, 0),
             channel_callback: None,
-            atmosphere: Default::default(),
+            atmosphere: atmosphere_host::AtmosphereState::new(m.namespaces.clone()),
             server,
             storage_move_budget: (None, 0),
             machines: machines::MachineState::new(

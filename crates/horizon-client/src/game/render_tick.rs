@@ -436,6 +436,9 @@ impl Game<'_> {
         if let Some(e) = eye {
             self.particles.camera = e;
         }
+        // Capability `atmosphere`'s emitters spawn into this tick's queue.
+        #[cfg(feature = "mods")]
+        self.tick_mod_emitters();
         let (rain, _) = self.weather_levels(1.0);
         let marker = marker_particle_target(self.mode, self.stack_in(self.selected));
         let marker_options = |state| {

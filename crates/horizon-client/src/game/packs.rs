@@ -402,6 +402,10 @@ impl Game<'_> {
         // and the packs' sprite sets, or every particle draws a stale region.
         self.particles
             .reload(&root, &self.gui.atlas.sprites, &self.gui.atlas.translucent);
+        #[cfg(feature = "mods")]
+        {
+            self.mods.particles.sets = None;
+        }
         horizon_client::ui_theme::reset_atlas();
         // Villager hats come from the pack's texture metadata (shared data, swapped in place).
         *self

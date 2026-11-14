@@ -4036,3 +4036,156 @@ fn api33_atmosphere_demo_mixes_by_rain_and_picks_profiles() {
     assert!(said(&mut mods, "atmo off").1.is_empty());
     assert!(mods.atmosphere_mix().unwrap().weights.is_empty());
 }
+
+/// A snapshot whose particle engine has these sprite sets.
+fn with_sets(sets: &[&str]) -> Snapshot {
+    Snapshot {
+        particle_sets: std::sync::Arc::new(sets.iter().map(|s| s.to_string()).collect()),
+        ..Snapshot::default()
+    }
+}
+
+#[test]
+fn api33_atmosphere_effects_need_a_loaded_sprite_set_of_the_mods_own_and_are_capped() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    // No sprite sets known yet (as before the game fills the snapshot): refused.
+    let (chat, errors) = said(&mut mods, "atmo_effect minecraft:end_rod");
+    assert!(
+        chat.is_empty() && errors[0].contains("not loaded"),
+        "{errors:?}"
+    );
+    mods.set_snapshot(with_sets(&[
+        "minecraft:end_rod",
+        "test_ui_guest:mote",
+        "other:mote",
+    ]));
+    assert_eq!(
+        said(&mut mods, "atmo_effect minecraft:end_rod").0,
+        ["effect 0"]
+    );
+    assert_eq!(
+        said(&mut mods, "atmo_effect test_ui_guest:mote").0,
+        ["effect 1"]
+    );
+    for (bad, why) in [
+        ("other:mote", "not this mod's"),
+        ("test_ui_guest:missing", "not loaded"),
+        ("nonamespace", "not <namespace>:<name>"),
+        ("minecraft:end_rod 5000", "rate"),
+        ("minecraft:end_rod 10 0", "max"),
+        ("minecraft:end_rod 10 600", "max"),
+        ("minecraft:end_rod 10 64 nan-size", "size"),
+    ] {
+        let (chat, errors) = said(&mut mods, &format!("atmo_effect {bad}"));
+        assert!(
+            chat.is_empty() && errors.len() == 1 && errors[0].contains(why),
+            "{bad}: {chat:?} {errors:?}"
+        );
+    }
+    for _ in 2..256 {
+        assert!(
+            said(&mut mods, "atmo_effect minecraft:end_rod")
+                .1
+                .is_empty()
+        );
+    }
+    let (chat, errors) = said(&mut mods, "atmo_effect minecraft:end_rod");
+    assert!(chat.is_empty() && errors[0].contains("256"), "{errors:?}");
+}
+
+#[test]
+fn api33_atmosphere_emitters_start_move_stop_and_cap_at_48() {
+    use horizon_mods::atmosphere_fx::Anchor;
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    mods.set_snapshot(with_sets(&["minecraft:end_rod"]));
+    said(&mut mods, "atmo_effect minecraft:end_rod 20 32");
+    assert!(mods.atmosphere_emitters().next().is_none());
+    assert_eq!(
+        said(&mut mods, "atmo_emit 0 1 64 2 0.5 ff8000").0,
+        ["emitter 0"]
+    );
+    assert_eq!(said(&mut mods, "atmo_emit 0 camera").0, ["emitter 1"]);
+    let emitters: Vec<_> = mods.atmosphere_emitters().collect();
+    assert_eq!(emitters.len(), 2);
+    let first = emitters[0];
+    assert_eq!(
+        (first.mod_id, first.anchor, first.density, first.tint),
+        (
+            "test_ui_guest",
+            Anchor::World([1.0, 64.0, 2.0]),
+            0.5,
+            0xFF8000
+        )
+    );
+    assert_eq!(
+        (first.effect.emitter.rate, first.effect.emitter.max),
+        (20.0, 32)
+    );
+    assert_eq!(emitters[1].anchor, Anchor::Camera);
+    let (serial0, serial1) = (first.serial, emitters[1].serial);
+    assert_ne!(serial0, serial1);
+    for bad in [
+        "atmo_emit 7 camera",
+        "atmo_emit 0 camera 5",
+        "atmo_emit 0 camera NaN",
+        "atmo_emit 0 camera 1 1000000",
+        "atmo_emit 0 NaN 0 0",
+        "atmo_move 9 0 0 0",
+        "atmo_move 0 0 inf 0",
+        "atmo_stop 9",
+    ] {
+        assert_eq!(said(&mut mods, bad).1.len(), 1, "{bad}");
+    }
+    assert!(said(&mut mods, "atmo_move 0 5 70 5").1.is_empty());
+    assert_eq!(
+        mods.atmosphere_emitters().next().unwrap().anchor,
+        Anchor::World([5.0, 70.0, 5.0])
+    );
+    // A stop with fade is reported once; a stop without is not (its particles go).
+    assert!(said(&mut mods, "atmo_stop 0 fade").1.is_empty());
+    assert!(said(&mut mods, "atmo_stop 1").1.is_empty());
+    assert_eq!(mods.take_atmosphere_fades(), [serial0]);
+    assert!(mods.take_atmosphere_fades().is_empty());
+    assert!(mods.atmosphere_emitters().next().is_none());
+    // Ids are reused with a new serial.
+    assert_eq!(said(&mut mods, "atmo_emit 0 camera").0, ["emitter 0"]);
+    let reused = mods.atmosphere_emitters().next().unwrap().serial;
+    assert!(reused != serial0 && reused != serial1);
+    for i in 1..48 {
+        assert_eq!(
+            said(&mut mods, "atmo_emit 0 camera").0,
+            [format!("emitter {i}")]
+        );
+    }
+    let (chat, errors) = said(&mut mods, "atmo_emit 0 camera");
+    assert!(chat.is_empty() && errors[0].contains("48"), "{errors:?}");
+    // A one-shot that ran out frees its id.
+    mods.end_atmosphere_emitter(reused);
+    assert_eq!(mods.atmosphere_emitters().count(), 47);
+    assert_eq!(said(&mut mods, "atmo_emit 0 camera").0, ["emitter 0"]);
+}
+
+#[test]
+fn api33_atmosphere_demo_starts_and_fades_a_motes_emitter() {
+    use horizon_mods::atmosphere_fx::Anchor;
+    let mut mods = load("atmosphere_demo.hmod");
+    // Without the vanilla sprite set the effect is refused and nothing starts.
+    let (_, errors) = said(&mut mods, "atmo emit");
+    assert!(errors[0].contains("not loaded"), "{errors:?}");
+    mods.set_snapshot(with_sets(&["minecraft:end_rod"]));
+    assert!(said(&mut mods, "atmo emit 0.5").1.is_empty());
+    let e = mods.atmosphere_emitters().next().unwrap();
+    assert_eq!((e.anchor, e.density), (Anchor::Camera, 0.5));
+    assert_eq!(
+        (e.effect.particle.sprite.as_str(), e.effect.emitter.max),
+        ("minecraft:end_rod", 400)
+    );
+    let serial = e.serial;
+    // Again replaces it (the old one fades); stop fades the new one.
+    assert!(said(&mut mods, "atmo emit 2").1.is_empty());
+    let second = mods.atmosphere_emitters().next().unwrap().serial;
+    assert!(said(&mut mods, "atmo emit stop").1.is_empty());
+    assert!(mods.atmosphere_emitters().next().is_none());
+    assert_eq!(mods.take_atmosphere_fades(), [serial, second]);
+    assert!(said(&mut mods, "atmo emit 9").1.len() == 1);
+}

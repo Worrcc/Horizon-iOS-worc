@@ -23,7 +23,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `world-read` | [`client-world`](#client-world) | see the blocks, biomes and light your game has loaded around you |
 | `container` | [`container`](#container) | inspect and click your open inventory and container screens |
 | `channel` | [`channel`](#channel) | exchange mod messages with the server and its players |
-| `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky |
+| `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky, and show particle effects |
 
 ## World `channel-host`
 
@@ -2024,11 +2024,185 @@ What a mod picks its mix from, read once per tick.
 | `block-light` | `u8` |  |
 | `sky-visible` | `bool` | No block above the camera's column blocks the sky. |
 
+### record `span`
+
+A value range: each particle (or spawn) draws one uniformly in lo..=hi; lo <= hi.
+
+| Field | Type | |
+| --- | --- | --- |
+| `lo` | `f32` |  |
+| `hi` | `f32` |  |
+
+### record `span3`
+
+One range per world axis.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `span` |  |
+| `y` | `span` |  |
+| `z` | `span` |  |
+
+### record `wave`
+
+`amplitude * sin(2 pi (age / period + phase))`, age in seconds; each particle draws its own amplitude, period (0.01..600 s) and phase (turns).
+
+| Field | Type | |
+| --- | --- | --- |
+| `amplitude` | `span` |  |
+| `period` | `span` |  |
+| `phase` | `span` |  |
+
+### enum `ease`
+
+How a curve goes from one key to the next.
+
+| Case | |
+| --- | --- |
+| `linear` |  |
+| `smooth` |  |
+| `step` |  |
+
+### record `curve-key`
+
+A curve's value at a fraction `t` (0..1) of the particle's life.
+
+| Field | Type | |
+| --- | --- | --- |
+| `t` | `f32` |  |
+| `value` | `f32` |  |
+
+### record `curve`
+
+`base * keys(life) + wave(age)`: the base is drawn once per particle; no keys means 1, one key is constant, and up to 8 keys are sorted by `t` and eased between.
+
+| Field | Type | |
+| --- | --- | --- |
+| `base` | `span` |  |
+| `keys` | `list<curve-key>` |  |
+| `ease` | `ease` |  |
+| `wave` | `option<wave>` |  |
+
+### record `color-key`
+
+A colour (0xRRGGBB) at a fraction `t` of the life, blended linearly.
+
+| Field | Type | |
+| --- | --- | --- |
+| `t` | `f32` |  |
+| `color` | `u32` |  |
+
+### record `curve3`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `curve` |  |
+| `y` | `curve` |  |
+| `z` | `curve` |  |
+
+### enum `emitter-shape`
+
+Where an emitter spawns around its anchor plus `offset`.
+
+| Case | |
+| --- | --- |
+| `point` | At the offset. |
+| `box` | In the box of `half-size` (on a face with `surface`). |
+| `disc` | In a flat horizontal disc of `radius` (on its rim with `surface`). |
+| `sphere` | In a ball of `radius` (on its shell with `surface`). |
+
+### record `emitter`
+
+| Field | Type | |
+| --- | --- | --- |
+| `looping` | `bool` | Loops forever, or spawns for `duration` seconds and ends. |
+| `duration` | `f32` | Seconds, 0.05..600. |
+| `rate` | `f32` | Particles per second, 0..2048. |
+| `density-scaled` | `bool` | The rate scales with `start-emitter`'s density. |
+| `max` | `u32` | This emitter's live particles at most, 1..512. |
+| `burst` | `u32` | Spawned at once when it starts, 0..512 (counted in `max`). |
+| `shape` | `emitter-shape` |  |
+| `offset` | `span3` | From the anchor, drawn per particle: blocks, -64..64. |
+| `half-size` | `tuple<f32, f32, f32>` | The box's half extents: blocks 0..64. |
+| `radius` | `span` | The disc's or ball's radius, drawn per particle: blocks 0..64. |
+| `surface` | `bool` |  |
+| `direction` | `option<span3>` | The direction `speed` pushes along, normalised; none: outwards from the shape's centre (a random direction for a point). |
+
+### enum `medium`
+
+Where a particle may live: it dies on leaving it.
+
+| Case | |
+| --- | --- |
+| `anywhere` |  |
+| `air` |  |
+| `water` |  |
+
+### enum `frame-mode`
+
+Which sprite of the set a particle shows.
+
+| Case | |
+| --- | --- |
+| `first` |  |
+| `random` | One picked at spawn. |
+| `over-life` | First to last over the life. |
+| `loop` | Cycling at `frame-rate` per second. |
+
+### record `particle`
+
+| Field | Type | |
+| --- | --- | --- |
+| `sprite` | `string` | A sprite set: `<namespace>:<name>` for `assets/<namespace>/particles/<name>.json` in the mod's own content (a namespace it owns, capability `registries`), or `minecraft:<type>` for a vanilla particle type's sprites. |
+| `frame` | `frame-mode` |  |
+| `frame-rate` | `f32` | Sprites per second for `loop`, 0..60. |
+| `lifetime` | `span` | Seconds, 0.05..60. |
+| `speed` | `span` | Blocks per second along the direction, -64..64. |
+| `velocity` | `span3` | Added to the start velocity: blocks per second, -64..64. |
+| `drag` | `f32` | Velocity lost per second (`v *= exp(-drag * dt)`), 0..20. |
+| `gravity` | `f32` | Downwards, blocks per second squared, -40..40. |
+| `acceleration` | `option<curve3>` | Blocks per second squared per axis; curve values -64..64. |
+| `size` | `curve` | Quad size in blocks, 0..16. |
+| `alpha` | `curve` | 0..1 (clamped after sampling). |
+| `color` | `u32` | 0xRRGGBB, used when `color-keys` is empty. |
+| `color-keys` | `list<color-key>` | Up to 8. |
+| `shade` | `f32` | Each particle darkens by up to this fraction, 0..1. |
+| `spin` | `span` | Start roll in degrees and roll per second. |
+| `spin-rate` | `span` |  |
+| `fade-near` | `option<span>` | Invisible nearer than `lo` blocks from the camera, full from `hi` (0..128). |
+| `fade-far` | `option<span>` | Full until `lo` blocks from the camera, gone from `hi` (0..128). |
+| `emissive` | `bool` | Full bright instead of the world's light. |
+| `translucent` | `bool` | Drawn on the translucent particle layer (otherwise cut out). |
+| `only-in` | `medium` |  |
+| `die-nearer-than` | `f32` | Dies when the camera comes nearer than this many blocks, 0 (off)..16. |
+
+### record `effect`
+
+A particle effect: how an emitter spawns and how each particle moves and looks.
+
+| Field | Type | |
+| --- | --- | --- |
+| `emitter` | `emitter` |  |
+| `particle` | `particle` |  |
+
+### variant `anchor`
+
+What an emitter is placed at: the camera (followed, world axes) or a fixed point.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `camera` |  |  |
+| `point` | `tuple<f64, f64, f64>` |  |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `define-profile` | `func(profile: profile) -> result<u32, string>` | Stores a profile (at most 64 per mod) and returns its id. Profiles are never removed. |
 | `set-mix` | `func(weights: list<tuple<u32, f32>>, transition-seconds: f32) -> result<_, string>` | Blends up to 4 of this mod's profiles: weights >= 0, normalised by the game; an empty list returns to vanilla. The game cross-fades from what it shows now over `transition-seconds` (0..30, clamped). Errors keep the previous mix. More than 8 calls per second are ignored. With several mods, the first in load order with a mix wins. |
 | `conditions` | `func() -> option<scene>` | None on the title screen. |
+| `define-effect` | `func(effect: effect) -> result<u32, string>` | Stores an effect (at most 256 per mod) and returns its id. Effects are never removed. |
+| `start-emitter` | `func(effect: u32, anchor: anchor, density: f32, tint: u32) -> result<u32, string>` | Starts an emitter of one of this mod's effects (at most 48 live per mod); `density` 0..4 scales a density-scaled rate, `tint` (0xRRGGBB) multiplies the colour. The game simulates its particles; a mod's live particles are capped at 3072 and its spawns at 512 per tick. Nothing spawns on the title screen, while paused, with Particles: Minimal, or more than 64 blocks from the camera. A one-shot emitter's id frees when it ends. |
+| `move-emitter` | `func(emitter: u32, anchor: anchor) -> result<_, string>` | Moves a live emitter. |
+| `stop-emitter` | `func(emitter: u32, fade: bool) -> result<_, string>` | Stops a live emitter; with `fade` its particles live out their lives, without they go at once. Its id may be reused. |
 
 ## `channel`
 

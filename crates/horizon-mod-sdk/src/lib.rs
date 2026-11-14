@@ -56,7 +56,9 @@
 //! Level 32 adds [`server::world::heightmap`]: a loaded chunk's 256 OCEAN_FLOOR heights.
 //! Level 33 adds [`atmosphere`] (experimental capability `atmosphere`): fog and sky profiles keyed
 //! by time of day, a weighted mix the game cross-fades to ([`atmosphere::set_mix`], or
-//! [`atmosphere_mix::show`] and [`atmosphere_mix::clear`]) and the camera's conditions.
+//! [`atmosphere_mix::show`] and [`atmosphere_mix::clear`]) and the camera's conditions; and
+//! particle effects the game simulates ([`atmosphere::define_effect`], emitters started, moved and
+//! stopped by id, builders in [`atmosphere_fx`]).
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -97,6 +99,105 @@ pub mod atmosphere_mix {
     /// `0xRRGGBB` from 0..255 channels.
     pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
         (r as u32) << 16 | (g as u32) << 8 | b as u32
+    }
+}
+
+/// Builders for [`atmosphere::define_effect`]'s records (capability `atmosphere`, API level 33):
+/// start from [`atmosphere_fx::emitter`] and [`atmosphere_fx::particle`] and change fields.
+pub mod atmosphere_fx {
+    use super::atmosphere::{
+        Curve, CurveKey, Ease, Effect, Emitter, EmitterShape, FrameMode, Medium, Particle, Span,
+        Span3,
+    };
+    /// A range drawn per particle.
+    pub const fn span(lo: f32, hi: f32) -> Span {
+        Span { lo, hi }
+    }
+    /// One value.
+    pub const fn constant(v: f32) -> Span {
+        Span { lo: v, hi: v }
+    }
+    /// The same range on every axis.
+    pub const fn span3(lo: f32, hi: f32) -> Span3 {
+        Span3 {
+            x: span(lo, hi),
+            y: span(lo, hi),
+            z: span(lo, hi),
+        }
+    }
+    /// A curve that stays at a drawn base.
+    pub fn flat(base: Span) -> Curve {
+        Curve {
+            base,
+            keys: Vec::new(),
+            ease: Ease::Linear,
+            wave: None,
+        }
+    }
+    /// A drawn base that eases in over the first `fade_in` of the life and out over the last
+    /// `fade_out` (fractions 0..1).
+    pub fn fade(base: Span, fade_in: f32, fade_out: f32) -> Curve {
+        let key = |t: f32, value: f32| CurveKey { t, value };
+        Curve {
+            base,
+            keys: vec![
+                key(0.0, 0.0),
+                key(fade_in, 1.0),
+                key(1.0 - fade_out, 1.0),
+                key(1.0, 0.0),
+            ],
+            ease: Ease::Smooth,
+            wave: None,
+        }
+    }
+    /// A looping point emitter of `rate` particles per second, up to 512 live.
+    pub fn emitter(rate: f32) -> Emitter {
+        Emitter {
+            looping: true,
+            duration: 1.0,
+            rate,
+            density_scaled: true,
+            max: 512,
+            burst: 0,
+            shape: EmitterShape::Point,
+            offset: span3(0.0, 0.0),
+            half_size: (0.0, 0.0, 0.0),
+            radius: constant(0.0),
+            surface: false,
+            direction: None,
+        }
+    }
+    /// A white, cut-out, world-lit particle of `sprite` living one second at 0.1 blocks,
+    /// motionless.
+    pub fn particle(sprite: &str) -> Particle {
+        Particle {
+            sprite: sprite.into(),
+            frame: FrameMode::First,
+            frame_rate: 0.0,
+            lifetime: constant(1.0),
+            speed: constant(0.0),
+            velocity: span3(0.0, 0.0),
+            drag: 0.0,
+            gravity: 0.0,
+            acceleration: None,
+            size: flat(constant(0.1)),
+            alpha: flat(constant(1.0)),
+            color: 0xFFFFFF,
+            color_keys: Vec::new(),
+            shade: 0.0,
+            spin: constant(0.0),
+            spin_rate: constant(0.0),
+            fade_near: None,
+            fade_far: None,
+            emissive: false,
+            translucent: false,
+            only_in: Medium::Anywhere,
+            die_nearer_than: 0.0,
+        }
+    }
+    /// Both halves.
+    pub fn effect(emitter: Emitter, particle: Particle) -> Effect {
+        Effect { emitter, particle }
     }
 }
 
