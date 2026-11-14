@@ -1,5 +1,8 @@
 //! Import embedded `.hmod` packages from an arbitrary ZIP, without extracting its paths.
-use crate::{Manifest, manifest::MANIFEST};
+use crate::{
+    Manifest,
+    manifest::{MANIFEST, Side},
+};
 use serde::Serialize;
 use std::{
     cmp::Ordering,
@@ -202,7 +205,7 @@ fn import_limited(
         match manifest(&temp.0) {
             Err(e) => report.skipped.push((name, e)),
             Ok(m) => {
-                if let Some((previous, previous_name, _)) = winners.get(&m.id) {
+                if let Some((previous, previous_name, _)) = winners.get(&slot(&m)) {
                     if version_cmp(&m.version, &previous.version) != Ordering::Greater {
                         report.skipped.push((
                             name,
@@ -222,7 +225,7 @@ fn import_limited(
                         ),
                     ));
                 }
-                winners.insert(m.id.clone(), (m, name, temp));
+                winners.insert(slot(&m), (m, name, temp));
             }
         }
         progress(done + 1, total);
@@ -230,15 +233,20 @@ fn import_limited(
     let existing: Vec<_> = crate::find(mods_dir)
         .into_iter()
         .filter(|p| p.is_file())
-        .filter_map(|p| Some((manifest(&p).ok()?.id, p)))
+        .filter_map(|p| Some((slot(&manifest(&p).ok()?), p)))
         .collect();
-    for (id, (m, _, temp)) in winners {
-        let target = mods_dir.join(format!("{id}.hmod"));
-        let replaced = target.exists() || existing.iter().any(|(other, _)| other == &id);
+    for (key, (m, _, temp)) in winners {
+        let id = m.id.clone();
+        let target = mods_dir.join(if m.side == Side::Server {
+            format!("{id}_server.hmod")
+        } else {
+            format!("{id}.hmod")
+        });
+        let replaced = target.exists() || existing.iter().any(|(other, _)| other == &key);
         fs::rename(&temp.0, &target).map_err(|e| format!("{}: {e}", target.display()))?;
         for (_, path) in existing
             .iter()
-            .filter(|(other, p)| other == &id && *p != target)
+            .filter(|(other, p)| other == &key && *p != target)
         {
             fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
         }
@@ -250,6 +258,12 @@ fn import_limited(
         }
     }
     Ok(report)
+}
+
+/// A client half and a server half may share one id (they pair by it), so the
+/// import keeps one file per id and side.
+fn slot(m: &Manifest) -> String {
+    format!("{}/{}", m.id, m.side == Side::Server)
 }
 
 #[cfg(test)]
@@ -298,6 +312,30 @@ mod tests {
             b"component",
         )
         .unwrap()
+    }
+    #[test]
+    fn client_and_server_halves_with_one_id_are_both_kept() {
+        let t = Scratch::new();
+        let half = |side: &str, wasm: &[u8]| {
+            let api = if side == "server" { "0.3" } else { "0.1" };
+            crate::Package::write(
+                &format!("id = \"pair\"\nname = \"pair\"\nversion = \"1\"\napi = \"{api}\"\nside = \"{side}\"\n"),
+                wasm,
+            )
+            .unwrap()
+        };
+        let client = half("client", b"component-c");
+        let server = half("server", b"component-s");
+        let zip = t.pack(&[("c.hmod", &client), ("s.hmod", &server)]);
+        let r = import(&zip, &t.mods(), |_, _| {}).unwrap();
+        assert_eq!(r.added.len(), 2);
+        assert!(r.skipped.is_empty());
+        assert_eq!(fs::read(t.mods().join("pair.hmod")).unwrap(), client);
+        assert_eq!(fs::read(t.mods().join("pair_server.hmod")).unwrap(), server);
+        // Importing again replaces each half and keeps both files.
+        let r = import(&zip, &t.mods(), |_, _| {}).unwrap();
+        assert_eq!(r.replaced.len(), 2);
+        assert_eq!(fs::read_dir(t.mods()).unwrap().count(), 2);
     }
     #[test]
     fn imports_nested_and_traversal_labels_but_no_other_files() {
