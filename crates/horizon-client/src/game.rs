@@ -12743,7 +12743,12 @@ impl Game<'_> {
         if let Some(dir) = create.and_then(|o| o.pack_dir.as_deref()) {
             let world = std::env::current_dir()?.join("saves").join(folder);
             let packs = create.map_or(&[][..], |o| &o.data_packs[..]);
-            if let Err(e) = horizon_client::datapack::install(dir, &world, packs) {
+            if let Err(e) = horizon_client::datapack::install(
+                dir,
+                &world,
+                packs,
+                &horizon_client::datapack::mod_packs(),
+            ) {
                 log::warn!("Horizon: data packs for {folder}: {e}");
             }
             let _ = std::fs::remove_dir_all(dir);
@@ -22712,6 +22717,7 @@ pub fn run_with() -> Result<()> {
         &early_settings.mods.enabled,
         &options.dev_mods,
     );
+    mods::register_mod_datapacks(&early_settings.mods.enabled, &options.dev_mods);
     let loaded = load_resources(
         options.resources.clone(),
         launch_world(&options),

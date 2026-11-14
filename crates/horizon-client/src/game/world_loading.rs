@@ -557,8 +557,12 @@ pub(super) fn creation_worldgen_overrides(
     biomes: &horizon_client::biome::Biomes,
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
     let empty = std::path::PathBuf::new();
-    let packs =
+    let mut packs =
         horizon_client::datapack::discover_with_features(pack_dir.unwrap_or(&empty), resources);
+    // The mods' packs, so the preview sees a pick that is not extracted yet.
+    packs.extend(horizon_client::datapack::mod_data_packs(
+        &horizon_client::datapack::mod_packs(),
+    ));
     let enabled: Vec<_> = data_packs
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))

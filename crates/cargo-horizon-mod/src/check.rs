@@ -24,6 +24,8 @@ pub struct Report {
     pub signed: bool,
     /// A mod has code to run (a content mod may have none).
     pub code: bool,
+    /// The data packs a mod lists.
+    pub datapacks: Vec<String>,
     /// A mod's component imports.
     pub imports: Vec<String>,
     /// A mod's commands, each run once.
@@ -55,6 +57,7 @@ impl Report {
             "size": self.size,
             "signed": self.signed,
             "code": self.code,
+            "datapacks": self.datapacks,
             "imports": self.imports,
             "commands": self.commands,
             "output": self.output,
@@ -98,11 +101,21 @@ impl Report {
         for r in &f.requires {
             out += &format!("  needs {} {} ({})\n", r.id, r.version, &r.sha256[..12]);
         }
+        if !self.datapacks.is_empty() {
+            out += &format!("  data packs: {}\n", self.datapacks.join(", "));
+        }
         if self.kind == Kind::NativeMod {
             out += "  native source: unsandboxed; not executed by the registry check. Compile and test against the exact pinned Horizon and Mixins revisions before review.\n";
         }
         if self.kind == Kind::Mod && !self.code {
-            out += "  no code: content only, nothing to run\n";
+            let content = f
+                .capabilities
+                .contains(&horizon_mods::Capability::Registries);
+            out += match (content, self.datapacks.is_empty()) {
+                (_, true) => "  no code: content only, nothing to run\n",
+                (true, false) => "  no code: content and data packs, nothing to run\n",
+                (false, false) => "  no code: data packs only, nothing to run\n",
+            };
         } else if self.kind == Kind::Mod {
             let commands = if self.commands.is_empty() {
                 String::new()
@@ -161,10 +174,17 @@ pub fn check(
         size,
         signed,
         code: false,
+        datapacks: Vec::new(),
         imports: Vec::new(),
         commands: Vec::new(),
         output: Vec::new(),
     };
+    if matches!(report.kind, Kind::Mod | Kind::NativeMod)
+        && Package::has_manifest(path)
+        && let Ok(package) = Package::read(path)
+    {
+        report.datapacks = package.manifest.datapacks;
+    }
     if report.kind == Kind::Mod {
         trial_run(path, &mut report)?;
     }

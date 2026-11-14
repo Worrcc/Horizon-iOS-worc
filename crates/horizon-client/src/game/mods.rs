@@ -447,6 +447,43 @@ pub(super) fn register_standalone_models() {
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left
 /// out here and its row on the Mods page says why.
+/// Registers the data packs of the mods that are on, for Create World's
+/// Data Packs list (`horizon_client::datapack::mod_packs`). A mod needs no
+/// content capability for them; one whose packs are refused is skipped.
+pub(super) fn register_mod_datapacks(
+    enabled: &std::collections::BTreeSet<String>,
+    dev: &[std::path::PathBuf],
+) {
+    use horizon_client::datapack::{ModPackRef, set_mod_packs};
+    use horizon_mods::{Package, datapacks};
+    let here = std::env::current_dir().unwrap_or_default();
+    let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
+    paths.retain(|p| !dev.contains(p));
+    paths.extend(dev.iter().cloned());
+    let mut refs: Vec<ModPackRef> = Vec::new();
+    for path in &paths {
+        let Ok(package) = Package::read(path) else {
+            continue;
+        };
+        let m = &package.manifest;
+        if m.datapacks.is_empty()
+            || !(enabled.contains(&m.id) || dev.contains(path))
+            || refs.iter().any(|r| r.mod_id == m.id)
+        {
+            continue;
+        }
+        match datapacks::check(path, m) {
+            Ok(packs) => refs.extend(packs.into_iter().map(|p| ModPackRef {
+                mod_id: m.id.clone(),
+                pack: p.name,
+                archive: path.clone(),
+            })),
+            Err(e) => log::warn!("Horizon: mod {} data packs not loaded: {e}", m.id),
+        }
+    }
+    set_mod_packs(refs);
+}
+
 pub(super) fn content_root(
     root: &std::path::Path,
     enabled: &std::collections::BTreeSet<String>,

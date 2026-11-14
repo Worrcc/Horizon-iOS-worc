@@ -9,6 +9,7 @@ pub mod api_level;
 #[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;
+pub mod datapacks;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod manifest;

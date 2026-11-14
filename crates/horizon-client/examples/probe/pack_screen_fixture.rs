@@ -102,6 +102,7 @@ pub fn main() -> horizon_client::Result<()> {
                         Some("builtin") => Source::BuiltIn,
                         Some("world") => Source::World,
                         Some("server") => Source::Server,
+                        Some("mod") => Source::Mod,
                         Some("feature") => Source::Feature,
                         _ => Source::Default,
                     },

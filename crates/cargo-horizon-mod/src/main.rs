@@ -254,11 +254,13 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
             &horizon_mods::api_level::imports(&wasm)?,
         )?;
         (Some(wasm), target)
-    } else if manifest.capabilities.contains(&Capability::Registries) {
+    } else if manifest.capabilities.contains(&Capability::Registries)
+        || !manifest.datapacks.is_empty()
+    {
         (None, root.join("target"))
     } else {
         return Err(format!(
-            "no Cargo.toml: only a content mod (capability registries in {MANIFEST}) has no code"
+            "no Cargo.toml: only a content mod (capability registries) or a mod listing datapacks in {MANIFEST} has no code"
         ));
     };
     // The same checks as the game's, and the files in the order it lists them.
@@ -268,7 +270,20 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
     for name in &content.files {
         files.push((name.as_str(), reader.read(name)?));
     }
-    let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+    // The data packs, checked as the game does, in path order.
+    horizon_mods::datapacks::check(root, &manifest)?;
+    let mut pack_files = Vec::new();
+    if !manifest.datapacks.is_empty() {
+        let mut names = Vec::new();
+        collect(root, &root.join("datapacks"), &mut names)?;
+        names.sort();
+        for name in names {
+            let bytes = std::fs::read(root.join(&name)).map_err(|e| format!("{name}: {e}"))?;
+            pack_files.push((name, bytes));
+        }
+    }
+    let mut files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+    files.extend(pack_files.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
     let dir = target_dir.join("horizon-mod");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}.hmod", manifest.id));
@@ -278,6 +293,20 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
     std::fs::write(&partial, bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&partial, &path).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// The files under `dir` as `/`-separated paths from `root`.
+fn collect(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            collect(root, &path, out)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            let parts: Vec<_> = rel.iter().map(|p| p.to_string_lossy()).collect();
+            out.push(parts.join("/"));
+        }
+    }
+    Ok(())
 }
 
 /// Builds the crate for WebAssembly: its component, and Cargo's target folder.
@@ -496,6 +525,42 @@ mod tests {
                 "lua".into()
             ])
             .is_err()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_data_pack_only_mod_builds_and_checks() {
+        let dir = std::env::temp_dir().join(format!("horizon-mod-packs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/p/data/minecraft/worldgen/noise");
+        std::fs::create_dir_all(&pack).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST),
+            "id = \"packs\"\nname = \"Packs\"\nversion = \"1\"\napi = \"0.2\"\ndatapacks = [\"p\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks/p/pack.mcmeta"),
+            r#"{"pack":{"description":"P"}}"#,
+        )
+        .unwrap();
+        std::fs::write(pack.join("n.json"), "{}").unwrap();
+        let hmod = build_in(&dir, true).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&hmod).unwrap()).unwrap();
+        let names: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index_raw(i).unwrap().name().unwrap().into_owned())
+            .collect();
+        assert!(
+            names.contains(&"datapacks/p/pack.mcmeta".to_owned()),
+            "{names:?}"
+        );
+        let report = check::check(&hmod, check::kind_of(&hmod).unwrap(), None, None).unwrap();
+        assert_eq!(report.datapacks, ["p"]);
+        assert!(
+            report.text().contains("no code: data packs only"),
+            "{}",
+            report.text()
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

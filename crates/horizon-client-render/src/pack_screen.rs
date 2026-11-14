@@ -41,6 +41,8 @@ pub enum Source {
     Feature,
     World,
     Server,
+    /// A data pack a mod ships.
+    Mod,
 }
 
 /// A pack as the screen shows it.
@@ -84,6 +86,7 @@ impl PackInfo {
             Source::Feature => "pack.source.feature",
             Source::World => "pack.source.world",
             Source::Server => "pack.source.server",
+            Source::Mod => "horizon.pack.source.mod",
         };
         let t = Text::translate(
             "pack.nameAndSource",

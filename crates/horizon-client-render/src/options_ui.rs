@@ -2221,7 +2221,8 @@ impl OptionsUi {
         resources: std::path::PathBuf,
     ) {
         self.open_at(false, Page::Packs);
-        self.pack_infos = crate::datapack::screen_packs(&dir, &resources);
+        self.pack_infos =
+            crate::datapack::screen_packs(&dir, &resources, &crate::datapack::mod_packs());
         self.data_pack_resources = resources;
         self.pack_selection = selected;
         self.data_pack_stamp = (crate::datapack::folder_stamp(&dir), Instant::now());
@@ -2243,7 +2244,11 @@ impl OptionsUi {
         if !changed {
             return;
         }
-        self.pack_infos = crate::datapack::screen_packs(dir, &self.data_pack_resources);
+        self.pack_infos = crate::datapack::screen_packs(
+            dir,
+            &self.data_pack_resources,
+            &crate::datapack::mod_packs(),
+        );
         if let Some(p) = self.pack_screen.take() {
             self.pack_selection = p.commit();
             self.packs(atlas, size).changed = p.changed;

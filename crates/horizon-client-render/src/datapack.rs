@@ -20,6 +20,25 @@ pub struct DataPack {
 enum Source {
     Dir(PathBuf),
     Zip(Box<Zip>),
+    /// A pack inside a mod's `.hmod`: the archive and the prefix `datapacks/<name>/`.
+    ZipIn(Box<Zip>, String),
+}
+/// A data pack a mod ships (`datapacks/<pack>/` in `archive`, a `.hmod` or a
+/// mod folder), as the mods page registers it.
+#[derive(Clone, Debug)]
+pub struct ModPackRef {
+    pub mod_id: String,
+    pub pack: String,
+    pub archive: PathBuf,
+}
+static MOD_PACKS: std::sync::RwLock<Vec<ModPackRef>> = std::sync::RwLock::new(Vec::new());
+/// Registers the packs of the mods that are on (once, at start).
+pub fn set_mod_packs(packs: Vec<ModPackRef>) {
+    *MOD_PACKS.write().unwrap_or_else(|e| e.into_inner()) = packs;
+}
+/// The registered mod packs.
+pub fn mod_packs() -> Vec<ModPackRef> {
+    MOD_PACKS.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 impl DataPack {
     /// Every file path under `prefix` (relative to the pack root).
@@ -27,6 +46,12 @@ impl DataPack {
         match &self.source {
             Source::Zip(z) => z
                 .names()
+                .filter(|n| n.starts_with(prefix) && !n.ends_with('/'))
+                .map(str::to_owned)
+                .collect(),
+            Source::ZipIn(z, pfx) => z
+                .names()
+                .filter_map(|n| n.strip_prefix(pfx.as_str()))
                 .filter(|n| n.starts_with(prefix) && !n.ends_with('/'))
                 .map(str::to_owned)
                 .collect(),
@@ -62,9 +87,9 @@ impl DataPack {
     /// `list` names them; a folder pack walks only those folders.
     pub fn list_folder(&self, folder: &str) -> Vec<String> {
         let files = self.list_kinds(&[folder]);
-        let Source::Zip(_) = &self.source else {
+        if matches!(self.source, Source::Dir(_)) {
             return files;
-        };
+        }
         files
             .into_iter()
             .filter(|f| {
@@ -79,6 +104,7 @@ impl DataPack {
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         match &self.source {
             Source::Zip(z) => z.read(path).ok(),
+            Source::ZipIn(z, pfx) => z.read(&format!("{pfx}{path}")).ok(),
             Source::Dir(root) => std::fs::read(root.join(path)).ok(),
         }
     }
@@ -136,6 +162,31 @@ impl DataPack {
             source: Source::Dir(root.to_path_buf()),
         }
     }
+}
+impl DataPack {
+    /// A mod's pack as Create World lists it: id `mod/<mod>/<pack>`; `None`
+    /// when the archive or its `pack.mcmeta` cannot be read.
+    pub fn from_mod(r: &ModPackRef) -> Option<DataPack> {
+        let id = format!("mod/{}/{}", r.mod_id, r.pack);
+        if r.archive.is_dir() {
+            let root = r.archive.join("datapacks").join(&r.pack);
+            return root.join("pack.mcmeta").is_file().then_some(DataPack {
+                id,
+                source: Source::Dir(root),
+            });
+        }
+        let z = Zip::open(&r.archive).ok()?;
+        let prefix = format!("datapacks/{}/", r.pack);
+        z.contains(&format!("{prefix}pack.mcmeta"))
+            .then(|| DataPack {
+                id,
+                source: Source::ZipIn(Box::new(z), prefix),
+            })
+    }
+}
+/// The packs of `refs` that can be read, in order.
+pub fn mod_data_packs(refs: &[ModPackRef]) -> Vec<DataPack> {
+    refs.iter().filter_map(DataPack::from_mod).collect()
 }
 /// The packs in `<world>/datapacks`, sorted by name.
 pub fn discover(world: &Path) -> Vec<DataPack> {
@@ -205,7 +256,11 @@ pub fn discover_with_features(world_root: &Path, resources: &Path) -> Vec<DataPa
 /// built-in one (`resources` holds its `pack.png`), and the feature packs
 /// of `resources` (`PackSource.FEATURE`), available at the bottom and off
 /// until picked — the Experiments.
-pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::PackInfo> {
+pub fn screen_packs(
+    dir: &Path,
+    resources: &Path,
+    mods: &[ModPackRef],
+) -> Vec<crate::pack_screen::PackInfo> {
     use crate::{
         pack_screen::{Compat, PackInfo, Source, load_icon},
         packs::Position,
@@ -256,6 +311,28 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
             compat: crate::packs::compatibility_for(&meta, format),
             required: false,
             position: Position::Bottom,
+            fixed: false,
+        });
+    }
+    for p in mod_data_packs(mods) {
+        let meta = p.mcmeta();
+        let (description, description_style) =
+            crate::packs::component_root(&meta["pack"]["description"]);
+        let mut parts = p.id.splitn(3, '/').skip(1);
+        let (mod_id, name) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+        infos.push(PackInfo {
+            icon: None,
+            title: Text::translate(
+                "horizon.pack.mod.title",
+                &[Text::literal(name), Text::literal(mod_id)],
+            ),
+            id: p.id.clone(),
+            description,
+            description_style,
+            source: Source::Mod,
+            compat: crate::packs::compatibility_for(&meta, format),
+            required: false,
+            position: Position::Top,
             fixed: false,
         });
     }
@@ -355,7 +432,12 @@ pub fn folder_stamp(dir: &Path) -> Vec<(String, Option<std::time::SystemTime>)> 
 /// (`copyTempDataPackDirToNewWorld`): every pack of `dir` goes to
 /// `<world>/datapacks`, and `datapacks.json` enables those `selected`
 /// (lowest priority first) and disables the rest.
-pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), String> {
+pub fn install(
+    dir: &Path,
+    world: &Path,
+    selected: &[String],
+    mods: &[ModPackRef],
+) -> Result<(), String> {
     let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     let target = world.join("datapacks");
     std::fs::create_dir_all(&target).map_err(|e| err(&target, e))?;
@@ -370,9 +452,57 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
     if !selected.iter().any(|id| id == "vanilla") {
         disabled.push("vanilla".into());
     }
-    let json = serde_json::json!({ "enabled": selected, "disabled": disabled });
+    // Mod packs become ordinary world packs, `file/mod.<mod>.<pack>`.
+    let available = mod_data_packs(mods);
+    let mut enabled: Vec<String> = Vec::new();
+    for id in selected {
+        let id = if id.starts_with("mod/") {
+            let Some(pack) = available.iter().find(|p| &p.id == id) else {
+                log::warn!("Horizon: data pack {id} is not available; left out");
+                continue;
+            };
+            let name = format!("mod.{}", id.trim_start_matches("mod/").replace('/', "."));
+            extract(pack, &target.join(&name))?;
+            format!("file/{name}")
+        } else {
+            id.clone()
+        };
+        if !enabled.contains(&id) {
+            enabled.push(id);
+        }
+    }
+    let json = serde_json::json!({ "enabled": enabled, "disabled": disabled });
     let file = world.join("datapacks.json");
     std::fs::write(&file, json.to_string()).map_err(|e| err(&file, e))
+}
+/// Writes a mod's pack into `to` (replacing it), skipping any file whose
+/// name is not a plain relative path.
+fn extract(pack: &DataPack, to: &Path) -> Result<(), String> {
+    let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    if to.exists() {
+        std::fs::remove_dir_all(to).map_err(|e| err(to, e))?;
+    }
+    std::fs::create_dir_all(to).map_err(|e| err(to, e))?;
+    for file in pack.list("") {
+        let safe = !file.contains('\\')
+            && !file.starts_with('/')
+            && file
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..");
+        if !safe {
+            log::warn!("Horizon: data pack file {file:?} has an unsafe name; skipped");
+            continue;
+        }
+        let Some(bytes) = pack.read(&file) else {
+            continue;
+        };
+        let at = to.join(&file);
+        if let Some(parent) = at.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| err(parent, e))?;
+        }
+        std::fs::write(&at, bytes).map_err(|e| err(&at, e))?;
+    }
+    Ok(())
 }
 /// Re-Create World's packs from a saved world: a new folder holding a copy of
 /// its `datapacks` (`CreateWorldScreen.createTempDataPackDirFromExistingWorld`; `None` when the
@@ -1220,7 +1350,7 @@ mod tests {
             .unwrap();
         std::io::Write::write_all(&mut zip, br#"{"pack":{"pack_format":48}}"#).unwrap();
         zip.finish().unwrap();
-        let infos = screen_packs(&dir, &root);
+        let infos = screen_packs(&dir, &root, &[]);
         let ids: Vec<&str> = infos.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["file/fns", "file/off", "file/old.zip", "vanilla"]);
         let compat: Vec<_> = infos.iter().map(|p| p.compat).collect();
@@ -1235,7 +1365,7 @@ mod tests {
             ]
         );
         let selected = ["vanilla", "file/old.zip", "file/fns"].map(String::from);
-        install(&dir, &world, &selected).unwrap();
+        install(&dir, &world, &selected, &[]).unwrap();
         let packs = discover(&world);
         let ids: Vec<&str> = packs.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids, ["file/fns", "file/off", "file/old.zip"]);
@@ -1245,6 +1375,96 @@ mod tests {
             saved,
             serde_json::json!({"enabled": selected, "disabled": ["file/off"]})
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    fn mod_hmod(tag: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("hz-modpack-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("m.hmod");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for (name, body) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        (root, path)
+    }
+    fn mod_ref(archive: &Path, pack: &str) -> ModPackRef {
+        ModPackRef {
+            mod_id: "m".into(),
+            pack: pack.into(),
+            archive: archive.to_owned(),
+        }
+    }
+
+    #[test]
+    fn mod_packs_are_listed_off_and_installed_into_the_world() {
+        let mcmeta = r#"{"pack":{"description":"P","min_format":121,"max_format":121}}"#;
+        let (root, hmod) = mod_hmod(
+            "ok",
+            &[
+                ("horizon-mod.toml", "unused"),
+                ("datapacks/p/pack.mcmeta", mcmeta),
+                (
+                    "datapacks/p/data/minecraft/worldgen/noise/cave.json",
+                    r#"{"firstOctave":-3,"amplitudes":[1.0]}"#,
+                ),
+                ("datapacks/q/pack.mcmeta", mcmeta),
+            ],
+        );
+        let refs = [mod_ref(&hmod, "p"), mod_ref(&hmod, "q")];
+        let dir = root.join("tmp");
+        let world = root.join("world");
+        let infos = screen_packs(&dir, &root, &refs);
+        let mods: Vec<_> = infos
+            .iter()
+            .filter(|p| p.source == crate::pack_screen::Source::Mod)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(mods, ["mod/m/p", "mod/m/q"]);
+        let selected = ["vanilla", "mod/m/p"].map(String::from);
+        install(&dir, &world, &selected, &refs).unwrap();
+        assert!(world.join("datapacks/mod.m.p/pack.mcmeta").exists());
+        assert!(!world.join("datapacks/mod.m.q").exists());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(world.join("datapacks.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved["enabled"],
+            serde_json::json!(["vanilla", "file/mod.m.p"])
+        );
+        let packs = discover(&world);
+        let enabled = enabled_ids(&world, &packs, &[]);
+        let enabled: Vec<&DataPack> = enabled
+            .iter()
+            .filter_map(|id| packs.iter().find(|p| &p.id == id))
+            .collect();
+        let (o, _) = worldgen_overrides(&enabled, |_| true);
+        let noises: Vec<_> = o.entries("noises").collect();
+        assert_eq!(
+            noises,
+            [("minecraft:cave", r#"{"firstOctave":-3,"amplitudes":[1.0]}"#)]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unsafe_names_in_a_mod_pack_are_not_extracted() {
+        let (root, hmod) = mod_hmod(
+            "evil",
+            &[
+                ("datapacks/p/pack.mcmeta", r#"{"pack":{}}"#),
+                ("datapacks/p/../evil.json", "{}"),
+            ],
+        );
+        let refs = [mod_ref(&hmod, "p")];
+        let world = root.join("world");
+        let selected = ["mod/m/p".to_string()];
+        install(&root.join("tmp"), &world, &selected, &refs).unwrap();
+        assert!(world.join("datapacks/mod.m.p/pack.mcmeta").exists());
+        assert!(!world.join("datapacks/evil.json").exists());
+        assert!(!world.join("evil.json").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

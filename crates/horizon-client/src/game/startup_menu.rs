@@ -370,6 +370,7 @@ pub(super) fn spawn_loader(
                     vanilla_root.clone()
                 });
             let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
+            mods::register_mod_datapacks(&settings.mods.enabled, &dev_mods);
             let result = load_resources(
                 root,
                 world.as_deref(),

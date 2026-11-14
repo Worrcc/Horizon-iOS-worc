@@ -62,6 +62,11 @@ pub struct Manifest {
     /// accepted here, so the manifest keeps loading once it is promoted.
     #[serde(default)]
     pub experimental: Vec<Capability>,
+    /// World data packs the mod ships whole under `datapacks/<name>/`
+    /// (`api = "0.2"`), offered in Create World > Data Packs. Older hosts
+    /// reject this field.
+    #[serde(default)]
+    pub datapacks: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -360,6 +365,28 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
+        if !m.datapacks.is_empty() {
+            if m.api != "0.2" {
+                return Err(format!("{MANIFEST}: datapacks needs api = \"0.2\""));
+            }
+            if m.datapacks.len() > 16 {
+                return Err(format!("{MANIFEST}: at most 16 datapacks"));
+            }
+            for (i, name) in m.datapacks.iter().enumerate() {
+                let ok = (1..=64).contains(&name.len())
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                if !ok {
+                    return Err(format!(
+                        "{MANIFEST}: datapack {name:?} is not [a-z0-9_]{{1,64}}"
+                    ));
+                }
+                if m.datapacks[..i].contains(name) {
+                    return Err(format!("{MANIFEST}: datapack {name} is listed twice"));
+                }
+            }
+        }
         Ok(m)
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
@@ -414,7 +441,7 @@ impl Manifest {
 /// A mod as found on disk: its manifest and component bytes.
 pub struct Package {
     pub manifest: Manifest,
-    /// None for a content-only mod (capability `registries`, no code).
+    /// None for a content-only or data-pack-only mod (no code).
     pub wasm: Option<Vec<u8>>,
 }
 impl Package {
@@ -452,9 +479,12 @@ impl Package {
             return Err(format!("{WASM} is over {} MiB", MAX_WASM >> 20));
         }
         let manifest = Manifest::parse(&toml)?;
-        if wasm.is_none() && !manifest.capabilities.contains(&Capability::Registries) {
+        if wasm.is_none()
+            && !manifest.capabilities.contains(&Capability::Registries)
+            && manifest.datapacks.is_empty()
+        {
             return Err(format!(
-                "{WASM}: missing (only a content mod, with capability registries, may have no code)"
+                "{WASM}: missing (only a content mod, with capability registries, or a mod listing datapacks may have no code)"
             ));
         }
         Ok(Package { manifest, wasm })
@@ -475,14 +505,15 @@ impl Package {
         Self::write_files(manifest_text, Some(wasm), &[])
     }
     /// The `.hmod` bytes for `manifest_text`, a component if the mod has
-    /// code, and content `files` (`assets/...`, `data/...`) by path.
+    /// code, and content `files` (`assets/...`, `data/...`, and the listed
+    /// `datapacks/<name>/...`) by path.
     pub fn write_files(
         manifest_text: &str,
         wasm: Option<&[u8]>,
         files: &[(&str, &[u8])],
     ) -> Result<Vec<u8>, String> {
         use std::io::Write;
-        Manifest::parse(manifest_text)?;
+        let parsed = Manifest::parse(manifest_text)?;
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         let err = |e: zip::result::ZipError| e.to_string();
@@ -495,7 +526,11 @@ impl Package {
             put(WASM, wasm)?;
         }
         for (name, bytes) in files {
-            crate::content::check_path(name)?;
+            if name.starts_with("datapacks/") {
+                crate::datapacks::check_name(name, &parsed.datapacks)?;
+            } else {
+                crate::content::check_path(name)?;
+            }
             put(name, bytes)?;
         }
         Ok(zip.finish().map_err(err)?.into_inner())
@@ -603,6 +638,35 @@ experimental = ["ui", "recipes"]
                 .check_code_imports(imports, &["browser-ext.poll".into()])
                 .is_ok()
         );
+    }
+
+    fn pack_toml(api: &str, datapacks: &str) -> String {
+        format!("id = \"d\"\nname = \"D\"\nversion = \"1\"\napi = \"{api}\"\n{datapacks}\n")
+    }
+
+    #[test]
+    fn datapack_names_are_checked() {
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"a\", \"b_1\"]")).is_ok());
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"A\"]")).is_err());
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"a/b\"]")).is_err());
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"a\", \"a\"]")).is_err());
+        assert!(Manifest::parse(&pack_toml("0.1", "datapacks = [\"a\"]")).is_err());
+        let many: Vec<String> = (0..17).map(|i| format!("\"p{i}\"")).collect();
+        let many = format!("datapacks = [{}]", many.join(","));
+        assert!(Manifest::parse(&pack_toml("0.2", &many)).is_err());
+    }
+
+    #[test]
+    fn a_codeless_mod_needs_registries_or_datapacks() {
+        let dir = std::env::temp_dir().join(format!("hm-codeless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MANIFEST), pack_toml("0.2", "datapacks = [\"a\"]")).unwrap();
+        assert!(Package::read(&dir).unwrap().wasm.is_none());
+        std::fs::write(dir.join(MANIFEST), pack_toml("0.2", "")).unwrap();
+        let e = Package::read(&dir).err().unwrap();
+        assert!(e.contains("mod.wasm: missing"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

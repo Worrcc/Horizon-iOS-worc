@@ -678,6 +678,34 @@ still add theirs, as a higher data pack does. Since the result depends on load o
 of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
 namespaces.
 
+### Data packs in a mod
+
+A mod can ship whole world data packs, for the worldgen a content mod may not touch. It lists them in
+`horizon-mod.toml` and keeps each one as a folder under `datapacks/`. A mod may hold nothing but data packs: it
+needs no code and no capability.
+
+```toml
+api = "0.2"
+datapacks = ["upheaval_normal", "upheaval_extreme"]
+```
+
+Each `datapacks/<name>/` holds `pack.mcmeta` (with a `pack` object), optionally `pack.png`, and `data/<namespace>/...`
+files ending in `.json`, `.mcfunction` or `.nbt`. Nothing else is accepted: no `assets/`, no code, no archives.
+Names are `[a-z0-9_]{1,64}` in the manifest, at most 16 per mod, `api = "0.2"` is required, and path parts use
+`[a-z0-9_.-]` with no `.`, `..`, backslash or symbolic link. A file may be up to 16 MiB, and all packs together up to
+65536 files and 128 MiB. A `datapacks/` folder whose pack is not listed is refused.
+
+The `minecraft` namespace is allowed here, so a pack may change noise, density functions, noise settings and
+dimension types, which the content fence above refuses a mod. That is safe because the player opts in per world:
+Create World > Data Packs lists each pack of a mod that is on, switched off, as "name (mod)". When the player picks
+one, the game copies it into `<world>/datapacks/mod.<mod>.<pack>/` and enables it as `file/mod.<mod>.<pack>`. From
+then on it is an ordinary world pack: it keeps working if the mod is removed, and `/datapack` and Re-Create World
+treat it like any other. Packs are not offered for a world that already exists.
+
+**Older builds reject unknown manifest fields**, including `datapacks`: a mod that lists them needs a Horizon with
+mod data packs and refuses to load on older ones. This changes no API level (it stays 32) and adds no capability,
+since the packs are data and the player picks them per world.
+
 Damage types use vanilla files at `data/<namespace>/damage_type/<name>.json`,
 with required `message_id`, `scaling` and `exhaustion` fields, plus optional
 `effects` and `death_message_type`. Resource-root files and enabled world packs

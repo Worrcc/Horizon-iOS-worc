@@ -598,6 +598,7 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
             if Package::has_manifest(path) {
                 let m = Package::read(path)?.manifest;
                 crate::Content::read(path, &m)?;
+                crate::datapacks::check(path, &m)?;
             }
             Ok(facts)
         }
@@ -610,6 +611,7 @@ pub fn inspect(kind: &Kind, path: &Path) -> Result<Facts, String> {
             }
             let Package { manifest: m, wasm } = Package::read(path)?;
             crate::Content::read(path, &m)?;
+            crate::datapacks::check(path, &m)?;
             let api_level = match wasm {
                 Some(wasm) => {
                     let functions = crate::api_level::imports(&wasm)?;
