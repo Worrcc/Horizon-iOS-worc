@@ -5,10 +5,10 @@
 //! frame's own (gamma) values, as vanilla's main target does, and needs a
 //! swapchain that can be copied from.
 //!
-//! On a software adapter (WARP, llvmpipe) the rounds run at half the frame's
-//! width and height with half the radius: the same blur, a quarter of the
+//! On a software adapter (WARP, llvmpipe) and on Apple GPUs the rounds run at half the
+//! frame's width and height with half the radius: the same blur, a quarter of the
 //! pixels. At full size they took 250 ms of a CPU per frame at 1440x900, and
-//! every blurred menu ran at 3 FPS (#5185).
+//! every blurred menu ran at 3 FPS (#5185); on Apple's tile GPUs they cost battery.
 
 /// `blur.json`: the passes' directions, ping-ponging between the copied
 /// frame and a swap texture; the last one writes the frame.
@@ -39,13 +39,13 @@ pub struct MenuBlur {
     targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
     size: [u32; 2],
     format: wgpu::TextureFormat,
-    /// Blur at half size (`new`'s `software`).
+    /// Blur at half size (`new`'s `half`).
     half: bool,
 }
 impl MenuBlur {
-    /// `format` is the swapchain's; the blur works in its non-sRGB view. `software`:
-    /// the adapter renders on the CPU, so the blur runs at half size.
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, software: bool) -> Self {
+    /// `format` is the swapchain's; the blur works in its non-sRGB view. `half`:
+    /// the adapter renders on the CPU or is an Apple GPU, so the blur runs at half size.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, half: bool) -> Self {
         let format = format.remove_srgb_suffix();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Menu blur"),
@@ -139,7 +139,7 @@ impl MenuBlur {
             targets: Vec::new(),
             size: [0, 0],
             format,
-            half: software,
+            half,
         }
     }
     /// The size the blur's rounds run at for a frame of `size`.
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(blurred(&device, &queue, &mut blur, size), first);
     }
 
-    /// On a software adapter the blur runs at half size and still blurs the
+    /// On a software or Apple adapter the blur runs at half size and still blurs the
     /// frame much as at full size: stripes two pixels wide turn to an even grey.
     #[test]
     fn the_half_size_blur_blurs_like_the_full_size_one() {

@@ -1,10 +1,33 @@
 //! iOS runtime overrides and ten-second, in-world diagnostics.
 #[cfg(target_os = "ios")]
 use super::Game;
+#[cfg(target_os = "ios")]
+use horizon_client::lang;
 use horizon_client::spans::{self, Span};
 #[cfg(target_os = "ios")]
 use horizon_ios::{ThermalState, thermal::Governor};
 use std::time::{Duration, Instant};
+
+/// What the phone's screen shows, for its frame cap.
+#[cfg(any(target_os = "ios", test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum PhoneScreen {
+    Gameplay,
+    PausedSingleplayer,
+    InWorldScreen,
+    OutOfWorld,
+}
+
+/// The frame cap for a screen: the single-player pause screen 30, other screens 60,
+/// gameplay as it is.
+#[cfg(any(target_os = "ios", test))]
+pub(super) fn phone_screen_cap(limit: i32, screen: PhoneScreen) -> i32 {
+    match screen {
+        PhoneScreen::Gameplay => limit,
+        PhoneScreen::PausedSingleplayer => limit.min(30),
+        PhoneScreen::InWorldScreen | PhoneScreen::OutOfWorld => limit.min(60),
+    }
+}
 
 #[cfg(target_os = "ios")]
 #[derive(Default)]
@@ -16,6 +39,19 @@ pub(super) struct PhonePerf {
     cap: Option<i32>,
     log: PerfLog,
     frame_at: Option<Instant>,
+    usage_from: Option<(Instant, horizon_threads::process_usage::Usage)>,
+    background: bool,
+    offer: PhoneOffer,
+}
+
+/// The one-time offer of the phone defaults.
+#[cfg(target_os = "ios")]
+#[derive(Default)]
+enum PhoneOffer {
+    #[default]
+    NotYet,
+    Shown(horizon_ios::AlertId),
+    Done,
 }
 
 #[cfg(target_os = "ios")]
@@ -23,6 +59,7 @@ impl PhonePerf {
     pub(super) fn suspend(&mut self) {
         self.log.suspend();
         self.frame_at = None;
+        self.usage_from = None;
         // Time in the background cannot prove uninterrupted cooling.
         self.governor.update(self.governor.state, Duration::ZERO);
     }
@@ -39,9 +76,8 @@ impl Game<'_> {
         } else {
             p.governor = Governor::default();
         }
-        let scale = p
-            .governor
-            .resolution_scale(self.settings.horizon.resolution_scale);
+        let scale = self.phone_scale();
+        let p = &mut self.phone_perf;
         if p.scale != Some(scale)
             && let Some(r) = &mut self.renderer
         {
@@ -49,16 +85,97 @@ impl Game<'_> {
             r.set_world_post(scale as f32 / 100.0, g.fxaa, g.taa, g.upscaling.ratio());
             p.scale = Some(scale);
         }
+        self.offer_phone_defaults();
+    }
+
+    /// Offers the phone defaults once per install, on the title screen, to settings that
+    /// still have the desktop defaults. Either answer is remembered.
+    fn offer_phone_defaults(&mut self) {
+        match self.phone_perf.offer {
+            PhoneOffer::Done => {}
+            PhoneOffer::NotYet => {
+                if self.title.is_none()
+                    || !super::account::idle()
+                    || self.started.elapsed() < Duration::from_secs(3)
+                {
+                    return;
+                }
+                if !self.settings.horizon.phone_defaults_offered
+                    && self.settings.phone_defaults_due()
+                {
+                    let id = horizon_ios::show_alert(
+                        &lang::get("horizon.ios.phone_defaults.title"),
+                        &lang::get("horizon.ios.phone_defaults.message"),
+                        &[
+                            &lang::get("horizon.ios.phone_defaults.apply"),
+                            &lang::get("horizon.ios.phone_defaults.keep"),
+                        ],
+                    );
+                    self.phone_perf.offer = PhoneOffer::Shown(id);
+                } else {
+                    if !self.settings.horizon.phone_defaults_offered {
+                        self.settings.horizon.phone_defaults_offered = true;
+                        self.settings.save(&Self::options_path());
+                    }
+                    self.phone_perf.offer = PhoneOffer::Done;
+                }
+            }
+            PhoneOffer::Shown(id) => {
+                let Some(answer) = horizon_ios::alert_answer(id) else {
+                    return;
+                };
+                if answer == 0 {
+                    self.settings.apply_phone_defaults();
+                    log::info!("Horizon: phone defaults applied");
+                }
+                self.settings.horizon.phone_defaults_offered = true;
+                self.settings.save(&Self::options_path());
+                self.phone_perf.offer = PhoneOffer::Done;
+            }
+        }
+    }
+
+    pub(super) fn phone_low_power(&self) -> bool {
+        self.phone_perf.low_power
+    }
+
+    pub(super) fn set_phone_background(&mut self, on: bool) {
+        self.phone_perf.background = on;
+    }
+
+    pub(super) fn phone_in_background(&self) -> bool {
+        self.phone_perf.background
     }
 
     pub(super) fn phone_resolution_scale(&self) -> u32 {
-        self.phone_perf
-            .governor
-            .resolution_scale(self.settings.horizon.resolution_scale)
+        self.phone_scale()
+    }
+
+    /// The resolution scale in force: the player's, lowered by heat, and in Low Power Mode
+    /// (both follow the Thermal Throttling switch).
+    fn phone_scale(&self) -> u32 {
+        self.phone_perf.governor.resolution_scale_low_power(
+            self.settings.horizon.resolution_scale,
+            self.phone_perf.low_power && self.settings.horizon.thermal_throttling,
+        )
     }
 
     pub(super) fn phone_frame_cap(&self, limit: i32) -> i32 {
-        self.phone_perf.governor.frame_cap(limit)
+        self.phone_perf
+            .governor
+            .frame_cap(phone_screen_cap(limit, self.phone_screen()))
+    }
+
+    fn phone_screen(&self) -> PhoneScreen {
+        if self.title.is_some() {
+            PhoneScreen::OutOfWorld
+        } else if self.screen == super::Screen::Paused && self.pauses_game() {
+            PhoneScreen::PausedSingleplayer
+        } else if self.screen != super::Screen::Playing {
+            PhoneScreen::InWorldScreen
+        } else {
+            PhoneScreen::Gameplay
+        }
     }
 
     pub(super) fn phone_display_cap(&mut self, cap: i32) {
@@ -82,17 +199,22 @@ impl Game<'_> {
             .map_or_else(|| (None, Vec::new()), |r| r.phone_gpu_timings());
         if self.title.is_some() || self.player.is_none() || self.remote_loading() {
             self.phone_perf.log = PerfLog::default();
+            self.phone_perf.usage_from = None;
             return;
         }
         if !rendered {
             return;
         }
         let cap = self.framerate_limit();
+        let scale = self.phone_scale();
         let p = &mut self.phone_perf;
         let gpu = self
             .renderer
             .as_ref()
             .map_or(&[][..], |r| r.gpu_times.as_slice());
+        if p.usage_from.is_none() {
+            p.usage_from = horizon_threads::process_usage::sample().map(|u| (now, u));
+        }
         let Some(stats) = p
             .log
             .record(now, elapsed, cpu, gpu, frame_id, &samples, spans)
@@ -106,32 +228,64 @@ impl Game<'_> {
             || "n/a".into(),
             |bytes| format!("{:.1}", bytes as f64 / 1048576.0),
         );
+        let usage = horizon_threads::process_usage::sample();
+        let rates = match (p.usage_from, usage) {
+            (Some((at, prev)), Some(new)) => {
+                horizon_threads::process_usage::rates(&prev, &new, now - at)
+            }
+            _ => None,
+        };
+        p.usage_from = usage.map(|u| (now, u));
+        let usage_fields = usage_fields(rates.as_ref());
         let worst_gpu = stats
             .worst
             .gpu_ms
             .map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}"));
         log::info!(
-            "perf: avg_fps={:.1} low_1pct_ms={:.2} low_0.1pct_ms={:.2} cpu_ms={:.2} gpu_ms={} render_distance={} resolution_scale={} fps_cap={} thermal={:?} low_power={} governor={:?} governor_enabled={} resident_mib={} slow_frames={} worst_ms={:.1} worst_gpu_ms={} worst=[{}]",
+            "perf: avg_fps={:.1} low_1pct_ms={:.2} low_0.1pct_ms={:.2} cpu_ms={:.2} gpu_ms={} render_distance={} resolution_scale={} fps_cap={} thermal={:?} low_power={} governor={:?} governor_enabled={} resident_mib={}{} slow_frames={} worst_ms={:.1} worst_gpu_ms={} worst=[{}]",
             stats.fps,
             stats.low_1,
             stats.low_01,
             stats.cpu_ms,
             gpu,
             self.settings.render_distance,
-            p.governor
-                .resolution_scale(self.settings.horizon.resolution_scale),
+            scale,
             cap,
             p.thermal,
             p.low_power,
             p.governor.state,
             self.settings.horizon.thermal_throttling,
             memory,
+            usage_fields,
             stats.slow_frames,
             stats.worst.ms,
             worst_gpu,
             stats.worst.describe(),
         );
     }
+}
+
+/// The battery fields of the `perf:` line; values the OS did not report are left out.
+#[cfg(any(target_os = "ios", test))]
+fn usage_fields(r: Option<&horizon_threads::process_usage::Rates>) -> String {
+    let Some(r) = r else {
+        return String::new();
+    };
+    let mut out = format!(
+        " proc_cpu_ms_s={:.0} ctx_switches_s={:.0}",
+        r.cpu_ms_per_s, r.context_switches_per_s
+    );
+    if let (Some(idle), Some(intr), Some(gpu)) = (
+        r.idle_wakeups_per_s,
+        r.interrupt_wakeups_per_s,
+        r.gpu_ms_per_s,
+    ) {
+        out += &format!(" idle_wakeups_s={idle:.0} intr_wakeups_s={intr:.0} gpu_ms_s={gpu:.0}");
+    }
+    if let Some(mw) = r.energy_mw {
+        out += &format!(" energy_mw={mw:.0}");
+    }
+    out
 }
 
 #[derive(Default)]
@@ -469,6 +623,54 @@ mod tests {
             frames.frame(Duration::from_secs(38), |_, _| {
                 panic!("background gap reported")
             });
+        }
+    }
+
+    #[test]
+    fn usage_fields_list_only_what_the_os_reported() {
+        use horizon_threads::process_usage::Rates;
+        assert_eq!(usage_fields(None), "");
+        let mut r = Rates {
+            cpu_ms_per_s: 250.0,
+            context_switches_per_s: 500.0,
+            energy_mw: None,
+            idle_wakeups_per_s: None,
+            interrupt_wakeups_per_s: None,
+            gpu_ms_per_s: None,
+        };
+        assert_eq!(
+            usage_fields(Some(&r)),
+            " proc_cpu_ms_s=250 ctx_switches_s=500"
+        );
+        r.idle_wakeups_per_s = Some(40.0);
+        r.interrupt_wakeups_per_s = Some(12.0);
+        r.gpu_ms_per_s = Some(300.0);
+        let text = usage_fields(Some(&r));
+        assert!(
+            text.ends_with(" idle_wakeups_s=40 intr_wakeups_s=12 gpu_ms_s=300"),
+            "{text}"
+        );
+        assert!(!text.contains("energy_mw"));
+        r.energy_mw = Some(1000.0);
+        assert!(usage_fields(Some(&r)).ends_with(" energy_mw=1000"));
+    }
+
+    #[test]
+    fn screens_cap_the_phone_frame_rate() {
+        use PhoneScreen::*;
+        for (limit, screen, expected) in [
+            (120, Gameplay, 120),
+            (120, PausedSingleplayer, 30),
+            (20, PausedSingleplayer, 20),
+            (120, InWorldScreen, 60),
+            (120, OutOfWorld, 60),
+            (30, OutOfWorld, 30),
+        ] {
+            assert_eq!(
+                phone_screen_cap(limit, screen),
+                expected,
+                "{limit} {screen:?}"
+            );
         }
     }
 }

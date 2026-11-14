@@ -755,6 +755,12 @@ pub struct Graphics {
     pub battery: bool,
     #[cfg(target_os = "ios")]
     pub thermal_throttling: bool,
+    /// iOS: the one-time offer of the phone defaults was answered.
+    #[cfg(target_os = "ios")]
+    pub phone_defaults_offered: bool,
+    /// iOS: draw at 2x the screen's points instead of 3x (read at window creation).
+    #[cfg(target_os = "ios")]
+    pub display_scale_2x: bool,
     /// Reuse the shader pack's last shadow map when sun, view, scene revision and
     /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
     /// (or every `shadowInterval`), and a hit with a stale key shows old shadows.
@@ -827,6 +833,10 @@ impl Default for Graphics {
             battery: false,
             #[cfg(target_os = "ios")]
             thermal_throttling: true,
+            #[cfg(target_os = "ios")]
+            phone_defaults_offered: false,
+            #[cfg(target_os = "ios")]
+            display_scale_2x: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
             translucent_batching: true,
@@ -980,6 +990,10 @@ impl Graphics {
                 "batteryMode" => g.battery = flag(g.battery),
                 #[cfg(target_os = "ios")]
                 "thermalThrottling" => g.thermal_throttling = flag(g.thermal_throttling),
+                #[cfg(target_os = "ios")]
+                "phoneDefaultsOffered" => g.phone_defaults_offered = flag(g.phone_defaults_offered),
+                #[cfg(target_os = "ios")]
+                "displayScale2x" => g.display_scale_2x = flag(g.display_scale_2x),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
@@ -1058,6 +1072,11 @@ impl Graphics {
         #[cfg(target_os = "ios")]
         {
             text += &format!("thermalThrottling:{}\n", bool_text(self.thermal_throttling));
+            text += &format!(
+                "phoneDefaultsOffered:{}\n",
+                bool_text(self.phone_defaults_offered)
+            );
+            text += &format!("displayScale2x:{}\n", bool_text(self.display_scale_2x));
         }
         text += &self.blue_map.serialize();
         text
@@ -1286,6 +1305,10 @@ mod tests {
             battery: true,
             #[cfg(target_os = "ios")]
             thermal_throttling: false,
+            #[cfg(target_os = "ios")]
+            phone_defaults_offered: true,
+            #[cfg(target_os = "ios")]
+            display_scale_2x: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
             translucent_batching: false,

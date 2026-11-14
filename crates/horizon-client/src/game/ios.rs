@@ -26,15 +26,25 @@ use winit::{
 /// does). Forcing landscape fought hosts that run apps in their own orientation (LiveContainer):
 /// iOS then rotated the view itself, and the picture no longer filled the screen. The app's
 /// Info.plist still makes an installed app landscape-only.
-pub(super) fn window_attributes(mut attributes: WindowAttributes) -> WindowAttributes {
+///
+/// `scale_2x` (the Lower Display Scale setting) draws at 2x the screen's points instead of the
+/// screen's own 3x; it applies here, at window creation, only.
+pub(super) fn window_attributes(
+    mut attributes: WindowAttributes,
+    scale_2x: bool,
+) -> WindowAttributes {
     // No size: winit makes an iOS window exactly the size asked for, so the desktop's 1280 x 720
     // gave a window larger than a phone's screen, partly off it. Without one it is the screen.
     attributes.inner_size = None;
-    attributes
+    attributes = attributes
         .with_valid_orientations(ValidOrientations::LandscapeAndPortrait)
         .with_prefers_status_bar_hidden(true)
         .with_prefers_home_indicator_hidden(true)
-        .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
+        .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL);
+    if scale_2x {
+        attributes = attributes.with_scale_factor(2.0);
+    }
+    attributes
 }
 
 thread_local! {
@@ -321,6 +331,7 @@ pub(super) fn show_error(title: &'static str, message: String) -> Result<()> {
 impl Game<'_> {
     /// `applicationWillResignActive`: Control Center, a call, the app switcher, the home screen.
     pub(super) fn enter_background(&mut self, event_loop: &ActiveEventLoop) {
+        self.set_phone_background(true);
         self.phone_perf.suspend();
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {
             // iOS sends no Focused: a lost focus pauses (Gui.setPauseScreen) and lets go of
@@ -349,6 +360,7 @@ impl Game<'_> {
 
     /// `applicationDidBecomeActive`.
     pub(super) fn leave_background(&mut self, event_loop: &ActiveEventLoop) {
+        self.set_phone_background(false);
         // Background redraws may have restarted the log since suspend.
         self.phone_perf.suspend();
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {

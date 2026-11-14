@@ -158,6 +158,13 @@ pub trait LimiterClock {
     fn park(&mut self, nanos: i64);
     /// `Thread.onSpinWait`.
     fn spin(&mut self);
+    /// Sleeps until the clock reads `deadline_ns`.
+    fn park_until(&mut self, deadline_ns: i64) {
+        let left = deadline_ns - self.nanos();
+        if left > 0 {
+            self.park(left)
+        }
+    }
     /// `Thread.interrupted`: an interrupted limiter skips that sleep.
     fn interrupted(&mut self) -> bool {
         false
@@ -165,7 +172,9 @@ pub trait LimiterClock {
 }
 
 /// The real clock: `System.nanoTime` from a fixed origin, sleeping for
-/// `LockSupport.parkNanos` and a CPU spin hint for `Thread.onSpinWait`.
+/// `LockSupport.parkNanos` and a CPU spin hint for `Thread.onSpinWait`. Where the OS
+/// has one (macOS, iOS, Linux, Android) a sleep is a single wait to an absolute
+/// deadline: unlike a relative sleep it is not stretched by timer coalescing.
 #[derive(Clone, Copy, Debug)]
 pub struct SystemClock {
     origin: std::time::Instant,
@@ -182,24 +191,46 @@ impl LimiterClock for SystemClock {
         i64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(i64::MAX)
     }
     fn park(&mut self, nanos: i64) {
-        let end = self.nanos().saturating_add(nanos);
+        if horizon_threads::sleep::ABSOLUTE {
+            let end = self.nanos().saturating_add(nanos);
+            self.park_until(end);
+        } else {
+            let end = self.nanos().saturating_add(nanos);
+            self.park_in_steps_until(end);
+        }
+    }
+    fn park_until(&mut self, deadline_ns: i64) {
+        if horizon_threads::sleep::ABSOLUTE {
+            horizon_threads::sleep::sleep_until(
+                self.origin + std::time::Duration::from_nanos(deadline_ns.max(0) as u64),
+            );
+        } else {
+            self.park_in_steps_until(deadline_ns);
+        }
+    }
+    fn spin(&mut self) {
+        std::hint::spin_loop();
+    }
+}
+impl SystemClock {
+    /// The relative-sleep fallback (Windows): short steps up to `end`.
+    fn park_in_steps_until(&self, end: i64) {
+        let mut clock = *self;
         park_in_steps(
             end,
-            || self.nanos(),
+            || clock.nanos(),
             |step| {
                 std::thread::sleep(std::time::Duration::from_nanos(step as u64));
             },
         );
-    }
-    fn spin(&mut self) {
-        std::hint::spin_loop();
     }
 }
 
 /// The longest single sleep of [`SystemClock::park`].
 const PARK_STEP_NS: i64 = 1_000_000;
 
-/// Sleeps until `now()` reaches `end`, at most [`PARK_STEP_NS`] at a time. macOS lets
+/// Sleeps until `now()` reaches `end`, at most [`PARK_STEP_NS`] at a time: the way of a
+/// system with no absolute-deadline sleep (Windows). macOS lets
 /// a sleep run late by a share of its length (timer coalescing: 1.8-3.5 ms on a 14 ms
 /// sleep, 0.25 ms on 1 ms), more than the limiter's overshoot margin can learn (capped
 /// at 2 ms): a 60 FPS cap gave frames of 17-20 ms. Short steps keep the lateness to
@@ -214,9 +245,10 @@ fn park_in_steps(end: i64, mut now: impl FnMut() -> i64, mut sleep: impl FnMut(i
     }
 }
 
-/// The real clock without busy waiting: where vanilla spins on
-/// `Thread.onSpinWait` for the last half millisecond, this sleeps in short
-/// steps, so a capped frame rate leaves the core idle.
+/// The real clock without busy waiting: it sleeps to the deadline in one
+/// absolute-deadline wait, and only the short tail before it (see
+/// [`FramerateLimiter::limit_on_grid`]) spins, so a capped frame rate leaves the
+/// core idle.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SleepingClock(pub SystemClock);
 impl LimiterClock for SleepingClock {
@@ -226,8 +258,11 @@ impl LimiterClock for SleepingClock {
     fn park(&mut self, nanos: i64) {
         self.0.park(nanos);
     }
+    fn park_until(&mut self, deadline_ns: i64) {
+        self.0.park_until(deadline_ns);
+    }
     fn spin(&mut self) {
-        std::thread::sleep(std::time::Duration::from_micros(50));
+        std::hint::spin_loop();
     }
 }
 
@@ -305,13 +340,33 @@ impl FramerateLimiter {
             self.last_frame_time = clock.nanos();
             return;
         }
-        self.wait_until(deadline, clock);
+        self.wait_on_grid(deadline, clock);
         let woke = clock.nanos();
         self.last_frame_time = if woke - deadline > period / 2 {
             woke
         } else {
             deadline
         };
+    }
+    /// The grid's wait: one sleep to an absolute deadline `tail` before `deadline`
+    /// (the learned overshoot, between 100 us and 500 us), then a short spin.
+    fn wait_on_grid(&mut self, deadline: i64, clock: &mut impl LimiterClock) {
+        const GRID_SPIN_NS: i64 = 100_000; // the spin tail's floor
+        const GRID_SPIN_MAX_NS: i64 = 500_000; // never spin longer: battery
+        let tail = (GRID_SPIN_NS + self.average_overshoot_ns).min(GRID_SPIN_MAX_NS);
+        let wake = deadline - tail;
+        if clock.nanos() < wake && !clock.interrupted() {
+            clock.park_until(wake);
+            let late = clock.nanos() - wake;
+            if late > 0 && late < 25_000_000 {
+                self.average_overshoot_ns =
+                    (0.1 * late as f64 + 0.9 * self.average_overshoot_ns as f64) as i64;
+                self.average_overshoot_ns = self.average_overshoot_ns.min(2_000_000);
+            }
+        }
+        while clock.nanos() < deadline {
+            clock.spin();
+        }
     }
     /// `limitDisplayFPS`'s wait: sleep to within the learned overshoot and half a
     /// millisecond of `target_time_ns`, then spin.
@@ -954,5 +1009,121 @@ mod tests {
         assert_eq!(list.refresh(None, &mut modes), Some(vec![]));
         assert_eq!(list.refresh(Some(2), &mut modes), Some(vec![mode(2)]));
         assert_eq!(listings, 3);
+    }
+
+    /// A clock that counts `park_until` calls and wakes each one `oversleep` ns late,
+    /// spinning in `SPIN_STEP` steps.
+    struct Deadline {
+        now: i64,
+        oversleep: i64,
+        parks: usize,
+        spins: usize,
+    }
+    const SPIN_STEP: i64 = 10_000;
+    impl LimiterClock for Deadline {
+        fn nanos(&mut self) -> i64 {
+            self.now
+        }
+        fn park(&mut self, nanos: i64) {
+            let until = self.now + nanos;
+            self.park_until(until);
+        }
+        fn park_until(&mut self, deadline_ns: i64) {
+            self.parks += 1;
+            self.now = self.now.max(deadline_ns) + self.oversleep;
+        }
+        fn spin(&mut self) {
+            self.spins += 1;
+            self.now += SPIN_STEP;
+        }
+    }
+    #[test]
+    fn the_grid_sleeps_once_a_frame_and_learns_to_wake_just_in_time() {
+        let period = 1_000_000_000 / 120;
+        let mut clock = Deadline {
+            now: 0,
+            oversleep: 300_000,
+            parks: 0,
+            spins: 0,
+        };
+        let mut limiter = FramerateLimiter::new(0);
+        let mut ends = Vec::new();
+        for frame in 0..200 {
+            clock.now += 2_000_000;
+            let parks = clock.parks;
+            end_frame_on_grid(&mut limiter, 120, &mut clock);
+            assert_eq!(clock.parks - parks, 1, "frame {frame}");
+            let deadline = (frame as i64 + 1) * period;
+            if frame >= 50 {
+                let late = clock.now - deadline;
+                assert!(
+                    (0..=150_000).contains(&late),
+                    "frame {frame}: {late} ns late"
+                );
+            }
+            ends.push(clock.now);
+        }
+        let mean = (ends[199] - ends[49]) as f64 / 150.0;
+        assert!((mean - 1e9 / 120.0).abs() < 10_000.0, "mean period {mean}");
+    }
+    #[test]
+    fn the_grid_never_spins_longer_than_its_cap_however_late_sleeps_run() {
+        let mut clock = Deadline {
+            now: 0,
+            oversleep: 3_000_000,
+            parks: 0,
+            spins: 0,
+        };
+        let mut limiter = FramerateLimiter::new(0);
+        for frame in 0..200 {
+            clock.now += 2_000_000;
+            clock.spins = 0;
+            end_frame_on_grid(&mut limiter, 120, &mut clock);
+            let spun = clock.spins as i64 * SPIN_STEP;
+            assert!(spun <= 500_000, "frame {frame} spun {spun} ns");
+        }
+        assert!(limiter.average_overshoot_ns() <= 2_000_000);
+    }
+
+    /// Voluntary context switches of this thread so far.
+    #[cfg(target_os = "linux")]
+    fn thread_voluntary_switches() -> u64 {
+        std::fs::read_to_string("/proc/thread-self/status")
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+    /// Runs 60 frames of 2 ms "work" at a 60 FPS cap and returns the thread's
+    /// voluntary context switches per frame.
+    #[cfg(target_os = "linux")]
+    fn switches_per_frame<C: LimiterClock>(
+        mut clock: C,
+        end: impl Fn(&mut FramerateLimiter, &mut C),
+    ) -> f64 {
+        let mut limiter = FramerateLimiter::new(clock.nanos());
+        let before = thread_voluntary_switches();
+        for _ in 0..60 {
+            let start = std::time::Instant::now();
+            while start.elapsed() < std::time::Duration::from_millis(2) {
+                std::hint::spin_loop();
+            }
+            end(&mut limiter, &mut clock);
+        }
+        (thread_voluntary_switches() - before) as f64 / 60.0
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "timing: measures wake-ups"]
+    fn efficient_pacing_wakes_about_once_a_frame() {
+        let efficient =
+            switches_per_frame(SleepingClock::default(), |l, c| end_frame_on_grid(l, 60, c));
+        eprintln!("efficient: switches per frame {efficient:.2}");
+        let precise = switches_per_frame(SystemClock::default(), |l, c| end_frame(l, 60, c));
+        eprintln!("precise: switches per frame {precise:.2}");
+        assert!(efficient < 3.0, "{efficient} switches per frame");
     }
 }

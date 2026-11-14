@@ -330,6 +330,21 @@ impl Settings {
             .and_then(|mode| self.video_modes.iter().position(|m| *m == mode))
             .map_or(-1, |i| i as i32)
     }
+    /// Whether the saved settings still have the desktop defaults a phone is offered other
+    /// defaults for (100% resolution scale and 120 FPS).
+    pub fn phone_defaults_due(&self) -> bool {
+        self.horizon.resolution_scale == 100 && self.max_fps == 120
+    }
+    /// The phone's first-run defaults, applied to existing settings: 75% resolution, 60 FPS,
+    /// and render 8 / simulation 6 where they are still the plain defaults (12 and 12).
+    pub fn apply_phone_defaults(&mut self) {
+        self.horizon.resolution_scale = 75;
+        self.max_fps = 60;
+        if self.render_distance == 12 && self.simulation_distance == 12 {
+            self.render_distance = 8;
+            self.simulation_distance = 6;
+        }
+    }
     fn first_run_defaults(ios: bool, missing: bool) -> Self {
         let mut settings = Self::default();
         if ios && missing {
@@ -878,6 +893,32 @@ mod tests {
             (s.render_distance, s.simulation_distance, s.max_fps),
             (18, 10, 150)
         );
+    }
+
+    #[test]
+    fn phone_defaults_are_offered_for_the_desktop_defaults_and_keep_chosen_distances() {
+        let mut s = Settings::default();
+        assert!(s.phone_defaults_due());
+        s.apply_phone_defaults();
+        assert!(!s.phone_defaults_due());
+        assert_eq!(
+            (
+                s.render_distance,
+                s.simulation_distance,
+                s.max_fps,
+                s.horizon.resolution_scale
+            ),
+            (8, 6, 60, 75)
+        );
+        let mut s = Settings {
+            render_distance: 16,
+            ..Settings::default()
+        };
+        s.apply_phone_defaults();
+        assert_eq!((s.render_distance, s.simulation_distance), (16, 12));
+        let mut s = Settings::default();
+        s.horizon.resolution_scale = 90;
+        assert!(!s.phone_defaults_due());
     }
 
     #[test]

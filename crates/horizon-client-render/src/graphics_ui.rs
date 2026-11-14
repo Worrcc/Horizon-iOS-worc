@@ -107,6 +107,8 @@ pub enum H {
     BatteryMode,
     #[cfg(target_os = "ios")]
     ThermalThrottling,
+    #[cfg(target_os = "ios")]
+    DisplayScale2x,
     ShadowCache,
     GraphicsApi,
     TranslucentBatching,
@@ -467,6 +469,12 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::ThermalThrottling,
                             None,
                             "horizon.options.thermal_throttling.tooltip",
+                        ),
+                        #[cfg(target_os = "ios")]
+                        h(
+                            H::DisplayScale2x,
+                            None,
+                            "horizon.options.display_scale_2x.tooltip",
                         ),
                     ],
                 ),
@@ -879,6 +887,11 @@ impl H {
                 "horizon.options.thermal_throttling",
                 on_off(g.thermal_throttling),
             ),
+            #[cfg(target_os = "ios")]
+            H::DisplayScale2x => labelled(
+                "horizon.options.display_scale_2x",
+                on_off(g.display_scale_2x),
+            ),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
@@ -1005,6 +1018,8 @@ impl H {
             H::BatteryMode => g.battery = !g.battery,
             #[cfg(target_os = "ios")]
             H::ThermalThrottling => g.thermal_throttling = !g.thermal_throttling,
+            #[cfg(target_os = "ios")]
+            H::DisplayScale2x => g.display_scale_2x = !g.display_scale_2x,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
@@ -1120,6 +1135,8 @@ impl Item {
             Item::Horizon(H::BatteryMode) => g.battery,
             #[cfg(target_os = "ios")]
             Item::Horizon(H::ThermalThrottling) => g.thermal_throttling,
+            #[cfg(target_os = "ios")]
+            Item::Horizon(H::DisplayScale2x) => g.display_scale_2x,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Horizon(H::TranslucentBatching) => {
                 g.translucent_batching && crate::graphics::translucent_batching_offered()
@@ -1178,7 +1195,10 @@ impl Item {
     /// A preset no longer describes the settings once one of them changes.
     fn touched(self, s: &mut Settings) {
         #[cfg(target_os = "ios")]
-        if self == Item::Horizon(H::ThermalThrottling) {
+        if matches!(
+            self,
+            Item::Horizon(H::ThermalThrottling | H::DisplayScale2x)
+        ) {
             return;
         }
         let presetless = matches!(

@@ -220,6 +220,31 @@ impl Game<'_> {
         })
     }
 
+    /// How often the mods' frame hook runs: everywhere but on a phone, every frame. On a
+    /// phone it is thinned to save battery, except while a mod's own screen or the
+    /// container the mods draw on is up, and on the frame the container opens or closes
+    /// (the condition of `mod_container_lifecycle`), so those events are never delayed.
+    #[cfg(not(target_os = "ios"))]
+    pub(super) fn mod_frame_rate(&self) -> super::mods::FrameRate {
+        super::mods::FrameRate::Full
+    }
+    #[cfg(target_os = "ios")]
+    pub(super) fn mod_frame_rate(&self) -> super::mods::FrameRate {
+        use super::mods::FrameRate;
+        let lifecycle_changes =
+            (self.screen == Screen::Inventory && self.player.is_some()) != self.mods.container.open;
+        if (self.screen == Screen::Mod && self.mods.screen_open())
+            || self.mods.container.open
+            || lifecycle_changes
+        {
+            FrameRate::Full
+        } else if self.pauses_game() {
+            FrameRate::Paused
+        } else {
+            FrameRate::Hz(if self.phone_low_power() { 30 } else { 60 })
+        }
+    }
+
     pub(super) fn mod_container_lifecycle(&mut self) {
         let open = self.screen == Screen::Inventory && self.player.is_some();
         if open == self.mods.container.open {

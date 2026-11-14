@@ -35,6 +35,44 @@ use {
     winit::{event::MouseButton, keyboard::KeyCode},
 };
 
+/// How often the WASM mods' frame hook runs.
+// Off iOS the rate is always `Full`; the other variants are the phone's.
+#[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum FrameRate {
+    Full,
+    Paused,
+    Hz(u32),
+}
+
+/// Thins the mods' frame hook to a rate, handing on the time it skipped.
+#[cfg_attr(not(any(feature = "mods", test)), allow(dead_code))]
+#[derive(Default)]
+pub(super) struct ModFrameGate {
+    pending: Duration,
+}
+#[cfg_attr(not(any(feature = "mods", test)), allow(dead_code))]
+impl ModFrameGate {
+    /// Frame-time jitter must not halve 60 Hz at 60 FPS.
+    const SLACK: Duration = Duration::from_millis(2);
+
+    /// The time to hand the frame hook now, or None to skip this frame.
+    pub(super) fn step(&mut self, elapsed: Duration, rate: FrameRate) -> Option<Duration> {
+        match rate {
+            FrameRate::Full => Some(std::mem::take(&mut self.pending) + elapsed),
+            FrameRate::Paused => {
+                self.pending = Duration::ZERO;
+                None
+            }
+            FrameRate::Hz(n) => {
+                self.pending += elapsed;
+                (self.pending + Self::SLACK >= Duration::from_secs(1) / n.max(1))
+                    .then(|| std::mem::take(&mut self.pending))
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ModsState {
     #[cfg(feature = "mods")]
@@ -192,6 +230,9 @@ pub(super) struct ModsState {
     pub(super) canvas_screen: Option<super::mod_canvas_screen::CanvasScreenHost>,
     #[cfg(feature = "mods")]
     pub(super) container: super::mod_container::ContainerScreenHost,
+    /// Thins the frame hook on a phone.
+    #[cfg(feature = "mods")]
+    frame_gate: ModFrameGate,
     /// The HUD font's advances for `render.text-width`, made once.
     #[cfg(feature = "mods")]
     font_widths: std::sync::Arc<[f32]>,
@@ -1279,6 +1320,12 @@ impl Game<'_> {
             return;
         }
         self.mod_input_frame();
+        let rate = self.mod_frame_rate();
+        let Some(elapsed) = self.mods.frame_gate.step(elapsed, rate) else {
+            self.upload_mod_canvas();
+            self.show_mod_output();
+            return;
+        };
         if self.mods.mods.wants_frames() {
             let snapshot = self.mod_snapshot();
             self.mods.mods.set_snapshot(snapshot);
@@ -2744,5 +2791,88 @@ mod tests {
         assert!(ghoul.ai.goals.has("RandomLookAround") && !ghoul.ai.goals.has("ToPost"));
         assert!(ghoul.ai.targets.has("NearestTarget"));
         assert!(!ghoul.ai.nav.can_float, "a zombie has no FloatGoal");
+    }
+}
+
+#[cfg(test)]
+mod frame_gate_tests {
+    use super::*;
+
+    fn ms(x: f64) -> Duration {
+        Duration::from_secs_f64(x / 1000.0)
+    }
+
+    #[test]
+    fn sixty_hz_at_120_fps_fires_every_second_frame_with_both_frames_of_time() {
+        let mut gate = ModFrameGate::default();
+        let frame = ms(1000.0 / 120.0);
+        for i in 0..10 {
+            let handed = gate.step(frame, FrameRate::Hz(60));
+            if i % 2 == 0 {
+                assert_eq!(handed, None, "frame {i}");
+            } else {
+                let handed = handed.unwrap_or_else(|| panic!("frame {i} skipped"));
+                assert!(
+                    (handed.as_secs_f64() * 1000.0 - 16.667).abs() < 0.01,
+                    "{handed:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jittery_sixty_fps_still_runs_sixty_hz_every_frame() {
+        let mut gate = ModFrameGate::default();
+        for i in 0..20 {
+            let frame = ms(if i % 2 == 0 { 15.7 } else { 17.7 });
+            assert_eq!(
+                gate.step(frame, FrameRate::Hz(60)),
+                Some(frame),
+                "frame {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn thirty_hz_at_60_fps_fires_every_second_frame() {
+        let mut gate = ModFrameGate::default();
+        let fired: Vec<bool> = (0..6)
+            .map(|_| gate.step(ms(1000.0 / 60.0), FrameRate::Hz(30)).is_some())
+            .collect();
+        assert_eq!(fired, [false, true, false, true, false, true]);
+    }
+
+    #[test]
+    fn paused_time_is_not_handed_on_later() {
+        let mut gate = ModFrameGate::default();
+        gate.step(ms(5.0), FrameRate::Hz(30));
+        for _ in 0..5 {
+            assert_eq!(gate.step(ms(16.0), FrameRate::Paused), None);
+        }
+        assert_eq!(gate.step(ms(16.0), FrameRate::Full), Some(ms(16.0)));
+    }
+
+    #[test]
+    fn the_handed_time_is_all_the_elapsed_time_except_paused_frames() {
+        let mut gate = ModFrameGate::default();
+        let plan = [
+            (FrameRate::Hz(30), 16.0),
+            (FrameRate::Hz(30), 17.0),
+            (FrameRate::Paused, 16.0),
+            (FrameRate::Full, 7.0),
+            (FrameRate::Hz(60), 6.0),
+            (FrameRate::Hz(60), 6.0),
+            (FrameRate::Hz(60), 6.0),
+            (FrameRate::Full, 1.0),
+        ];
+        let mut handed = Duration::ZERO;
+        let mut elapsed = Duration::ZERO;
+        for (rate, frame) in plan {
+            if rate != FrameRate::Paused {
+                elapsed += ms(frame);
+            }
+            handed += gate.step(ms(frame), rate).unwrap_or_default();
+        }
+        assert_eq!(handed, elapsed);
     }
 }

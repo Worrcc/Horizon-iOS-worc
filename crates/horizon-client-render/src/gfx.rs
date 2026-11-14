@@ -1891,6 +1891,13 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
 fn is_software(kind: wgpu::DeviceType) -> bool {
     kind == wgpu::DeviceType::Cpu
 }
+/// Whether the menu blur runs at half size: on a software adapter (#5185), and on Apple's
+/// tile GPUs (iOS, Apple-silicon Macs), where the six full-size passes cost battery.
+fn blur_at_half_size(info: &wgpu::AdapterInfo) -> bool {
+    is_software(info.device_type)
+        || cfg!(target_os = "ios")
+        || (info.backend == wgpu::Backend::Metal && info.name.starts_with("Apple"))
+}
 /// A device and what it came from.
 struct Opened {
     instance: wgpu::Instance,
@@ -11022,9 +11029,9 @@ impl Renderer {
         if let Some(radius) = menu_blur {
             let format = self.frame_format;
             let device = &self.device;
-            let software = is_software(self.info.device_type);
+            let half = blur_at_half_size(&self.info);
             self.menu_blur
-                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format, software))
+                .get_or_insert_with(|| crate::menu_blur::MenuBlur::new(device, format, half))
                 .apply(
                     &self.device,
                     &self.queue,
@@ -11731,6 +11738,38 @@ mod tests {
         assert!(super::occlusion_culling_requested(&discrete, None));
         assert!(super::occlusion_culling_requested(&cpu, Some("all")));
         assert!(!super::occlusion_culling_requested(&discrete, Some("0")));
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn the_menu_blur_runs_at_half_size_on_software_and_apple_gpus_only() {
+        let named = |kind, backend, name: &str| {
+            let mut info = adapter(kind);
+            info.backend = backend;
+            info.name = name.into();
+            info
+        };
+        let half = super::blur_at_half_size;
+        assert!(half(&named(
+            wgpu::DeviceType::Cpu,
+            wgpu::Backend::Vulkan,
+            "llvmpipe"
+        )));
+        assert!(half(&named(
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::Backend::Metal,
+            "Apple M2"
+        )));
+        assert!(!half(&named(
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::Backend::Metal,
+            "AMD Radeon Pro 5500M"
+        )));
+        assert!(!half(&named(
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::Backend::Vulkan,
+            "NVIDIA GeForce"
+        )));
     }
 
     /// Translucent Batching is offered with indirect multi-draws that aren't OpenGL's, flat

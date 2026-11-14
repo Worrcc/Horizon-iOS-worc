@@ -7,6 +7,8 @@ pub mod boot_paint;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;
+pub mod process_usage;
+pub mod sleep;
 
 use std::sync::{
     OnceLock,
@@ -227,7 +229,8 @@ fn far() -> bool {
 /// terrain on the efficiency cores long after the near chunks were in, and
 /// it took minutes to settle. On Linux and Android an unprivileged thread
 /// can't raise its priority again: it stays behind (`behind_server`), as it
-/// always has there, and this changes nothing. Whether the OS took it.
+/// always has there, and this changes nothing. On iOS the far terrain stays at
+/// utility quality for good too, to save battery. Whether the OS took it.
 #[cfg(any(target_vendor = "apple", windows))]
 pub fn far_terrain_behind(behind: bool) -> bool {
     // Both set the class or priority outright: calling again is harmless.
@@ -239,10 +242,16 @@ pub fn far_terrain_behind(_behind: bool) -> bool {
     false
 }
 
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", not(target_os = "ios")))]
 fn far_back() -> bool {
     // SAFETY: sets the calling thread's own QoS class; no pointers.
     unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_DEFAULT, 0) == 0 }
+}
+
+// Phones keep far terrain on the efficiency cores for battery; slower far loading is accepted.
+#[cfg(target_os = "ios")]
+fn far_back() -> bool {
+    far()
 }
 
 #[cfg(windows)]

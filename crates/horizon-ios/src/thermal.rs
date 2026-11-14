@@ -28,7 +28,7 @@ impl Governor {
 
     pub fn frame_cap(&self, player: i32) -> i32 {
         match self.state {
-            ThermalState::Serious => player.min(60),
+            ThermalState::Fair | ThermalState::Serious => player.min(60),
             ThermalState::Critical => player.min(30),
             _ => player,
         }
@@ -39,6 +39,16 @@ impl Governor {
             ThermalState::Serious => player.saturating_sub(15).max(50),
             ThermalState::Critical => 50,
             _ => player,
+        }
+    }
+
+    /// [`Self::resolution_scale`], lowered by another 15 (never below 50) in Low Power Mode.
+    pub fn resolution_scale_low_power(&self, player: u32, low_power: bool) -> u32 {
+        let scale = self.resolution_scale(player);
+        if low_power {
+            scale.saturating_sub(15).max(50)
+        } else {
+            scale
         }
     }
 }
@@ -82,12 +92,29 @@ mod tests {
             (30, 20, 50)
         );
         g.update(Fair, Duration::from_secs(60));
-        assert_eq!((g.frame_cap(120), g.resolution_scale(75)), (120, 75));
+        assert_eq!((g.frame_cap(120), g.resolution_scale(75)), (60, 75));
         g.update(Serious, Duration::from_secs(61));
         assert_eq!(
             (g.frame_cap(120), g.frame_cap(20), g.resolution_scale(75)),
             (60, 20, 60)
         );
         assert_eq!(g.resolution_scale(50), 50);
+    }
+
+    #[test]
+    fn fair_caps_at_sixty_and_low_power_lowers_the_scale() {
+        let mut g = Governor::default();
+        g.update(Nominal, Duration::ZERO);
+        assert_eq!(g.frame_cap(120), 120);
+        g.update(Fair, Duration::from_secs(1));
+        assert_eq!((g.frame_cap(120), g.frame_cap(30)), (60, 30));
+        let mut g = Governor::default();
+        let low = |g: &Governor, player| g.resolution_scale_low_power(player, true);
+        assert_eq!((low(&g, 100), low(&g, 75), low(&g, 55)), (85, 60, 50));
+        assert_eq!(g.resolution_scale_low_power(75, false), 75);
+        g.update(Serious, Duration::ZERO);
+        assert_eq!(low(&g, 75), 50);
+        g.update(Critical, Duration::from_secs(1));
+        assert_eq!(low(&g, 75), 50);
     }
 }

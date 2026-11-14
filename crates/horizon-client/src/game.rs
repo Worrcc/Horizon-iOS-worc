@@ -17781,6 +17781,7 @@ impl ApplicationHandler for Game<'_> {
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.offscreen),
+            &self.settings.horizon,
         )) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -19551,9 +19552,14 @@ impl Game<'_> {
         }
         // Consume the last frame's result: a hidden compositor may stop sending
         // redraws altogether, leaving a successful result stale indefinitely.
+        #[cfg(target_os = "ios")]
+        let background = self.phone_in_background();
+        #[cfg(not(target_os = "ios"))]
+        let background = false;
         event_loop.set_control_flow(event_loop::redraw_flow(
             &mut self.frame_drawn,
             self.options.offscreen,
+            background,
             Instant::now(),
         ));
     }
@@ -21926,11 +21932,17 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
 
 /// The window's attributes as this system takes them: iOS has its own
 /// (`ios::window_attributes`), applied last so they win.
-fn platform_window(attributes: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+fn platform_window(
+    attributes: winit::window::WindowAttributes,
+    horizon: &horizon_client::graphics::Graphics,
+) -> winit::window::WindowAttributes {
     #[cfg(target_os = "ios")]
-    return ios::window_attributes(attributes);
+    return ios::window_attributes(attributes, horizon.display_scale_2x);
     #[cfg(not(target_os = "ios"))]
-    attributes
+    {
+        let _ = horizon;
+        attributes
+    }
 }
 
 /// Set by [`quit`]: the event loop is to end.
@@ -22040,6 +22052,7 @@ impl Loading {
                 .with_inner_size(winit::dpi::LogicalSize::new(size[0], size[1]))
                 .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
                 .with_visible(!self.options.as_ref().is_some_and(|o| o.offscreen)),
+            &self.settings.horizon,
         )) {
             Ok(w) => Arc::new(w),
             Err(e) => {
