@@ -38,6 +38,7 @@ pub(super) struct PhonePerf {
     low_power: bool,
     scale: Option<u32>,
     pub(super) bloom: Option<u8>,
+    pub(super) shadows: Option<u8>,
     cap: Option<i32>,
     log: PerfLog,
     frame_at: Option<Instant>,
@@ -105,6 +106,27 @@ impl Game<'_> {
                 _ => horizon_client::gfx::BloomLevel::High,
             });
             p.bloom = Some(effective);
+        }
+        let player = match self.settings.horizon.shadows {
+            horizon_client::graphics::Shadows::Off => 0,
+            horizon_client::graphics::Shadows::Low => 1,
+            horizon_client::graphics::Shadows::Medium => 2,
+            horizon_client::graphics::Shadows::High => 3,
+        };
+        let effective = player.min(
+            p.governor
+                .shadow_cap(p.low_power && self.settings.horizon.thermal_throttling),
+        );
+        if p.shadows != Some(effective)
+            && let Some(r) = &mut self.renderer
+        {
+            r.set_shadows(match effective {
+                0 => horizon_client::gfx::ShadowLevel::Off,
+                1 => horizon_client::gfx::ShadowLevel::Low,
+                2 => horizon_client::gfx::ShadowLevel::Medium,
+                _ => horizon_client::gfx::ShadowLevel::High,
+            });
+            p.shadows = Some(effective);
         }
         self.offer_phone_defaults();
     }

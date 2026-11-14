@@ -41,6 +41,15 @@ struct Globals {
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
     hdr_light: vec4<f32>,
+    // Built-in sun shadows (gfx/sun_shadow.rs): a pixel of the world target (x, y in pixels,
+    // its depth) into the map, homogeneous; a camera-relative position into the map.
+    shadow_pixel: mat4x4<f32>,
+    shadow_view_proj: mat4x4<f32>,
+    // x the strength now (0: off), y the normal offset in blocks, z how far the shadows
+    // reach, w the depth bias.
+    shadow: vec4<f32>,
+    // xyz toward the light.
+    shadow_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -61,6 +70,9 @@ struct Globals {
 @group(0) @binding(12) var emission_thresholds: texture_2d<f32>;
 // How many sprite arrays hold layers (a pipeline constant): 1 for vanilla,
 // which then samples exactly as before.
+// The built-in sun shadow map and its comparison (gfx/sun_shadow.rs).
+@group(0) @binding(13) var sun_shadow_map: texture_depth_2d;
+@group(0) @binding(14) var sun_shadow_sampler: sampler_comparison;
 override SPRITE_ARRAYS: u32 = 1u;
 override SPRITE_SPLIT: u32 = 2048u;
 // A sprite sampled with the given gradients, from whichever array holds its layer.
@@ -297,6 +309,46 @@ fn sample_lightmap(sky: f32, block: f32) -> vec4<f32> {
     let uv = vec2(block, sky) * 16.0;
     return textureSampleLevel(lightmap, lightmap_sampler,
         clamp(uv / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)), 0.0);
+}
+// Built-in sun shadows (gfx/sun_shadow.rs): what the sky light level is scaled by at the point
+// `at` in the map (already moved off its face), on a face turned `facing` toward the light
+// (its normal's dot with it), `distance` blocks from the camera: 1 in the light, 1 - strength
+// in shadow, fading out toward the reach. Faces turned away keep vanilla's light without a
+// lookup (its side shading already darkens them); the others take one hardware 2x2
+// comparison, and grazing ones fade into the turned-away ones.
+fn sun_shadow_scale(at: vec3<f32>, facing: f32, distance: f32) -> f32 {
+    if facing <= 0.0 {
+        return 1.0;
+    }
+    let reach = globals.shadow.z;
+    let fade = 1.0 - smoothstep(0.75 * reach, reach, distance);
+    let uv = at.xy * vec2(0.5, -0.5) + 0.5;
+    let lit = textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv,
+        at.z - globals.shadow.w);
+    let shade = (1.0 - lit) * smoothstep(0.0, 0.1, facing);
+    return 1.0 - globals.shadow.x * fade * shade;
+}
+// The lit colour `color` (a texel times the vertex's lightmap colour at `scene`: block, sky
+// levels) with only its sky light scaled by `scale`: torches and other block light stay.
+fn sun_shadowed(color: vec3<f32>, scene: vec2<f32>, scale: f32) -> vec3<f32> {
+    if scale >= 1.0 {
+        return color;
+    }
+    let lit = sample_lightmap(scene.y, scene.x).rgb;
+    let shaded = sample_lightmap(scene.y * scale, scene.x).rgb;
+    return color * shaded / max(lit, vec3(1.0 / 255.0));
+}
+// `sun_shadowed` for a rasterised solid pixel, its position found back from its own depth.
+// Called only while shadows are on (`globals.shadow.x`, uniform), so the derivatives hold.
+fn sun_shadow_pixel(in: TerrainOut, color: vec3<f32>) -> vec3<f32> {
+    let n = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    if in.scene.y <= 0.0 || in.spherical >= globals.shadow.z {
+        return color;
+    }
+    let p = globals.shadow_pixel * vec4(in.clip.xyz, 1.0);
+    let at = p.xyz / p.w + (globals.shadow_view_proj * vec4(n * globals.shadow.y, 0.0)).xyz;
+    let scale = sun_shadow_scale(at, dot(n, globals.shadow_light.xyz), in.spherical);
+    return sun_shadowed(color, in.scene, scale);
 }
 // mesher.rs's TerrainVertex holds the UV in fixed point; the instance's
 // origin.w is the step: 1/32768 per unit for sections (a power of two on an
@@ -625,6 +677,9 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
+    if globals.shadow.x > 0.0 {
+        color = vec4(sun_shadow_pixel(in, color.rgb), color.a);
+    }
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     return solid_finish(in, texel, color);
 }
@@ -644,9 +699,14 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
+    // The fade-in's mix below keeps the alpha: cut out first, so that no shadow is looked up
+    // for a hole.
+    if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    if globals.shadow.x > 0.0 {
+        color = vec4(sun_shadow_pixel(in, color.rgb), color.a);
+    }
     // terrain.fsh: the fade-in mixes toward the fog colour.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
-    if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
     return solid_finish(in, texel, color);
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.

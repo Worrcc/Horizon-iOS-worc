@@ -7,7 +7,7 @@
 use crate::{
     graphics::{
         Bloom, EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode,
-        Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
+        Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Shadows, Upscaling,
     },
     graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
@@ -93,6 +93,7 @@ pub enum H {
     Antialiasing,
     Upscaling,
     Bloom,
+    Shadows,
     ScreenshotQuality,
     FrameGeneration,
     Hdr,
@@ -331,6 +332,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
                         ),
                         h(H::Bloom, Medium, "Adds a soft glow around bright areas."),
+                        h(
+                            H::Shadows,
+                            High,
+                            "Blocks cast shadows from the sun and moon. Torches stay lit.",
+                        ),
                         h(
                             H::Upscaling,
                             High,
@@ -851,6 +857,7 @@ impl H {
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
             H::Bloom => labelled("Bloom", g.bloom.label()),
+            H::Shadows => labelled("Shadows", g.shadows.label()),
             H::ScreenshotQuality => {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
@@ -1000,6 +1007,7 @@ impl H {
                 }
             }
             H::Bloom => g.bloom = step(&Bloom::ALL, g.bloom, back),
+            H::Shadows => g.shadows = step(&Shadows::ALL, g.shadows, back),
             // Upscaling is TAA's: picking a ratio turns it on.
             H::Upscaling => {
                 g.upscaling = step(&Upscaling::ALL, g.upscaling, back);

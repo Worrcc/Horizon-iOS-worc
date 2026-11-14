@@ -38,6 +38,18 @@ impl Governor {
         }
     }
 
+    /// Shadow quality cap: Off, Low, Medium, High. Off from Fair up and in Low Power Mode;
+    /// the same cooling hysteresis as FPS lifts it.
+    pub fn shadow_cap(&self, low_power: bool) -> u8 {
+        if low_power {
+            return 0;
+        }
+        match self.state {
+            ThermalState::Fair | ThermalState::Serious | ThermalState::Critical => 0,
+            _ => 3,
+        }
+    }
+
     pub fn frame_cap(&self, player: i32) -> i32 {
         match self.state {
             ThermalState::Fair | ThermalState::Serious => player.min(60),
@@ -88,6 +100,25 @@ mod tests {
             g.update(observed, Duration::from_secs(seconds));
             assert_eq!(g.bloom_cap(false), cap, "at {seconds}s");
             assert_eq!(g.bloom_cap(true), 0);
+        }
+    }
+
+    #[test]
+    fn shadow_cap_is_off_from_fair_and_in_low_power_until_cooled() {
+        let mut g = Governor::default();
+        assert_eq!(g.shadow_cap(false), 3);
+        assert_eq!(g.shadow_cap(true), 0);
+        for (seconds, observed, cap) in [
+            (0, Fair, 0),
+            (1, Serious, 0),
+            (2, Fair, 0),
+            (33, Fair, 0),
+            (34, Nominal, 0),
+            (64, Nominal, 3),
+        ] {
+            g.update(observed, Duration::from_secs(seconds));
+            assert_eq!(g.shadow_cap(false), cap, "at {seconds}s");
+            assert_eq!(g.shadow_cap(true), 0);
         }
     }
 

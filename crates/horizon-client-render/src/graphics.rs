@@ -476,6 +476,58 @@ impl Bloom {
     }
 }
 
+/// Built-in sun and moon shadows (`gfx/sun_shadow.rs`); independent of shader packs, which
+/// bring their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shadows {
+    Off,
+    Low,
+    Medium,
+    High,
+}
+impl Default for Shadows {
+    fn default() -> Self {
+        if cfg!(target_os = "ios") {
+            Self::Low
+        } else {
+            Self::Off
+        }
+    }
+}
+impl Shadows {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Low, Self::Medium, Self::High];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|v| v.name() == s)
+            .unwrap_or_default()
+    }
+    pub fn render_level(self) -> crate::gfx::ShadowLevel {
+        match self {
+            Self::Off => crate::gfx::ShadowLevel::Off,
+            Self::Low => crate::gfx::ShadowLevel::Low,
+            Self::Medium => crate::gfx::ShadowLevel::Medium,
+            Self::High => crate::gfx::ShadowLevel::High,
+        }
+    }
+}
+
 /// TAA upscaling: the world renders this much smaller than the resolution scale's size,
 /// and TAA builds the full-size picture from the jittered frames (FSR's and DLSS's ratios).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -773,6 +825,7 @@ pub struct Graphics {
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
     pub bloom: Bloom,
+    pub shadows: Shadows,
     /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
     pub screenshot_quality: u32,
     /// Frame generation (Horizon setting), off by default.
@@ -870,6 +923,7 @@ impl Default for Graphics {
             taa: false,
             upscaling: Upscaling::Native,
             bloom: Bloom::default(),
+            shadows: Shadows::default(),
             screenshot_quality: 1,
             frame_generation: FrameGeneration::Off,
             hdr: false,
@@ -1012,6 +1066,7 @@ impl Graphics {
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "bloom" => g.bloom = Bloom::parse(value),
+                "shadows" => g.shadows = Shadows::parse(value),
                 "screenshotQuality" => {
                     g.screenshot_quality = Some(number(0))
                         .filter(|q| SCREENSHOT_QUALITIES.contains(q))
@@ -1063,7 +1118,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nbloom:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nbloom:{}\nshadows:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrLighting:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1103,6 +1158,7 @@ impl Graphics {
             bool_text(self.taa),
             self.upscaling.name(),
             self.bloom.name(),
+            self.shadows.name(),
             self.screenshot_quality,
             self.frame_generation.name(),
             bool_text(self.hdr),
@@ -1345,6 +1401,7 @@ mod tests {
             taa: true,
             upscaling: Upscaling::Balanced,
             bloom: Bloom::High,
+            shadows: Shadows::Medium,
             screenshot_quality: 4,
             frame_generation: FrameGeneration::Fsr31,
             hdr: true,

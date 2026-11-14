@@ -115,7 +115,7 @@ Not implemented: anisotropic filtering (wgpu needs linear magnification for it, 
 
 `HORIZON_VISBUFFER=1` (read at startup, off by default) draws solid terrain through a visibility buffer (`gfx/visbuffer.rs`, `visbuffer.wgsl`). Pass 1 rasterises the solid draws, near sections and far terrain alike, writing only depth and, per pixel, a 32-bit ID of the quad it shows (bit 31 set, the arena page in bits 22 to 30, the quad in that page below); cutout and fading quads keep their alpha test and dither there, the other quads never discard, so a tiled GPU still hides what lies behind them. Pass 2 is one full-screen draw with up to 16 arena pages bound (more pages, more draws; one draw per page made each GPU thread group shade once for every page among its pixels, 36 ms instead of 2 at 1440p): it reads the quad's corners from its page and its section's origin (through a copy of the drawn pages' block tables in one buffer) as the vertex shaders do, runs the terrain vertex code on the triangle the pixel falls in, interpolates with perspective-correct barycentrics (homogeneous 2D rasterisation, so corners behind the camera need no clipping) and works out the UV's screen gradients over that triangle as `dpdxFine`/`dpdyFine` would, so the texel, mip level and RGSS blend, light, HDR marks and fog come out as in the normal path. Both passes sample only the side of RGSS's blend with nearest texels that it keeps (one tap where the texels are large), which gives the same value. Each solid pixel is then shaded once, however many quads were drawn over it and however small they are.
 
-It runs only in frames drawn flat (Metal past `flat::MIN_SECTIONS` sections in view, or `HORIZON_FLAT_DRAWS=1` elsewhere), with or without occlusion culling. Frames with a shader pack's terrain, one of Horizon's own packs with a material stage or a shadow pass, a pack's surface target, and the title screen keep the normal solid passes, as do translucent terrain and the water mirror's own pass.
+It runs only in frames drawn flat (Metal past `flat::MIN_SECTIONS` sections in view, or `HORIZON_FLAT_DRAWS=1` elsewhere), with or without occlusion culling. Frames with a shader pack's terrain, one of Horizon's own packs with a material stage or a shadow pass, a pack's surface target, and the title screen keep the normal solid passes, as do translucent terrain and the water mirror's own pass. The built-in Shadows (below) keep it: the resolve reads the map once per pixel.
 
 ## Benchmark
 
@@ -236,3 +236,54 @@ controls these runtime caps, preserving the player's saved setting.
 
 `Renderer::set_bloom_scale` is the M3 `post-keys` hook: a multiplier clamped to
 0–2 (default 1), within the player's chosen quality. M1 adds no mod API.
+
+## Shadows
+
+Shadows (Off, Low, Medium, High; Off by default on desktop, Low on iOS) are built-in sun and
+moon shadows without a shader pack (`gfx/sun_shadow.rs`, `sun_shadow.wgsl`, terrain.wgsl's
+`sun_shadow_*`). One square `Depth16Unorm` map covers the player's surroundings: Low 768² over
+32 blocks, Medium 1024² over 48, High 2048² over 96 (each side, plus the 8-block cell the
+map's centre snaps to). The light is the sun while it is up, else the moon; shadows fade out
+between about 17 and 5 degrees above the horizon. Faces turned away from the light keep
+vanilla's light and take no lookup (its side shading already darkens them); the others take
+one `textureSampleCompareLevel` (one hardware 2x2 comparison), offset along the normal by 1.5
+map texels against acne, with a slope-scaled bias in the caster pass. A shadow scales only
+the sky light level the lightmap is read at (`sky * (1 - strength)`, the strength 0.5 by
+default), so torches, lava and other block light stay lit under it; the faces fade back to
+unshadowed over the last quarter of the reach.
+
+The map is cached. It is drawn again when the light has moved more than half a degree, when
+the player walks into another cell, or when what a section near the map casts changed (a
+hash of its solid quads' positions and sprite layers: remeshes that only change light leave
+it), no sooner than 4 frames after the last draw for the light or the cell, 30 for terrain.
+The caster pass is a depth-only pass of its own before the world (`Renderer::draw_sun_shadow`):
+the solid sections in the light's box, nearest the light first, their faces that can face it,
+cutouts alpha-tested. It draws from its own lists and instance buffer, so the camera's frame
+is untouched: unlike a shader pack's shadow pass (which shares the camera's lists, and so
+forces flat draws, turns the visibility buffer off, keeps the packed layout off under one of
+Horizon's own packs and leaves GPU culling to the CPU), built-in shadows keep flat draws, the
+compact layout, the visibility buffer (its resolve reads the map once per pixel from the
+barycentric position) and GPU culling. Nothing is lost on Metal: the camera's opaque pass
+stays free of `discard` (Apple's hidden-surface removal), and the caster pass reads the arena
+pages the flat draws bind, in either layout of the solid quads. High also lets entities cast:
+each frame the cached map is copied into a second one and the entities' opaque quads are drawn
+over it; mobs then lose their vanilla blob shadows (`pack_entity_shadows`). Below High mobs
+keep their blob shadows. Water, the water mirror and the hand get no built-in shadows; with
+HDR output the shadowed sky light is not taken out of HDR's lift.
+
+Shadows are off on the title screen, in dimensions without a sky (the Nether, the End), and
+under a `shaders/` pack or one of Horizon's own packs (their shadows win). On iOS the thermal
+governor turns them off from Fair up and in Low Power Mode, back on after the 30-second
+cooling hysteresis (`Governor::shadow_cap`; the Thermal Throttling switch controls it).
+`Renderer::set_shadow_strength` (0 to 1) is the M3 `post-keys` hook; M2 adds no mod API. The
+`perf:` line's `shadow_ms` is the caster passes' GPU time and `shadow_updates_s` the map's
+draws per second; `horizon-ctl status` reports `renderer.sun_shadows` and
+`renderer.shadow_updates`.
+
+Measured on an RX 6650 XT (Vulkan, 1280x720, a 7x7 platform over a stone floor, render
+distance 12; GPU time per frame over 6 s, 120 FPS): Off 0.74 ms; Low 0.83, Medium 0.84
+(sampling, about +0.1 ms); High 1.25 (+0.5: the per-frame map copy and entity pass); with the
+sun stepping every 0.25 s (3 map draws a second) Medium averages 0.85 ms, p95 1.10. The CPU's
+render phase stays at 0.16-0.17 ms. With GPU culling on (its frames stay GPU-culled) Off 0.84,
+Medium 0.98; with flat draws and the visibility buffer forced (`HORIZON_FLAT_DRAWS=1
+HORIZON_VISBUFFER=1`) Off 1.05, Medium 1.11. Phone numbers are M4's.

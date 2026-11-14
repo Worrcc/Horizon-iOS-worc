@@ -409,7 +409,10 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     // HDR output alone reads the light levels and the face's normal (as in `fs_opaque`):
     // `terrain_vertex` gives them as the block light over 16 and the sky light over 16, and the
     // section-relative position.
-    if globals.hdr_light.z != 0.0 {
+    // Built-in sun shadows read them too, and the position.
+    let shadows = globals.shadow.x > 0.0;
+    var normal = vec3(0.0);
+    if globals.hdr_light.z != 0.0 || shadows {
         let local = array(bitcast<vec3<f32>>(p0), bitcast<vec3<f32>>(select(p1, p2, second)),
             bitcast<vec3<f32>>(select(p2, p3, second)));
         // `t.scene` is still the first corner's.
@@ -417,11 +420,19 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
         t.local = b.x * local[0] + b.y * local[1] + b.z * local[2];
         let dlx = (bx.x * local[0] + bx.y * local[1] + bx.z * local[2] - t.local) * toward.x;
         let dly = (by.x * local[0] + by.y * local[1] + by.z * local[2] - t.local) * toward.y;
-        hdr_normal = normalize(cross(dly, dlx));
+        normal = normalize(cross(dly, dlx));
+        hdr_normal = normal;
     }
     // `fs_opaque` and `solid_color` past their discards, which pass 1 already made.
     let texel = vis_sprite(t.uv, t.layer & 0x7fffu, du, dv);
     var color = texel * t.color;
+    // Once per pixel, from the position the barycentrics give.
+    if shadows && t.scene.y > 0.0 && t.spherical < globals.shadow.z {
+        let pos = t.local + origin.xyz + normal * globals.shadow.y;
+        let at = (globals.shadow_view_proj * vec4(pos, 1.0)).xyz;
+        let scale = sun_shadow_scale(at, dot(normal, globals.shadow_light.xyz), t.spherical);
+        color = vec4(sun_shadowed(color.rgb, t.scene, scale), color.a);
+    }
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, t.visibility);
     return solid_finish_at(t, texel, color, du, dv);
 }

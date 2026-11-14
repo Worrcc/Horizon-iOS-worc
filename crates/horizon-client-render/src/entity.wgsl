@@ -34,6 +34,11 @@ struct Globals {
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water.
     hdr_light: vec4<f32>,
+    // Built-in sun shadows (terrain.wgsl reads them).
+    shadow_pixel: mat4x4<f32>,
+    shadow_view_proj: mat4x4<f32>,
+    shadow: vec4<f32>,
+    shadow_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

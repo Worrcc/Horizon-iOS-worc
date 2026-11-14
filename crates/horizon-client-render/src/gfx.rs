@@ -205,6 +205,7 @@ mod reuse;
 pub mod sky_sprites;
 mod stars;
 pub mod submit;
+mod sun_shadow;
 mod sunrise_fan;
 mod timing;
 pub use timing::Sample as GpuSample;
@@ -215,6 +216,7 @@ mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
 pub use bloom::BloomLevel;
+pub use sun_shadow::ShadowLevel;
 pub mod world_primitives;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
@@ -421,6 +423,27 @@ struct Globals {
     /// full (`hdr::Hdr::windows`); zero without HDR.
     hdr_windows: [[f32; 4]; 2],
     hdr_light: [f32; 4],
+    /// Built-in sun shadows (`sun_shadow`): a world-target pixel into the map; a
+    /// camera-relative position into it; strength, normal offset, reach, depth bias; toward
+    /// the light. Zero without shadows.
+    shadow_pixel: [[f32; 4]; 4],
+    shadow_view_proj: [[f32; 4]; 4],
+    shadow: [f32; 4],
+    shadow_light: [f32; 4],
+}
+/// A frame's built-in shadows (`Renderer::prepare_sun_shadow`).
+struct SunFrame {
+    /// The map is drawn again this frame.
+    draw: bool,
+    /// The entities cast (High).
+    entities: bool,
+    /// Toward the light the map was drawn for.
+    dir: Vec3,
+    centre: [i64; 3],
+    light_view_proj: Mat4,
+    camera_view_proj: Mat4,
+    /// `Globals`' `shadow` and `shadow_light`.
+    inputs: [[f32; 4]; 2],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1382,6 +1405,8 @@ pub struct Renderer {
     emission_stats: hdr_stats::EmissionStats,
     /// `emission_stats` measured for bloom's marks (HDR output measures its own).
     bloom_emission_measured: bool,
+    /// Built-in sun and moon shadows (`sun_shadow`).
+    sun_shadow: sun_shadow::SunShadow,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
     /// What every pipeline that draws the frame targets: the swapchain's 8-bit format, or
@@ -1589,6 +1614,91 @@ fn sprite_sampler_descriptor(anisotropy: u16) -> wgpu::SamplerDescriptor<'static
 fn sampler_anisotropy(bit: i32) -> u16 {
     1u16 << bit.clamp(0, 4)
 }
+/// terrain.wgsl's group 0 layout.
+fn terrain_layout_entries() -> [wgpu::BindGroupLayoutEntry; 15] {
+    let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty,
+        count: None,
+    };
+    let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
+    let sprite_array = wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D2Array,
+        multisampled: false,
+    };
+    [
+        entry(
+            0,
+            vf,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+        ),
+        entry(
+            1,
+            vf,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+        ),
+        entry(
+            1 + 1,
+            vf,
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        ),
+        entry(
+            3,
+            vf,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        ),
+        entry(
+            4,
+            vf,
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        ),
+        entry(5, vf, sprite_array),
+        entry(6, vf, sprite_array),
+        entry(7, vf, sprite_array),
+        entry(8, vf, sprite_array),
+        entry(9, vf, sprite_array),
+        entry(10, vf, sprite_array),
+        entry(11, vf, sprite_array),
+        entry(
+            12,
+            vf,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        ),
+        // The built-in sun shadow map and its comparison (`sun_shadow`).
+        entry(
+            13,
+            wgpu::ShaderStages::FRAGMENT,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        ),
+        entry(
+            14,
+            wgpu::ShaderStages::FRAGMENT,
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+        ),
+    ]
+}
 /// terrain.wgsl's group 0.
 #[allow(clippy::too_many_arguments)]
 fn terrain_group(
@@ -1601,6 +1711,7 @@ fn terrain_group(
     lightmap: &wgpu::TextureView,
     lightmap_sampler: &wgpu::Sampler,
     emission_thresholds: &wgpu::TextureView,
+    sun_shadow: (&wgpu::TextureView, &wgpu::Sampler),
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -1632,6 +1743,11 @@ fn terrain_group(
             view(10, &sprites[6]),
             view(11, &sprites[7]),
             view(12, emission_thresholds),
+            view(13, sun_shadow.0),
+            wgpu::BindGroupEntry {
+                binding: 14,
+                resource: wgpu::BindingResource::Sampler(sun_shadow.1),
+            },
         ],
     })
 }
@@ -2616,11 +2732,6 @@ impl Renderer {
             count: None,
         };
         let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
-        let sprite_array = wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-            view_dimension: wgpu::TextureViewDimension::D2Array,
-            multisampled: false,
-        };
         let sprite_arrays = layers.div_ceil(split).max(1);
         if sprite_arrays > 1 {
             log::info!("Horizon: {layers} block textures in {sprite_arrays} arrays");
@@ -2631,61 +2742,7 @@ impl Renderer {
         ];
         let bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon terrain bindings"),
-            entries: &[
-                entry(
-                    0,
-                    vf,
-                    wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                ),
-                entry(
-                    1,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    1 + 1,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(
-                    3,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                entry(
-                    4,
-                    vf,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                ),
-                entry(5, vf, sprite_array),
-                entry(6, vf, sprite_array),
-                entry(7, vf, sprite_array),
-                entry(8, vf, sprite_array),
-                entry(9, vf, sprite_array),
-                entry(10, vf, sprite_array),
-                entry(11, vf, sprite_array),
-                entry(
-                    12,
-                    vf,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-            ],
+            entries: &terrain_layout_entries(),
         });
         let layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon terrain layout"),
@@ -3192,6 +3249,7 @@ impl Renderer {
         });
         let emission_stats =
             hdr_stats::EmissionStats::new(&device, split, sprite_textures.len() as u32);
+        let sun_shadow = sun_shadow::SunShadow::new(&device);
         let group = terrain_group(
             &device,
             "Horizon terrain resources",
@@ -3202,6 +3260,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            (sun_shadow.view(), &sun_shadow.sampler),
         );
         let crosshair_group = terrain_group(
             &device,
@@ -3213,6 +3272,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            (sun_shadow.view(), &sun_shadow.sampler),
         );
         let mirror_group = terrain_group(
             &device,
@@ -3224,6 +3284,7 @@ impl Renderer {
             &lightmap_view,
             &lightmap_sampler,
             &emission_stats.view,
+            (sun_shadow.view(), &sun_shadow.sampler),
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -4729,6 +4790,7 @@ impl Renderer {
             hdr_lighting_setting: true,
             emission_stats,
             bloom_emission_measured: false,
+            sun_shadow,
             hdr_output,
             frame_format,
             hdr_marker: None,
@@ -5242,6 +5304,8 @@ impl Renderer {
                 let casters = post.shadow_casters();
                 casters.entities && !casters.only_player
             })
+            // Built-in shadows on High cast the mobs' own.
+            || (self.sun_shadow.active && self.sun_shadow.level().entities())
     }
 
     pub fn has_section(&self, key: SectionKey) -> bool {
@@ -5333,7 +5397,11 @@ impl Renderer {
             self.section_uploaded.insert(key, now);
             self.newest_upload = Some(now);
         }
+        // Built-in shadows: whether what it casts changed, its old mesh's taken first so that
+        // its release is no change of its own.
+        let cast = self.sun_shadow.take_cast(key);
         self.release_section(key);
+        self.sun_shadow.section_meshed(key, cast, &mesh.solid);
         let section = self
             .upload_mesh(mesh)
             .map(|section| SectionGpu { fading, ..section });
@@ -5605,6 +5673,7 @@ impl Renderer {
     }
     fn release_section(&mut self, key: SectionKey) {
         if let Some(s) = self.sections.remove(key) {
+            self.sun_shadow.section_dropped(key);
             self.release_mesh(s);
         }
     }
@@ -6401,6 +6470,213 @@ impl Renderer {
     pub fn set_bloom(&mut self, level: BloomLevel) {
         self.world_post.set_bloom(level);
     }
+    /// Whether the last frame drew with built-in shadows (`sun_shadow`).
+    pub fn sun_shadows_active(&self) -> bool {
+        self.sun_shadow.active
+    }
+    /// The player's Shadows setting (`sun_shadow`); the maps are made at the next frame that
+    /// draws them.
+    pub fn set_shadows(&mut self, level: ShadowLevel) {
+        self.sun_shadow.set_level(level);
+    }
+    /// M3's `post-keys` `shadow-strength`: the share of the sky light a shadow takes away,
+    /// 0 to 1 (`sun_shadow::DEFAULT_STRENGTH` until set), within the player's setting.
+    pub fn set_shadow_strength(&mut self, strength: f32) {
+        self.sun_shadow.set_strength(strength);
+    }
+    /// This frame's built-in shadows (`sun_shadow`), when they draw: makes or releases the maps
+    /// and the pipelines as the setting and the frame need, and decides whether the map is
+    /// drawn again. Off on the title screen, without a sky (the Nether, the End), under a shader
+    /// pack or one of Horizon's own (theirs win), and while the light is near the horizon.
+    fn prepare_sun_shadow(&mut self, frame: &Frame) -> Option<SunFrame> {
+        let level = self.sun_shadow.level();
+        let wanted = level.map().filter(|_| {
+            self.sun_shadow.strength() > 0.0
+                && !frame.title
+                && frame.skybox
+                && !frame.end_sky
+                && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+                && self.native.is_none()
+        });
+        if self
+            .sun_shadow
+            .ensure_maps(&self.device, wanted.map(|_| level))
+        {
+            self.rebuild_terrain_group();
+        }
+        self.sun_shadow.active = false;
+        let (resolution, reach) = wanted?;
+        let (_, fade) = sun_shadow::light(frame.sky.sun_angle);
+        if fade <= 0.0 {
+            return None;
+        }
+        if self.sun_shadow.pipelines.is_none() {
+            let entities = self.entity_pipeline.get_bind_group_layout(0);
+            self.sun_shadow.pipelines = Some(sun_shadow::Pipelines::new(
+                &self.device,
+                &self.terrain_layout,
+                self.flat.as_ref().map(|f| &f.draw_layout),
+                &entities,
+                self.terrain_sprites,
+            ));
+        }
+        let now = sun_shadow::Drawn {
+            centre: sun_shadow::centre(frame.camera),
+            sun_angle: frame.sky.sun_angle,
+            revision: self.sun_shadow.revision(),
+            level,
+        };
+        let draw = self.sun_shadow.policy.frame(now).is_some();
+        let drawn = self.sun_shadow.policy.drawn()?;
+        let (dir, _) = sun_shadow::light(drawn.sun_angle);
+        let half = sun_shadow::half_size(reach);
+        let light_view_proj = sun_shadow::light_view_proj(dir, half);
+        let camera_view_proj =
+            sun_shadow::camera_view_proj(light_view_proj, frame.camera, drawn.centre);
+        self.sun_shadow.active = true;
+        Some(SunFrame {
+            draw,
+            entities: level.entities(),
+            dir,
+            centre: drawn.centre,
+            light_view_proj,
+            camera_view_proj,
+            inputs: sun_shadow::shader_inputs(
+                self.sun_shadow.strength() * fade,
+                resolution,
+                half,
+                reach,
+                dir,
+            ),
+        })
+    }
+    /// The built-in shadows' passes (`sun_shadow`): the solid terrain the light sees into the
+    /// cached map when `sun.draw`, from lists of its own (the camera's draws keep their fast
+    /// paths), then on High the entities over a copy of it.
+    fn draw_sun_shadow(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera: DVec3,
+        radius: i32,
+        sun: &SunFrame,
+        entity_quads: u32,
+    ) {
+        self.sun_shadow
+            .write_uniform(&self.queue, sun.light_view_proj, sun.camera_view_proj);
+        if sun.draw {
+            let mut visible = Vec::new();
+            let cull = ShadowCull {
+                light: Frustum {
+                    planes: frustum(sun.camera_view_proj),
+                },
+                casters: None,
+                reach: None,
+            };
+            self.sections
+                .visible(camera, radius, &cull, |_| true, |_, _| false, &mut visible);
+            let centre = DVec3::new(
+                sun.centre[0] as f64,
+                sun.centre[1] as f64,
+                sun.centre[2] as f64,
+            );
+            let min_y = self.sections.min_y();
+            let mut instances: Vec<[f32; 4]> = Vec::with_capacity(visible.len());
+            // (page, quads, base vertex, instance), nearest the light first within a page.
+            let mut draws: Vec<(u32, u32, u32, u32)> = Vec::new();
+            let mut by_height: Vec<(f32, &resident::Visible)> = visible
+                .iter()
+                .map(|v| {
+                    let o = resident::origin(v.key, min_y, centre).as_vec3();
+                    (o.dot(sun.dir), v)
+                })
+                .collect();
+            by_height.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            for (_, v) in by_height {
+                let s = self.sections.get(v.slot);
+                if s.solid == 0 {
+                    continue;
+                }
+                let origin = resident::origin(v.key, min_y, centre).as_vec3().to_array();
+                let instance = instances.len() as u32;
+                instances.push(section_instance(origin, 0, 1.0));
+                facing_runs(&s.sides, Some(sun.dir * 1.0e5), origin, |first, quads| {
+                    draws.push((s.page, quads, s.solid_base() + first * 4, instance));
+                });
+            }
+            draws.sort_by_key(|d| d.0);
+            self.sun_shadow
+                .reserve_instances(&self.device, instances.len() as u64);
+            if !instances.is_empty() {
+                self.queue.write_buffer(
+                    &self.sun_shadow.instances,
+                    0,
+                    bytemuck::cast_slice(&instances),
+                );
+            }
+            let writes = self
+                .own_timing
+                .as_mut()
+                .and_then(|t| t.writes("Sun shadow terrain"))
+                .or_else(|| {
+                    self.gpu_timer
+                        .as_mut()
+                        .and_then(|t| t.scope_writes(timing::Scope::Shadow, true, !sun.entities))
+                });
+            if let (Some(mut pass), Some(p)) = (
+                self.sun_shadow.terrain_pass(encoder, writes),
+                self.sun_shadow.pipelines.as_ref(),
+            ) {
+                let pulled = self.flat.as_ref().zip(p.pulled.as_ref());
+                pass.set_pipeline(pulled.map_or(&p.instanced, |(_, pipeline)| pipeline));
+                // Group 0 for the sprites, without the map being drawn (the crosshair's).
+                pass.set_bind_group(0, &self.crosshair_group, &[]);
+                pass.set_bind_group(2, &p.group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.sun_shadow.instances.slice(..));
+                let mut bound = None;
+                for &(page, quads, base, instance) in &draws {
+                    if bound != Some(page) {
+                        match pulled {
+                            Some((flat, _)) => {
+                                let Some(group) = flat.page_group(page) else {
+                                    continue;
+                                };
+                                pass.set_bind_group(1, group, &[]);
+                            }
+                            None => pass.set_vertex_buffer(0, self.arena.buffer(page).slice(..)),
+                        }
+                        bound = Some(page);
+                    }
+                    pass.draw_indexed(0..quads * 6, base as i32, instance..instance + 1);
+                }
+            }
+            self.sun_shadow.updates += 1;
+            self.shadow_updates = self.shadow_updates.wrapping_add(1);
+        }
+        if sun.entities {
+            let writes = self
+                .own_timing
+                .as_mut()
+                .and_then(|t| t.writes("Sun shadow entities"))
+                .or_else(|| {
+                    self.gpu_timer
+                        .as_mut()
+                        .and_then(|t| t.scope_writes(timing::Scope::Shadow, !sun.draw, true))
+                });
+            if let (Some(mut pass), Some(p)) = (
+                self.sun_shadow.entity_pass(encoder, writes),
+                self.sun_shadow.pipelines.as_ref(),
+            ) && entity_quads > 0
+            {
+                pass.set_pipeline(&p.entity);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_bind_group(2, &p.group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+            }
+        }
+    }
     /// M3's `post-keys` drive this multiplier within the player's bloom setting.
     pub fn set_bloom_scale(&mut self, scale: f32) {
         self.world_post.bloom_scale = if scale.is_finite() {
@@ -6783,6 +7059,7 @@ impl Renderer {
             &self.lightmap_view,
             &self.lightmap_sampler,
             &self.emission_stats.view,
+            (self.sun_shadow.view(), &self.sun_shadow.sampler),
         );
     }
     /// Block sprite layers per array on this device: a sprite's array is its layer over it, its
@@ -7368,6 +7645,7 @@ impl Renderer {
                 .measure(&self.device, &self.queue, &views, hdr::MASKS);
             self.bloom_emission_measured = true;
         }
+        let sun_frame = self.prepare_sun_shadow(frame);
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,
@@ -7472,6 +7750,13 @@ impl Renderer {
                 // Bloom reads light sources' marks (terrain.wgsl `solid_finish_at`).
                 if bloom_marks { 1.0 } else { 0.0 },
             ],
+            // Written once the world target's size is known (`shadow_pixel` below).
+            shadow_pixel: [[0.0; 4]; 4],
+            shadow_view_proj: sun_frame
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |s| s.camera_view_proj.to_cols_array_2d()),
+            shadow: sun_frame.as_ref().map_or([0.0; 4], |s| s.inputs[0]),
+            shadow_light: sun_frame.as_ref().map_or([0.0; 4], |s| s.inputs[1]),
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
@@ -8997,6 +9282,11 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_weather());
+        // Built-in shadows' map, before the world reads it.
+        if let Some(sun) = &sun_frame {
+            let radius = (frame.detail_distance / 16.0) as i32;
+            self.draw_sun_shadow(&mut encoder, frame.camera, radius, sun, entity_quads);
+        }
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
@@ -9006,6 +9296,22 @@ impl Renderer {
             Some((color, depth)) => (color, depth),
             None => (&view_target, &self.depth),
         };
+        // Built-in shadows: a pixel of the world target into the map, now that its size is
+        // known (terrain.wgsl's `sun_shadow_pixel`).
+        if let Some(sun) = &sun_frame {
+            let size = self
+                .world_post
+                .size()
+                .filter(|_| scaled.is_some())
+                .unwrap_or([self.config.width, self.config.height]);
+            let pixel = sun_shadow::pixel_view_proj(sun.camera_view_proj, jittered, size);
+            self.uploads.buffer(
+                &mut encoder,
+                &self.globals,
+                std::mem::offset_of!(Globals, shadow_pixel) as u64,
+                bytemuck::bytes_of(&pixel.to_cols_array_2d()),
+            );
+        }
         if culling && let Some(cull) = &mut self.cull {
             cull.bind_depth(&self.device, world_depth);
         }
@@ -9321,6 +9627,8 @@ impl Renderer {
                     view_proj: mirror_view_projection(view_proj, plane).to_cols_array_2d(),
                     inverse_view,
                     fog_ends,
+                    // The half-resolution mirror goes without built-in shadows.
+                    shadow: [0.0; 4],
                     ..globals
                 };
                 self.uploads.buffer(
@@ -12429,6 +12737,9 @@ mod tests {
                 sources.push((path, static_entity_shader()));
             } else if name == "visbuffer.wgsl" {
                 // Appended to terrain.wgsl (gfx/visbuffer.rs).
+                sources.push((path, include_str!("terrain.wgsl").to_owned() + &text));
+            } else if name == "sun_shadow.wgsl" {
+                // Appended to terrain.wgsl (gfx/sun_shadow.rs).
                 sources.push((path, include_str!("terrain.wgsl").to_owned() + &text));
             } else if name == "oit_border.wgsl" {
                 let base = include_str!("border.wgsl").to_owned() + include_str!("oit.wgsl");
