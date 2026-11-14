@@ -17784,6 +17784,9 @@ impl ApplicationHandler for Game<'_> {
             }
         };
         drop(window_step);
+        if touch::enabled() {
+            window.set_ime_allowed(false);
+        }
         horizon_client::telemetry::note_display(&window);
         match self.new_renderer(window.clone()) {
             Ok(r) => {
@@ -17884,11 +17887,6 @@ impl Game<'_> {
         {
             self.touch_event(event_loop, t);
             return;
-        }
-        if touch::enabled()
-            && matches!(&event, WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed)
-        {
-            self.touch_hide(event_loop);
         }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
@@ -22030,6 +22028,9 @@ impl Loading {
             }
         };
         drop(window_step);
+        if touch::enabled() {
+            window.set_ime_allowed(false);
+        }
         horizon_client::telemetry::note_display(&window);
         #[cfg(target_os = "ios")]
         ios::log_window(&window);
@@ -22106,11 +22107,15 @@ impl Loading {
             {
                 touch::MenuTouchAction::Account => account::tapped(),
                 touch::MenuTouchAction::ToggleKeyboard => {
-                    self.touch.keyboard = !self.touch.keyboard;
                     if let Some(window) = &self.window {
-                        window.set_ime_allowed(self.touch.keyboard);
+                        window.set_ime_allowed(false);
                     }
+                    let wants_keyboard = self.menu_touch_typing();
+                    let events = self.touch.toggle_keyboard(size, wants_keyboard);
+                    self.menu_events(event_loop, events);
                 }
+                touch::MenuTouchAction::Keyboard(Some(out)) => self.menu_osk_output(out),
+                touch::MenuTouchAction::Keyboard(None) => {}
                 touch::MenuTouchAction::Events(events) => self.menu_events(event_loop, events),
             }
             return;
@@ -22199,6 +22204,10 @@ impl Loading {
             .as_ref()
             .map(|r| [r.config.width, r.config.height])
         {
+            let wants_keyboard = touch::enabled() && self.menu_touch_typing();
+            let at_top = self.menu_keyboard_at_top(size);
+            let events = self.touch.auto_keyboard(wants_keyboard, at_top, size);
+            self.menu_events(event_loop, events);
             let events = self.touch.update(size);
             self.menu_events(event_loop, events);
         }
@@ -22328,6 +22337,7 @@ impl Loading {
         game.fullscreen = self.fullscreen;
         game.panorama_rotation = self.panorama_rotation;
         self.menu.handoff(&mut game);
+        game.take_menu_touch(&mut self.touch);
         // The pads the title read go on in the game (desktop: one gilrs).
         game.pad = std::mem::take(&mut self.pad.pads);
         game.apply_settings();

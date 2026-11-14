@@ -6,11 +6,13 @@ use super::{Game, Screen, event_loop::EventLoopCtl};
 use horizon_client::touch_layout::{self, Entry, Overrides, Rect, Show};
 use horizon_client::{
     hud::{HudAtlas, HudBatch},
-    lang,
+    lang, osk,
     touch_controls::{Button, Layout, Output, TouchControls},
     ui,
+    ui_theme::Ui,
+    widgets::{self, Kind, Target},
 };
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 use winit::{
     event::{
         DeviceId, ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
@@ -232,6 +234,61 @@ fn draw_pause(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
     }
 }
 
+/// Text fields registered by the same drawers controller focus uses.
+pub(super) fn field_at(at: (f32, f32)) -> Option<Target> {
+    widgets::last_targets()
+        .into_iter()
+        .rev()
+        .find(|t| t.kind == Kind::Field && inside(t.rect, at))
+}
+
+/// Touch owns its visibility so controller polling/settings cannot reset it.
+/// Captured fingers stay captured through their release, even if Done closed the screen.
+#[derive(Default)]
+struct TouchKeyboard {
+    keyboard: Option<osk::Keyboard>,
+    at_top: bool,
+    captured: HashSet<u64>,
+}
+
+impl TouchKeyboard {
+    fn open(&mut self, at_top: bool) {
+        self.keyboard = Some(osk::Keyboard::default());
+        self.at_top = at_top;
+    }
+
+    fn captured(&mut self, touch: &Touch) -> bool {
+        if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+            self.captured.remove(&touch.id)
+        } else {
+            self.captured.contains(&touch.id)
+        }
+    }
+
+    fn tap(&mut self, touch: &Touch, size: [u32; 2], atlas: &HudAtlas) -> Option<osk::Output> {
+        let keyboard = self.keyboard.as_mut()?;
+        if touch.phase != TouchPhase::Started {
+            return None;
+        }
+        self.captured.insert(touch.id);
+        let mut batch = HudBatch::new(size);
+        let at = (
+            touch.location.x as f32 / batch.scale,
+            touch.location.y as f32 / batch.scale,
+        );
+        let ui = Ui::new(atlas, &mut batch, at);
+        keyboard.tap([ui.w, ui.h], self.at_top, ui.cursor)
+    }
+
+    fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas) {
+        if let Some(keyboard) = &self.keyboard {
+            let mut ui = Ui::new(atlas, batch, (0.0, 0.0));
+            keyboard.draw_touch(&mut ui, self.at_top, Default::default());
+            ui.finish();
+        }
+    }
+}
+
 /// Touch on the startup menu (the title screen shown while the world's resources load, before
 /// `Game` exists): the first finger is the pointer, and the keyboard button shows the keyboard
 /// for its text fields.
@@ -239,8 +296,9 @@ fn draw_pause(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
 pub(super) struct MenuTouch {
     controls: TouchControls,
     device: Option<DeviceId>,
-    /// The on-screen keyboard is up (`Window::set_ime_allowed`).
-    pub keyboard: bool,
+    keyboard: TouchKeyboard,
+    wanted_keyboard: bool,
+    cursor: (f32, f32),
 }
 
 /// What a touch on the startup menu does.
@@ -249,6 +307,8 @@ pub(super) enum MenuTouchAction {
     Events(Vec<WindowEvent>),
     /// The keyboard button: show or hide the keyboard.
     ToggleKeyboard,
+    /// A key on Horizon's keyboard (or an absorbed touch).
+    Keyboard(Option<osk::Output>),
     /// The Microsoft account button (`account.rs`).
     Account,
 }
@@ -262,33 +322,61 @@ impl MenuTouch {
         atlas: Option<&HudAtlas>,
     ) -> MenuTouchAction {
         let (layout, scale) = layout_of(size);
+        self.controls.used = true;
+        self.device = Some(touch.device_id);
+        if self.keyboard.captured(&touch) {
+            return MenuTouchAction::Keyboard(None);
+        }
         let at = (
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
         );
-        if touch.phase == TouchPhase::Started {
-            if inside(menu_button(&layout, MenuButton::Keyboard), at) {
-                return MenuTouchAction::ToggleKeyboard;
-            }
-            if atlas.is_some_and(|atlas| super::account::hit(&layout, atlas, at)) {
-                return MenuTouchAction::Account;
-            }
+        if touch.phase == TouchPhase::Started
+            && inside(menu_button(&layout, MenuButton::Keyboard), at)
+        {
+            self.keyboard.captured.insert(touch.id);
+            return MenuTouchAction::ToggleKeyboard;
         }
-        self.device = Some(touch.device_id);
-        let outputs =
+        if self.keyboard.keyboard.is_some() {
+            return MenuTouchAction::Keyboard(
+                atlas.and_then(|a| self.keyboard.tap(&touch, size, a)),
+            );
+        }
+        if touch.phase == TouchPhase::Started
+            && atlas.is_some_and(|atlas| super::account::hit(&layout, atlas, at))
+        {
+            self.keyboard.captured.insert(touch.id);
+            return MenuTouchAction::Account;
+        }
+        self.cursor = at;
+        let mut outputs =
             self.controls
                 .touch(touch.id, touch.phase, at, &layout, false, Instant::now());
+        self.open_touched_field(&mut outputs, layout.height);
         MenuTouchAction::Events(self.events(outputs, scale))
     }
 
     /// Once a frame: a finger held still right clicks.
     pub(super) fn update(&mut self, size: [u32; 2]) -> Vec<WindowEvent> {
-        if !self.controls.used {
+        if !self.controls.used || self.keyboard.keyboard.is_some() {
             return Vec::new();
         }
-        let (_, scale) = layout_of(size);
-        let outputs = self.controls.update(Instant::now());
+        let (layout, scale) = layout_of(size);
+        let mut outputs = self.controls.update(Instant::now());
+        self.open_touched_field(&mut outputs, layout.height);
         self.events(outputs, scale)
+    }
+
+    fn open_touched_field(&mut self, outputs: &mut Vec<Output>, height: f32) {
+        if outputs
+            .iter()
+            .any(|o| matches!(o, Output::PointerButton(true)))
+            && let Some(field) = field_at(self.cursor)
+        {
+            self.keyboard.open(field.center().1 > height / 2.0);
+            self.wanted_keyboard = true;
+            outputs.extend(self.controls.release_all());
+        }
     }
 
     fn events(&self, outputs: Vec<Output>, scale: f32) -> Vec<WindowEvent> {
@@ -299,6 +387,46 @@ impl MenuTouch {
             .into_iter()
             .flat_map(|o| pointer_event(device, o, scale))
             .collect()
+    }
+
+    pub(super) fn auto_keyboard(
+        &mut self,
+        wants: bool,
+        at_top: bool,
+        size: [u32; 2],
+    ) -> Vec<WindowEvent> {
+        if !self.controls.used || self.wanted_keyboard == wants {
+            return Vec::new();
+        }
+        self.wanted_keyboard = wants;
+        if wants {
+            self.keyboard.at_top = at_top;
+            self.open_keyboard(size)
+        } else {
+            self.close_keyboard();
+            Vec::new()
+        }
+    }
+
+    pub(super) fn close_keyboard(&mut self) {
+        self.keyboard.keyboard = None;
+    }
+
+    pub(super) fn toggle_keyboard(&mut self, size: [u32; 2], wants: bool) -> Vec<WindowEvent> {
+        self.wanted_keyboard = wants;
+        if self.keyboard.keyboard.is_some() {
+            self.close_keyboard();
+            Vec::new()
+        } else {
+            self.open_keyboard(size)
+        }
+    }
+
+    fn open_keyboard(&mut self, size: [u32; 2]) -> Vec<WindowEvent> {
+        let (_, scale) = layout_of(size);
+        self.keyboard.open(self.keyboard.at_top);
+        let outputs = self.controls.release_all();
+        self.events(outputs, scale)
     }
 
     /// The account button, and the keyboard button once a finger has touched the screen.
@@ -315,12 +443,13 @@ impl MenuTouch {
         if !self.controls.used {
             return;
         }
+        self.keyboard.draw(batch, atlas);
         draw_button(
             batch,
             atlas,
             menu_button(&layout, MenuButton::Keyboard),
             &lang::get_or("horizon.touch.keyboard", "Aa"),
-            self.keyboard,
+            self.keyboard.keyboard.is_some(),
         );
     }
 }
@@ -332,8 +461,10 @@ pub(super) struct TouchInput {
     controls: TouchControls,
     /// The touchscreen, for the pointer events the menus get.
     device: Option<DeviceId>,
-    /// The on-screen keyboard is up (`Window::set_ime_allowed`).
-    keyboard: bool,
+    keyboard: TouchKeyboard,
+    /// Opening a text screen shows the keyboard once. Closing it keeps it closed
+    /// until another field/screen is selected or Aa is tapped.
+    keyboard_context: Option<(Screen, bool, bool, bool, bool)>,
     #[cfg(feature = "mods")]
     mod_fingers: std::collections::HashMap<u64, (usize, String)>,
     /// Menu buttons own their finger through lift, including across screen changes.
@@ -640,6 +771,14 @@ impl Game<'_> {
         Some((layout, scale))
     }
 
+    /// Keep typing, dismissal and captured fingers when startup resources finish loading.
+    pub(super) fn take_menu_touch(&mut self, menu: &mut MenuTouch) {
+        self.touch.controls = std::mem::take(&mut menu.controls);
+        self.touch.device = menu.device;
+        self.touch.keyboard = std::mem::take(&mut menu.keyboard);
+        self.touch.keyboard_context = Some(self.touch_keyboard_context());
+    }
+
     /// `WindowEvent::Touch`.
     pub(super) fn touch_event(&mut self, event_loop: &dyn EventLoopCtl, touch: Touch) {
         if self.pending_save.is_some() {
@@ -649,7 +788,11 @@ impl Game<'_> {
             return;
         };
         self.touch.device = Some(touch.device_id);
+        self.touch.controls.used = true;
         self.last_input = Instant::now();
+        if self.touch.keyboard.captured(&touch) {
+            return;
+        }
         let at = (
             touch.location.x as f32 / scale,
             touch.location.y as f32 / scale,
@@ -669,6 +812,40 @@ impl Game<'_> {
             }
             return;
         }
+        self.pad.in_use = false;
+        if self.touch.keyboard.keyboard.is_none()
+            && let Some(keyboard) = self.pad.menu.osk.take()
+        {
+            self.touch.keyboard.keyboard = Some(keyboard);
+            self.touch.keyboard.at_top =
+                self.screen == Screen::Chat || self.cursor.1 > layout.height / 2.0;
+            self.touch.keyboard_context = Some(self.touch_keyboard_context());
+        }
+        if !playing
+            && touch.phase == TouchPhase::Started
+            && inside(menu_button(&layout, MenuButton::Keyboard), at)
+        {
+            self.touch.keyboard.captured.insert(touch.id);
+            let shown = self.touch.keyboard.keyboard.is_none();
+            self.show_keyboard(
+                event_loop,
+                shown,
+                self.screen == Screen::Chat || self.touch.keyboard.at_top,
+            );
+            return;
+        }
+        if self.touch.keyboard.keyboard.is_some() {
+            let size = [
+                (layout.width * scale) as u32,
+                (layout.height * scale) as u32,
+            ];
+            if let Some(out) = self.touch.keyboard.tap(&touch, size, &self.gui.atlas)
+                && self.osk_output(out)
+            {
+                self.touch.keyboard.keyboard = None;
+            }
+            return;
+        }
         #[cfg(feature = "mods")]
         if self.mod_touch_event(&touch, at, &layout, playing, &items) {
             return;
@@ -676,13 +853,6 @@ impl Game<'_> {
         if !playing && touch.phase == TouchPhase::Started {
             if self.title.is_some() && super::account::hit(&layout, &self.gui.atlas, at) {
                 super::account::tapped();
-                return;
-            }
-            if inside(menu_button(&layout, MenuButton::Keyboard), at) {
-                self.touch.controls.used = true;
-                self.touch.menu_fingers.insert(touch.id);
-                let shown = !self.touch.keyboard;
-                self.show_keyboard(shown);
                 return;
             }
             if self.touch_back_shown() && inside(menu_button(&layout, MenuButton::Back), at) {
@@ -718,12 +888,16 @@ impl Game<'_> {
             self.touch
                 .controls
                 .touch(touch.id, touch.phase, at, &layout, playing, Instant::now());
+        let clicked = outputs
+            .iter()
+            .any(|o| matches!(o, Output::PointerButton(true)));
+        let field = clicked.then(|| field_at(at)).flatten();
         for output in outputs {
             self.apply_touch(event_loop, output, scale);
         }
-        // Back in the world: the keyboard goes away with the menu that wanted it.
-        if playing && self.touch.keyboard {
-            self.show_keyboard(false);
+        self.touch_auto_keyboard(event_loop);
+        if let Some(field) = field {
+            self.show_keyboard(event_loop, true, field.center().1 > layout.height / 2.0);
         }
     }
 
@@ -749,16 +923,48 @@ impl Game<'_> {
                 self.mods.mods.registered_touch_key(*owner, key, false);
             }
         }
-        for output in self.touch.controls.update(Instant::now()) {
-            self.apply_touch(event_loop, output, scale);
+        if self.touch.keyboard.keyboard.is_none() {
+            let outputs = self.touch.controls.update(Instant::now());
+            let clicked = outputs
+                .iter()
+                .any(|o| matches!(o, Output::PointerButton(true)));
+            for output in outputs {
+                self.apply_touch(event_loop, output, scale);
+            }
+            if clicked && let Some(field) = field_at(self.cursor) {
+                let height = self.touch_layout().map_or(0.0, |(l, _)| l.height);
+                self.show_keyboard(event_loop, true, field.center().1 > height / 2.0);
+            }
         }
-        // The chat and text screens bring the keyboard up by themselves.
-        let wants_keyboard = self.screen == Screen::Chat
-            || self.sign_edit.is_some()
-            || self.screen == Screen::CommandBlock;
-        if wants_keyboard && !self.touch.keyboard {
-            self.show_keyboard(true);
+        self.touch_auto_keyboard(event_loop);
+    }
+
+    fn touch_auto_keyboard(&mut self, event_loop: &dyn EventLoopCtl) {
+        let context = self.touch_keyboard_context();
+        let wants = context.4;
+        if self.touch.keyboard_context != Some(context) {
+            self.touch.keyboard_context = Some(context);
+            self.show_keyboard(event_loop, wants, self.screen == Screen::Chat);
         }
+    }
+
+    fn touch_keyboard_context(&mut self) -> (Screen, bool, bool, bool, bool) {
+        let wants = if self.touch_editor_open() {
+            false
+        } else if self.dialog_open() {
+            self.dialog_typing()
+        } else if self.screen == Screen::Options {
+            self.ui.options.touch_typing()
+        } else {
+            self.text_field_focused()
+        };
+        (
+            self.screen,
+            self.sign_edit.is_some(),
+            self.book.is_some(),
+            self.dialog_open(),
+            wants,
+        )
     }
 
     /// Lets go of every finger: the app went to the background.
@@ -773,6 +979,7 @@ impl Game<'_> {
         let Some((_, scale)) = self.touch_layout() else {
             return;
         };
+        self.touch.keyboard.captured.clear();
         for output in self.touch.controls.release_all() {
             self.apply_touch(event_loop, output, scale);
         }
@@ -786,12 +993,34 @@ impl Game<'_> {
         }
         self.touch_release_all(event_loop);
         self.touch.controls.used = false;
+        if let Some(keyboard) = self.touch.keyboard.keyboard.take() {
+            self.pad.menu.osk = Some(keyboard);
+        }
     }
 
-    fn show_keyboard(&mut self, shown: bool) {
-        self.touch.keyboard = shown;
+    fn show_keyboard(&mut self, event_loop: &dyn EventLoopCtl, shown: bool, at_top: bool) {
+        self.touch.keyboard_context = Some(self.touch_keyboard_context());
         if let Some(window) = &self.window {
-            window.set_ime_allowed(shown);
+            window.set_ime_allowed(false);
+        }
+        if shown {
+            let at_top = at_top
+                || self.touch_layout().is_some_and(|(layout, _)| {
+                    self.screen != Screen::Options
+                        && self
+                            .title
+                            .as_ref()
+                            .and_then(|t| t.focused_rect((layout.width, layout.height)))
+                            .is_some_and(|[_, y, _, h]| y + h / 2.0 > layout.height / 2.0)
+                });
+            self.touch.keyboard.open(at_top);
+            if let Some((_, scale)) = self.touch_layout() {
+                for output in self.touch.controls.release_all() {
+                    self.apply_touch(event_loop, output, scale);
+                }
+            }
+        } else {
+            self.touch.keyboard.keyboard = None;
         }
     }
 
@@ -872,7 +1101,7 @@ impl Game<'_> {
 
     /// The buttons over the HUD, once a finger has touched the screen.
     pub(super) fn draw_touch_controls(&self, batch: &mut HudBatch) {
-        if !enabled() || self.touch_editor_open() {
+        if !enabled() || self.touch_editor_open() || self.pad.in_use {
             return;
         }
         let layout = Layout {
@@ -891,11 +1120,12 @@ impl Game<'_> {
             draw_button(batch, atlas, rect, label, down)
         };
         if !self.touch_playing() {
+            self.touch.keyboard.draw(batch, atlas);
             button(
                 batch,
                 menu_button(&layout, MenuButton::Keyboard),
                 &lang::get_or("horizon.touch.keyboard", "Aa"),
-                self.touch.keyboard,
+                self.touch.keyboard.keyboard.is_some(),
             );
             if self.touch_back_shown() {
                 button(
@@ -1245,5 +1475,107 @@ mod hold_mapping_tests {
             .controls
             .touch(1, TouchPhase::Ended, at, &layout, true, now);
         assert!(!input.holds_mapping("key.sprint"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+
+    fn touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> Touch {
+        Touch {
+            device_id: DeviceId::dummy(),
+            phase,
+            location: PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        }
+    }
+
+    #[test]
+    fn keyboard_fingers_stay_captured_after_closing() {
+        let mut keyboard = TouchKeyboard::default();
+        keyboard.open(false);
+        keyboard.captured.extend([1, 2]);
+        keyboard.keyboard = None;
+        assert!(keyboard.captured(&touch(1, TouchPhase::Moved, 0.0, 0.0)));
+        assert!(keyboard.captured(&touch(1, TouchPhase::Ended, 0.0, 0.0)));
+        assert!(keyboard.captured(&touch(2, TouchPhase::Cancelled, 0.0, 0.0)));
+        assert!(!keyboard.captured(&touch(3, TouchPhase::Started, 0.0, 0.0)));
+        assert!(keyboard.captured.is_empty());
+    }
+
+    #[test]
+    fn auto_keyboard_respects_dismissal_and_aa_toggles() {
+        let mut menu = MenuTouch::default();
+        menu.controls.used = true;
+        let size = [1280, 720];
+        menu.auto_keyboard(true, false, size);
+        assert!(menu.keyboard.keyboard.is_some());
+        menu.close_keyboard();
+        menu.auto_keyboard(true, false, size);
+        assert!(menu.keyboard.keyboard.is_none(), "Close stays closed");
+        menu.toggle_keyboard(size, true);
+        assert!(menu.keyboard.keyboard.is_some());
+        menu.toggle_keyboard(size, true);
+        menu.auto_keyboard(true, false, size);
+        assert!(menu.keyboard.keyboard.is_none(), "Aa stays closed");
+        menu.auto_keyboard(false, false, size);
+        menu.auto_keyboard(true, false, size);
+        assert!(
+            menu.keyboard.keyboard.is_some(),
+            "a new field opens it again"
+        );
+    }
+
+    #[test]
+    fn tapping_a_lower_menu_field_opens_keyboard_above_it() {
+        let size = [1280, 720];
+        let (layout, scale) = layout_of(size);
+        let field = [layout.width / 2.0, layout.height * 0.75, 40.0, 16.0];
+        widgets::target_as(field, Kind::Field);
+        widgets::end_frame(widgets::generation() + 1);
+        let mut menu = MenuTouch::default();
+        let (x, y) = (
+            f64::from((field[0] + 5.0) * scale),
+            f64::from((field[1] + 5.0) * scale),
+        );
+        menu.touch(touch(1, TouchPhase::Started, x, y), size, None);
+        assert!(matches!(
+            menu.touch(touch(1, TouchPhase::Ended, x, y), size, None),
+            MenuTouchAction::Events(_)
+        ));
+        assert!(menu.keyboard.keyboard.is_some());
+        assert!(menu.keyboard.at_top);
+        menu.close_keyboard();
+        menu.auto_keyboard(true, false, size);
+        assert!(menu.keyboard.keyboard.is_none());
+    }
+
+    #[test]
+    fn touch_coordinates_match_dp_and_keyboard_touches_do_not_become_pointer_events() {
+        let atlas = HudAtlas::fonts(std::path::Path::new("/nonexistent-horizon-osk-test")).unwrap();
+        for size in [[1040, 700], [2532, 1170]] {
+            for top in [false, true] {
+                let mut menu = MenuTouch::default();
+                menu.keyboard.open(top);
+                let mut batch = HudBatch::new(size);
+                let ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
+                // Centre of q, in dp, converted to physical touch coordinates.
+                let x = ((ui.w - 554.0) / 2.0).round() + 25.0;
+                let y = if top { 16.0 } else { ui.h - 268.0 - 16.0 } + 44.0 + 19.0;
+                let (x, y) = (f64::from(x * ui.density), f64::from(y * ui.density));
+                assert!(
+                    matches!(menu.touch(touch(1, TouchPhase::Started, x, y), size, Some(&atlas)),
+                    MenuTouchAction::Keyboard(Some(osk::Output::Text(text))) if text == "q")
+                );
+                menu.close_keyboard();
+                assert!(matches!(
+                    menu.touch(touch(1, TouchPhase::Ended, x, y), size, Some(&atlas)),
+                    MenuTouchAction::Keyboard(None)
+                ));
+            }
+        }
     }
 }

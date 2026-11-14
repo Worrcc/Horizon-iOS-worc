@@ -2195,6 +2195,13 @@ impl OptionsUi {
                 _ => self.settings_search_active(),
             }
     }
+    /// Touch opens the keyboard only for a focused field, never while rebinding a key.
+    pub fn touch_typing(&self) -> bool {
+        self.selected_key.is_none()
+            && self.selected_pad_action.is_none()
+            && self.typing()
+            && (self.page() != Page::Language || self.language_search.focused)
+    }
     /// Jump straight to a page (control socket / tests).
     pub fn show(&mut self, page: Page) {
         if page != Page::Main {
@@ -5597,6 +5604,30 @@ mod tests {
         ui.settings_search.focused = false;
         ui.show(Page::Packs);
         assert!(!ui.typing(), "the pack screen's search is not open yet");
+    }
+
+    #[test]
+    fn touch_keyboard_waits_for_field_focus_and_key_binding_completion() {
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Language);
+        ui.language_search.focused = false;
+        assert!(!ui.touch_typing());
+        assert!(
+            ui.typing(),
+            "hardware typing keeps the language page's default behavior"
+        );
+        ui.language_search.focused = true;
+        assert!(ui.touch_typing());
+        ui.show(Page::KeyBinds);
+        ui.settings_search.focused = true;
+        assert!(ui.touch_typing());
+        ui.selected_key = Some("key.jump".into());
+        assert!(
+            !ui.touch_typing(),
+            "rebinding takes keys before the search field"
+        );
+        ui.selected_key = None;
+        assert!(ui.touch_typing());
     }
 
     #[test]

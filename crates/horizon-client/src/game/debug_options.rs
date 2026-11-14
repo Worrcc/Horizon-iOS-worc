@@ -481,6 +481,13 @@ impl Game<'_> {
             self.debug_options_type(text);
         }
     }
+    pub(super) fn debug_options_backspace(&mut self) {
+        if let Some(s) = &mut self.debug_options
+            && s.search.focused
+        {
+            s.search.key(KeyCode::Backspace, false, false);
+        }
+    }
     /// Characters typed into the search box (`EditBox.charTyped`).
     pub(super) fn debug_options_type(&mut self, typed: &str) {
         let allowed: String = typed

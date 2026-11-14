@@ -1,7 +1,7 @@
 id = "block_info"
 name = "Block Info"
-version = "1.1.0"
-description = "What you're looking at: the block's icon and name, or a living entity's name and current/max health, the tool and tier a block needs (green when what you hold will drop it), with the game or mod it comes from, in a box at the top of the screen. Position, distance and coordinates are on its settings page."
+version = "1.2.0"
+description = "What you're looking at: the block's icon and name, or a living entity's name and current/max health, the tool and tier a block needs (green when what you hold will drop it), with the game or mod it comes from, in a two-line box at the top of the screen. Position, distance, coordinates and opacity are on its settings page."
 authors = ["Horizon"]
 api = "0.1"
 side = "client"
