@@ -258,7 +258,8 @@ impl Bloom {
         queue.write_buffer(
             &self.threshold,
             0,
-            bytemuck::cast_slice(&[0.78_f32, 0.18, 0.0, 0.0]),
+            // No luma threshold: the light sources' marks decide (M3's `bloom-threshold` sets one).
+            bytemuck::cast_slice(&[0.0_f32, 0.18, 0.0, 0.0]),
         );
         queue.write_buffer(
             &self.intensity,
@@ -402,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn bloom_gpu_readback_identity_threshold_spread_and_alpha() {
+    fn bloom_spreads_marked_light_sources_only_and_off_is_identical() {
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
             eprintln!("Skipping bloom GPU readback: no adapter");
@@ -431,29 +432,30 @@ mod tests {
             patterned
         );
         assert!(post.bloom.composite().is_none());
-        let mut dark: Vec<u8> = (0..SIZE * SIZE)
-            .flat_map(|i| [20, 20, 20, i as u8])
-            .collect();
         let at = |x: usize, y: usize| (y * SIZE as usize + x) * 4;
-        // Both patterns lie entirely below threshold - knee (0.60).
-        for y in 31..33 {
-            for x in 31..33 {
-                dark[at(x, y)..at(x, y) + 3].fill(150);
-            }
-        }
-        assert_eq!(
-            draw(&device, &queue, &mut post, &dark, BloomLevel::High, 1.0),
-            dark
-        );
-        for (level, origin, spot_size) in [(BloomLevel::High, 31, 2), (BloomLevel::Low, 32, 4)] {
-            let mut image: Vec<u8> = (0..SIZE * SIZE)
-                .flat_map(|i| [20, 20, 20, i as u8])
-                .collect();
-            for y in origin..origin + spot_size {
-                for x in origin..origin + spot_size {
-                    image[at(x, y)..at(x, y) + 3].copy_from_slice(&[255, 240, 200]);
+        // A dark world, unmarked (alpha 1), with an `[r, g, b, a]` square at `origin`.
+        let world = |origin: usize, size: usize, texel: [u8; 4]| {
+            let mut image = [20, 20, 20, 255].repeat((SIZE * SIZE) as usize);
+            for y in origin..origin + size {
+                for x in origin..origin + size {
+                    image[at(x, y)..at(x, y) + 4].copy_from_slice(&texel);
                 }
             }
+            image
+        };
+        // White but unmarked: the sky's alpha (1 - 0.24 at full daylight) and a lit block's.
+        for alpha in [194, 255] {
+            let sky = world(16, 32, [255, 255, 255, alpha]);
+            assert_eq!(
+                draw(&device, &queue, &mut post, &sky, BloomLevel::High, 1.0),
+                sky,
+                "an unmarked bright texel bloomed (alpha {alpha})"
+            );
+        }
+        // A light source's texel (terrain.wgsl's bloom mark 0.5) of the same colour as the
+        // sky's spreads; the frame's alpha passes through unchanged.
+        for (level, origin, spot_size) in [(BloomLevel::High, 31, 2), (BloomLevel::Low, 32, 4)] {
+            let image = world(origin, spot_size, [255, 240, 200, 128]);
             let output = draw(&device, &queue, &mut post, &image, level, 1.0);
             for i in (3..image.len()).step_by(4) {
                 assert_eq!(output[i], image[i], "world alpha changed");
@@ -463,8 +465,15 @@ mod tests {
             }
             assert!(output[at(32, 32)] <= image[at(32, 32)]);
             assert!(
-                (3..=6).any(|d| output[at(origin + spot_size - 1 + d, 32)] > 20),
+                output[at(origin + spot_size, 32)] > 25
+                    && (3..=6).any(|d| output[at(origin + spot_size - 1 + d, 32)] > 20),
                 "no halo 3-6 pixels from {level:?} spot"
+            );
+            // Unmarked, the same spot leaves the frame as it was.
+            let unmarked = world(origin, spot_size, [255, 240, 200, 255]);
+            assert_eq!(
+                draw(&device, &queue, &mut post, &unmarked, level, 1.0),
+                unmarked
             );
         }
         post.set_bloom(BloomLevel::Off);

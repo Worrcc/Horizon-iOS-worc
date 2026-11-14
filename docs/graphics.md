@@ -204,13 +204,19 @@ The baseline was CPU-bound everywhere: on the RTX 4080 the GPU spent 0.2 to 16 m
 
 ## Bloom
 
-Bloom is Off by default on desktop and Low on iOS. It runs after the world pass,
-using gamma-space world colour and ignoring alpha: the emission mark is not
-written with HDR output off (`hdr_light.z` is 0, so terrain leaves alpha at 1). The
-fallback is a per-tap soft-knee luma threshold (0.78, knee 0.18) in the first
-downsample, normalised into a 0..1 mask (1 at white): the frame is LDR, so the light
-above the threshold alone (at most 0.22) left only a faint halo. World alpha survives
-the composite unchanged for HDR output.
+Bloom is Off by default on desktop and Low on iOS. It runs after the world pass on the
+gamma-space world colour, and only light sources bloom: the first downsample keeps a
+texel by its emission mark in the frame's alpha (`clamp((0.75 - a) * 4, 0, 1)`), so the
+sky (alpha 0.76 and up), clouds and lit blocks (alpha 1) add nothing. HDR output writes
+those marks anyway; without it, `globals.hdr_light.w` (set only while bloom runs) makes
+terrain.wgsl's `solid_finish_at` mark a light source's own bright texels (the
+`emission_thresholds`, measured once when bloom turns on) with 0.5, fading to 0.75 in fog.
+Its cost with bloom off is one uniform branch; with bloom on, the faces of light sources
+alone add a texel load and the fog distance. Entities (blazes, glowing eyes), particles
+and the hand are only marked with HDR output on, so they do not bloom without it yet.
+A luma threshold remains for M3's `bloom-threshold` (off by default): a soft knee
+normalised into a 0..1 mask that is 1 at white, since in an LDR frame the light above the
+threshold alone left only a faint halo. World alpha survives the composite unchanged.
 Small emitters (under about 2x2 rendered pixels on High, 4x4 on Low) bloom only partly, depending on where they fall on the first downsample's taps.
 
 High uses four Rgba8Unorm targets at 1/2, 1/4, 1/8 and 1/16 of the world target,

@@ -684,6 +684,17 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
                 emissive = hdr_mark(tier, y * (1.0 - fogged));
             }
         }
+    } else if globals.hdr_light.w != 0.0 && in.emission > 0u {
+        // Bloom without HDR output (gfx/bloom.rs): only light sources' own bright texels are
+        // marked, 0.5 fading to the unmarked 0.75 in fog; nothing else pays for it.
+        let whole = in.emission > 4u;
+        let l = in.layer & 0x7fffu;
+        let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
+        if whole || brightness(texel.rgb) >= t.r {
+            let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+                linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+            emissive = 0.5 + 0.25 * fogged;
+        }
     }
     if in.emissive_layer != 0xffffffffu {
         // The high bit: an OptiFine overlay, drawn cutout (opaque where alpha >= 0.1).
@@ -691,7 +702,10 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
         if (in.emissive_layer & 0x80000000u) != 0u {
             mask.a = select(0.0, 1.0, mask.a >= 0.1);
         }
-        return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, hdr_mark(3u, 1.0), mask.a)), in.spherical, in.cylindrical);
+        // Bloom alone (`hdr_light.w`) marks the overlay as it marks a light source's texel.
+        var overlay = hdr_mark(3u, 1.0);
+        if globals.hdr_light.z == 0.0 && globals.hdr_light.w != 0.0 { overlay = 0.5; }
+        return apply_fog(vec4(mix(color.rgb, mask.rgb, mask.a), mix(emissive, overlay, mask.a)), in.spherical, in.cylindrical);
     }
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);
 }

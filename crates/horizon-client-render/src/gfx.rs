@@ -1380,6 +1380,8 @@ pub struct Renderer {
     /// Which pixels of each block sprite may shine in HDR output (terrain.wgsl's
     /// `emission_thresholds`), measured when HDR output turns on.
     emission_stats: hdr_stats::EmissionStats,
+    /// `emission_stats` measured for bloom's marks (HDR output measures its own).
+    bloom_emission_measured: bool,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
     /// What every pipeline that draws the frame targets: the swapchain's 8-bit format, or
@@ -4726,6 +4728,7 @@ impl Renderer {
             hdr: None,
             hdr_lighting_setting: true,
             emission_stats,
+            bloom_emission_measured: false,
             hdr_output,
             frame_format,
             hdr_marker: None,
@@ -6328,6 +6331,7 @@ impl Renderer {
     /// Measures which pixels of each block sprite may shine (`hdr_stats`), at the current
     /// masks. Only with HDR output on: without it the frame's alpha is never read.
     pub fn measure_emission(&mut self) {
+        self.bloom_emission_measured = false;
         if let Some(hdr) = &self.hdr {
             let views = sprite_views(&self.sprite_textures, &self.sprite_unused, None);
             self.emission_stats
@@ -7350,6 +7354,20 @@ impl Renderer {
                 },
             )
         };
+        // Bloom: not on the title screen, and a shader pack that reads the world has its own.
+        self.world_post.bloom_on = self.world_post.bloom_level != BloomLevel::Off
+            && self.world_post.bloom_scale > 0.0
+            && !frame.title
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && self.native.as_ref().is_none_or(|n| n.post.is_none());
+        // Without HDR output, terrain marks light sources in the frame's alpha for it.
+        let bloom_marks = self.world_post.bloom_on && self.hdr.is_none();
+        if bloom_marks && !self.bloom_emission_measured {
+            let views = sprite_views(&self.sprite_textures, &self.sprite_unused, None);
+            self.emission_stats
+                .measure(&self.device, &self.queue, &views, hdr::MASKS);
+            self.bloom_emission_measured = true;
+        }
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,
@@ -7432,7 +7450,15 @@ impl Renderer {
                 },
                 0.0,
             ],
-            hdr_windows: self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
+            // Bloom without HDR output marks light sources with the default tiers' windows.
+            hdr_windows: self.hdr.as_ref().map_or(
+                if bloom_marks {
+                    [hdr::TIERS.map(|t| t.start), hdr::TIERS.map(|t| t.full)]
+                } else {
+                    [[0.0; 4]; 2]
+                },
+                hdr::Hdr::windows,
+            ),
             hdr_light: [
                 frame.sky.sky_light_factor,
                 // The underwater overlay: the sky and fog are the water's own colour there.
@@ -7443,7 +7469,8 @@ impl Renderer {
                 },
                 // Only HDR output reads the solid terrain's lighting alpha.
                 if self.hdr.is_some() { 1.0 } else { 0.0 },
-                0.0,
+                // Bloom reads light sources' marks (terrain.wgsl `solid_finish_at`).
+                if bloom_marks { 1.0 } else { 0.0 },
             ],
         };
         self.uploads
@@ -8970,10 +8997,6 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_weather());
-        self.world_post.bloom_on = self.world_post.bloom_level != BloomLevel::Off
-            && self.world_post.bloom_scale > 0.0
-            && !frame.title
-            && !pack_reads_world;
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
