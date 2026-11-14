@@ -576,6 +576,12 @@ impl Game<'_> {
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
             );
+            #[cfg(not(target_os = "ios"))]
+            r.set_bloom(s.horizon.bloom.render_level());
+            #[cfg(target_os = "ios")]
+            {
+                self.phone_perf.bloom = None;
+            }
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );

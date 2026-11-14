@@ -18,6 +18,30 @@ use std::sync::{
 
 /// Frames in flight at once; on Metal a slot is busy for about five frames.
 const SLOTS: usize = 8;
+const QUERIES: u32 = 6;
+const BYTES: u64 = QUERIES as u64 * 8;
+
+#[derive(Clone, Copy)]
+pub enum Scope {
+    Shadow,
+    Bloom,
+}
+impl Scope {
+    fn index(self) -> usize {
+        match self {
+            Self::Shadow => 0,
+            Self::Bloom => 1,
+        }
+    }
+}
+
+/// A completed frame and its optional scopes, in milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Sample {
+    pub frame: u64,
+    pub ms: f32,
+    pub scopes: [Option<f32>; 2],
+}
 /// Each slot's timestamps have their own queries and resolve range.
 const RESOLVE_STRIDE: u64 = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
 /// The frame's target and its format.
@@ -35,6 +59,7 @@ const FAILED: u8 = 5;
 
 struct Slot {
     buffer: wgpu::Buffer,
+    scopes: [u8; 2],
     state: Arc<AtomicU8>,
     #[cfg(any(target_os = "ios", test))]
     frame: u64,
@@ -44,7 +69,7 @@ pub struct GpuTimer {
     #[cfg(any(target_os = "ios", test))]
     pub frame: u64,
     #[cfg(any(target_os = "ios", test))]
-    pub samples: Vec<(u64, f32)>,
+    pub samples: Vec<Sample>,
     queries: wgpu::QuerySet,
     resolve: wgpu::Buffer,
     slots: Vec<Slot>,
@@ -88,7 +113,7 @@ impl GpuTimer {
         let queries = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: Some("Frame timestamps"),
             ty: wgpu::QueryType::Timestamp,
-            count: 2 * SLOTS as u32,
+            count: QUERIES * SLOTS as u32,
         });
         let resolve = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Frame timestamp resolve"),
@@ -100,10 +125,11 @@ impl GpuTimer {
             .map(|_| Slot {
                 buffer: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("Frame timestamp readback"),
-                    size: 16,
+                    size: BYTES,
                     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }),
+                scopes: [0; 2],
                 state: Arc::new(AtomicU8::new(FREE)),
                 #[cfg(any(target_os = "ios", test))]
                 frame: 0,
@@ -173,7 +199,8 @@ impl GpuTimer {
         {
             self.slots[slot].frame = self.frame;
         }
-        let index = 2 * slot as u32;
+        self.slots[slot].scopes = [0; 2];
+        let index = QUERIES * slot as u32;
         let Some(markers) = &self.markers else {
             encoder.write_timestamp(&self.queries, index);
             return;
@@ -189,6 +216,27 @@ impl GpuTimer {
         pass.set_pipeline(&markers.start);
         pass.dispatch_workgroups(1, 1, 1);
     }
+    /// Pass-boundary timestamps: first, last, or both for a single-pass scope.
+    /// Call only when the pass has no other timestamp writes.
+    pub fn scope_writes(
+        &mut self,
+        scope: Scope,
+        first: bool,
+        last: bool,
+    ) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        if !first && !last {
+            return None;
+        }
+        let slot = self.current?;
+        let i = scope.index();
+        self.slots[slot].scopes[i] |= u8::from(first) | (u8::from(last) << 1);
+        let index = QUERIES * slot as u32 + 2 + i as u32 * 2;
+        Some(wgpu::RenderPassTimestampWrites {
+            query_set: &self.queries,
+            beginning_of_pass_write_index: first.then_some(index),
+            end_of_pass_write_index: last.then_some(index + 1),
+        })
+    }
     /// After the frame's last pass into `target` (the frame's own, of `format`).
     pub fn end(
         &mut self,
@@ -197,7 +245,7 @@ impl GpuTimer {
         (target, format): Target,
     ) {
         let Some(slot) = self.current else { return };
-        let index = 2 * slot as u32 + 1;
+        let index = QUERIES * slot as u32 + 1;
         let Some(markers) = &mut self.markers else {
             encoder.write_timestamp(&self.queries, index);
             self.resolve(encoder, slot);
@@ -231,9 +279,9 @@ impl GpuTimer {
     }
     /// Copy `slot`'s timestamps to its readback buffer.
     fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder, slot: usize) {
-        let (first, at) = (2 * slot as u32, RESOLVE_STRIDE * slot as u64);
-        encoder.resolve_query_set(&self.queries, first..first + 2, &self.resolve, at);
-        encoder.copy_buffer_to_buffer(&self.resolve, at, &self.slots[slot].buffer, 0, 16);
+        let (first, at) = (QUERIES * slot as u32, RESOLVE_STRIDE * slot as u64);
+        encoder.resolve_query_set(&self.queries, first..first + QUERIES, &self.resolve, at);
+        encoder.copy_buffer_to_buffer(&self.resolve, at, &self.slots[slot].buffer, 0, BYTES);
         self.slots[slot].state.store(RUNNING, Ordering::Release);
         self.resolved.push(slot);
     }
@@ -281,13 +329,28 @@ impl GpuTimer {
                     continue;
                 };
                 // Read unaligned: the mapping isn't guaranteed to be 8-byte aligned.
-                let stamps: [u64; 2] = bytemuck::pod_read_unaligned(&data[..16]);
+                let stamps: [u64; QUERIES as usize] =
+                    bytemuck::pod_read_unaligned(&data[..BYTES as usize]);
                 // A start marker that ran late (rare on Metal) leaves the frame untimed.
                 if let Some(ticks) = stamps[1].checked_sub(stamps[0]) {
                     let ms = (ticks as f64 * f64::from(self.period_ns) / 1e6) as f32;
                     out.push(ms);
                     #[cfg(any(target_os = "ios", test))]
-                    self.samples.push((slot.frame, ms));
+                    self.samples.push(Sample {
+                        frame: slot.frame,
+                        ms,
+                        scopes: std::array::from_fn(|i| {
+                            (slot.scopes[i] == 3)
+                                .then(|| {
+                                    stamps[3 + i * 2]
+                                        .checked_sub(stamps[2 + i * 2])
+                                        .map(|ticks| {
+                                            (ticks as f64 * f64::from(self.period_ns) / 1e6) as f32
+                                        })
+                                })
+                                .flatten()
+                        }),
+                    });
                 }
             }
             slot.buffer.unmap();
@@ -362,6 +425,72 @@ mod tests {
     }
 
     #[test]
+    fn real_pass_scope_is_sampled_and_unwritten_scope_is_absent() {
+        let Some((device, queue, mut timer)) = mapped_timer() else {
+            eprintln!("Skipping GPU scope test: no timestamp-capable adapter");
+            return;
+        };
+        timer.collect(&device, &mut Vec::new());
+        timer.samples.clear();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(MARKER.into()),
+        });
+        let pipeline = end_pipeline(&device, &module, texture.format());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        timer.begin(&mut encoder);
+        let frame = timer.frame;
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Scope test"),
+                timestamp_writes: timer.scope_writes(Scope::Shadow, true, true),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+        }
+        timer.end(&device, &mut encoder, (&view, texture.format()));
+        queue.submit([encoder.finish()]);
+        timer.submitted(&queue);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        // Pass-boundary-only backends resolve on the next frame after completion.
+        let mut encoder = device.create_command_encoder(&Default::default());
+        timer.begin(&mut encoder);
+        timer.end(&device, &mut encoder, (&view, texture.format()));
+        queue.submit([encoder.finish()]);
+        timer.submitted(&queue);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        timer.collect(&device, &mut Vec::new());
+        let sample = timer.samples.iter().find(|s| s.frame == frame).unwrap();
+        assert!(sample.scopes[0].is_some_and(|ms| ms >= 0.0));
+        assert_eq!(sample.scopes[1], None);
+    }
+
+    #[test]
     fn successful_readback_releases_slot() {
         let Some((device, _queue, mut timer)) = mapped_timer() else {
             eprintln!("Skipping GPU timer test: no timestamp-capable adapter");
@@ -377,7 +506,14 @@ mod tests {
             vec![(10.0 * f64::from(timer.period_ns) / 1e6) as f32]
         );
         assert_eq!(timer.slots[0].state.load(Ordering::Acquire), FREE);
-        assert_eq!(timer.samples, vec![(7, samples[0])]);
+        assert_eq!(
+            timer.samples,
+            vec![Sample {
+                frame: 7,
+                ms: samples[0],
+                scopes: [None; 2]
+            }]
+        );
     }
 
     #[test]

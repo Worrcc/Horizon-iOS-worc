@@ -26,6 +26,18 @@ impl Governor {
         }
     }
 
+    /// Bloom quality cap: Off, Low, High. Uses the same cooling hysteresis as FPS.
+    pub fn bloom_cap(&self, low_power: bool) -> u8 {
+        if low_power {
+            return 0;
+        }
+        match self.state {
+            ThermalState::Serious | ThermalState::Critical => 0,
+            ThermalState::Fair => 1,
+            _ => 2,
+        }
+    }
+
     pub fn frame_cap(&self, player: i32) -> i32 {
         match self.state {
             ThermalState::Fair | ThermalState::Serious => player.min(60),
@@ -57,6 +69,27 @@ impl Governor {
 mod tests {
     use super::*;
     use ThermalState::*;
+
+    #[test]
+    fn bloom_cap_follows_power_heat_and_cooling_hysteresis() {
+        let mut g = Governor::default();
+        assert_eq!(g.bloom_cap(false), 2);
+        assert_eq!(g.bloom_cap(true), 0);
+        for (seconds, observed, cap) in [
+            (0, Fair, 1),
+            (1, Serious, 0),
+            (2, Critical, 0),
+            (3, Fair, 0),
+            (32, Fair, 0),
+            (33, Fair, 1),
+            (34, Nominal, 1),
+            (64, Nominal, 2),
+        ] {
+            g.update(observed, Duration::from_secs(seconds));
+            assert_eq!(g.bloom_cap(false), cap, "at {seconds}s");
+            assert_eq!(g.bloom_cap(true), 0);
+        }
+    }
 
     #[test]
     fn heat_escalates_immediately_and_cooling_requires_a_stable_state() {

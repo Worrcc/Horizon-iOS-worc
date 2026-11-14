@@ -27,7 +27,7 @@ fn luma(c: vec3<f32>) -> f32 {
 }
 
 // FXAA 3.11 (console quality): blend along the local edge direction.
-@fragment fn fs_fxaa(in: PostOut) -> @location(0) vec4<f32> {
+fn fxaa(in: PostOut) -> vec4<f32> {
     let texel = 1.0 / vec2<f32>(textureDimensions(world));
     let centre = textureSampleLevel(world, world_sampler, in.uv, 0.0);
     let rgb_m = centre.rgb;
@@ -54,6 +54,29 @@ fn luma(c: vec3<f32>) -> f32 {
         return vec4(a, centre.a);
     }
     return vec4(b, centre.a);
+}
+
+@fragment fn fs_fxaa(in: PostOut) -> @location(0) vec4<f32> {
+    return fxaa(in);
+}
+
+@group(1) @binding(0) var bloom: texture_2d<f32>;
+@group(1) @binding(1) var<uniform> bloom_params: vec4<f32>;
+fn composite_bloom(c: vec4<f32>, in: PostOut) -> vec4<f32> {
+    let a = bloom_params.x * textureSampleLevel(bloom, world_sampler, in.uv, 0.0).rgb;
+    var rgb = c.rgb + (1.0 - c.rgb) * a / (a + (1.0 - c.rgb) + 1e-5);
+    let pixel = vec2<u32>(in.clip.xy);
+    var h = pixel.x * 1664525u + pixel.y * 1013904223u;
+    h = (h ^ (h >> 16u)) * 2246822519u;
+    let noise = f32(h & 65535u) / 65536.0;
+    rgb += (noise - 0.5) / 255.0 * step(1.0 / 512.0, max(a.x, max(a.y, a.z)));
+    return vec4(rgb, c.a);
+}
+@fragment fn fs_copy_bloom(in: PostOut) -> @location(0) vec4<f32> {
+    return composite_bloom(textureSampleLevel(world, world_sampler, in.uv, 0.0), in);
+}
+@fragment fn fs_fxaa_bloom(in: PostOut) -> @location(0) vec4<f32> {
+    return composite_bloom(fxaa(in), in);
 }
 
 // TAA (`world_post.rs`): blend this frame into the history, reprojected from the

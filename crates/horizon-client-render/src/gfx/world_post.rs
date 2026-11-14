@@ -57,6 +57,12 @@ pub struct Post {
     sampler: wgpu::Sampler,
     copy: wgpu::RenderPipeline,
     fxaa: wgpu::RenderPipeline,
+    copy_bloom: wgpu::RenderPipeline,
+    fxaa_bloom: wgpu::RenderPipeline,
+    pub(super) bloom: super::bloom::Bloom,
+    pub bloom_level: super::bloom::BloomLevel,
+    pub bloom_scale: f32,
+    pub bloom_on: bool,
     format: wgpu::TextureFormat,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
@@ -146,6 +152,14 @@ impl Post {
                 cache: None,
             })
         };
+        let bloom = super::bloom::Bloom::new(device);
+        let bloom_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Bloom composite"),
+            bind_group_layouts: &[Some(&layout), Some(&bloom.composite_layout)],
+            ..Default::default()
+        });
+        let copy_bloom = pipeline("fs_copy_bloom", &bloom_layout, format);
+        let fxaa_bloom = pipeline("fs_fxaa_bloom", &bloom_layout, format);
         // The OpenGL backend's GLSL translator does not support textureLoad
         // from depth textures: on devices running through OpenGL (such as older
         // Intel GPUs on Linux), TAA cannot compile its pipeline.
@@ -241,6 +255,12 @@ impl Post {
             sampler,
             format,
             scale: 1.0,
+            copy_bloom,
+            fxaa_bloom,
+            bloom,
+            bloom_level: super::bloom::BloomLevel::Off,
+            bloom_scale: 1.0,
+            bloom_on: false,
             antialias: false,
             taa: false,
             upscale: 1.0,
@@ -250,6 +270,13 @@ impl Post {
             taa_frame: 0,
             taa_previous: None,
             taa_this_frame: bytemuck::Zeroable::zeroed(),
+        }
+    }
+
+    pub fn set_bloom(&mut self, level: super::bloom::BloomLevel) {
+        self.bloom_level = level;
+        if level == super::bloom::BloomLevel::Off {
+            self.bloom.clear();
         }
     }
 
@@ -320,6 +347,9 @@ impl Post {
         window: [u32; 2],
         always: bool,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+        if !self.bloom_on {
+            self.bloom.clear();
+        }
         if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
             self.target = None;
             return None;
@@ -337,6 +367,7 @@ impl Post {
                 break;
             }
             self.target = None;
+            self.bloom.clear();
             // Errors raised are fatal, so catch an out-of-memory one and scale down. A texture
             // that failed is invalid, so its view fails validation too: catch that as well.
             let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -369,6 +400,12 @@ impl Post {
             if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
                 return None;
             }
+        }
+        if self.bloom_on
+            && let Some(target) = &self.target
+        {
+            self.bloom
+                .prepare(device, target.size, self.bloom_level, &target.color);
         }
         self.target
             .as_ref()
@@ -498,14 +535,36 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
         mut timing: Option<&mut super::pack_timing::PassTiming>,
+        timer: Option<&mut super::timing::GpuTimer>,
     ) {
         let Some(target) = &self.target else { return };
+        if self.bloom_on {
+            self.bloom.run(
+                queue,
+                encoder,
+                self.bloom_scale,
+                timing.as_deref_mut(),
+                timer,
+            );
+        }
         let Some(taa) = target.taa.as_ref().filter(|_| self.taa_previous.is_some()) else {
-            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
+            self.show(
+                encoder,
+                screen,
+                &target.group,
+                timing.as_deref_mut(),
+                self.bloom_on,
+            );
             return;
         };
         let Some(res) = &self.taa_resources else {
-            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
+            self.show(
+                encoder,
+                screen,
+                &target.group,
+                timing.as_deref_mut(),
+                self.bloom_on,
+            );
             return;
         };
         let i = (self.taa_frame % 2) as usize;
@@ -529,7 +588,7 @@ impl Post {
         pass.set_bind_group(0, &taa.resolve[i], &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
-        self.finish_with(encoder, screen, &taa.show[i], timing);
+        self.show(encoder, screen, &taa.show[i], timing, self.bloom_on);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -539,6 +598,17 @@ impl Post {
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
         timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        self.show(encoder, screen, group, timing, false);
+    }
+
+    fn show(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        group: &wgpu::BindGroup,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+        bloom: bool,
     ) {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: screen,
@@ -555,11 +625,16 @@ impl Post {
             color_attachments: &attachments,
             ..Default::default()
         });
-        pass.set_pipeline(if self.antialias {
-            &self.fxaa
-        } else {
-            &self.copy
+        let bloom = self.bloom.composite().filter(|_| bloom);
+        pass.set_pipeline(match (self.antialias, bloom.is_some()) {
+            (true, true) => &self.fxaa_bloom,
+            (false, true) => &self.copy_bloom,
+            (true, false) => &self.fxaa,
+            (false, false) => &self.copy,
         });
+        if let Some(group) = bloom {
+            pass.set_bind_group(1, group, &[]);
+        }
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }

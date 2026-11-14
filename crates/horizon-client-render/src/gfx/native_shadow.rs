@@ -276,9 +276,9 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
-        timing: Option<&mut super::pack_timing::PassTiming>,
+        writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> wgpu::RenderPass<'e> {
-        self.depth_pass(encoder, label, wgpu::LoadOp::Clear(1.0), timing)
+        self.depth_pass(encoder, label, wgpu::LoadOp::Clear(1.0), writes)
     }
 
     /// A depth pass that adds to the map. Entities draw here, after the translucent map was
@@ -287,8 +287,9 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
+        writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> wgpu::RenderPass<'e> {
-        self.depth_pass(encoder, label, wgpu::LoadOp::Load, None)
+        self.depth_pass(encoder, label, wgpu::LoadOp::Load, writes)
     }
 
     fn depth_pass<'e>(
@@ -296,11 +297,11 @@ impl ShadowMap {
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
         load: wgpu::LoadOp<f32>,
-        timing: Option<&mut super::pack_timing::PassTiming>,
+        writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> wgpu::RenderPass<'e> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
-            timestamp_writes: timing.and_then(|t| t.writes(label)),
+            timestamp_writes: writes,
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.view,
@@ -320,7 +321,7 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
-        timing: Option<&mut super::pack_timing::PassTiming>,
+        writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> wgpu::RenderPass<'e> {
         encoder.copy_texture_to_texture(
             self.depth.as_image_copy(),
@@ -329,7 +330,7 @@ impl ShadowMap {
         );
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
-            timestamp_writes: timing.and_then(|t| t.writes(label)),
+            timestamp_writes: writes,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.color_view,
                 resolve_target: None,

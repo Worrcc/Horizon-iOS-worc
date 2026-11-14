@@ -156,6 +156,7 @@ fn packed_wanted() -> bool {
 
 mod animate;
 mod arena;
+mod bloom;
 pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
@@ -206,12 +207,14 @@ mod stars;
 pub mod submit;
 mod sunrise_fan;
 mod timing;
+pub use timing::Sample as GpuSample;
 pub mod translucency;
 pub(crate) mod upload;
 mod view;
 mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
+pub use bloom::BloomLevel;
 pub mod world_primitives;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
@@ -1054,6 +1057,7 @@ pub struct Renderer {
     /// (see `startup_step`).
     first_frame: FirstFrame,
     gpu_timer: Option<timing::GpuTimer>,
+    shadow_updates: u64,
     /// GPU frame times (ms) read back since the caller last drained them.
     pub gpu_times: Vec<f32>,
     /// The last lightmap written, RGBA rows of sky level by block level
@@ -4531,6 +4535,7 @@ impl Renderer {
                 FirstFrame::Drawn
             },
             gpu_timer,
+            shadow_updates: 0,
             gpu_times: Vec::new(),
             lightmap_pixels: [0; 16 * 16 * 4],
             last_wait: std::time::Duration::ZERO,
@@ -5261,7 +5266,7 @@ impl Renderer {
     }
     /// The frame just timed and tagged GPU readbacks that arrived during this draw.
     #[cfg(target_os = "ios")]
-    pub fn phone_gpu_timings(&mut self) -> (Option<u64>, Vec<(u64, f32)>) {
+    pub fn phone_gpu_timings(&mut self) -> (Option<u64>, Vec<timing::Sample>) {
         self.gpu_timer.as_mut().map_or_else(
             || (None, Vec::new()),
             |timer| (Some(timer.frame), std::mem::take(&mut timer.samples)),
@@ -6383,6 +6388,22 @@ impl Renderer {
             self.frame_gen.stop();
         }
         self.frame_gen.on = on;
+    }
+    /// Shadow map renders so far (the phone `perf:` line's `shadow_updates_s`).
+    pub fn shadow_updates(&self) -> u64 {
+        self.shadow_updates
+    }
+    /// The bloom level in force: the player's setting, capped by the phone's heat governor.
+    pub fn set_bloom(&mut self, level: BloomLevel) {
+        self.world_post.set_bloom(level);
+    }
+    /// M3's `post-keys` drive this multiplier within the player's bloom setting.
+    pub fn set_bloom_scale(&mut self, scale: f32) {
+        self.world_post.bloom_scale = if scale.is_finite() {
+            scale.clamp(0.0, 2.0)
+        } else {
+            0.0
+        };
     }
     /// `upscale`: output pixels per rendered pixel, for TAA to rebuild (1: native).
     pub fn set_world_post(&mut self, scale: f32, antialias: bool, taa: bool, upscale: f32) {
@@ -8949,10 +8970,14 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_weather());
+        self.world_post.bloom_on = self.world_post.bloom_level != BloomLevel::Off
+            && self.world_post.bloom_scale > 0.0
+            && !frame.title
+            && !pack_reads_world;
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world || fg,
+            pack_reads_world || fg || self.world_post.bloom_on,
         );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
@@ -9072,11 +9097,22 @@ impl Renderer {
             && let Some(native) = &self.native
             && let Some(shadow) = &native.shadow
         {
-            let mut pass = native.frame.shadow_map.begin(
-                &mut encoder,
-                "Native shader pack shadow",
-                self.own_timing.as_mut(),
-            );
+            self.shadow_updates = self.shadow_updates.wrapping_add(1);
+            let entities = entity_quads > 0 || shadow_only_quads > 0;
+            let writes = self
+                .own_timing
+                .as_mut()
+                .and_then(|t| t.writes("Native shader pack shadow"))
+                .or_else(|| {
+                    self.gpu_timer
+                        .as_mut()
+                        .and_then(|t| t.scope_writes(timing::Scope::Shadow, true, false))
+                });
+            let mut pass =
+                native
+                    .frame
+                    .shadow_map
+                    .begin(&mut encoder, "Native shader pack shadow", writes);
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
             if flat_frame
@@ -9105,10 +9141,19 @@ impl Renderer {
                 d.draw(&mut pass, picks, pipeline);
             }
             drop(pass);
+            let writes = self
+                .own_timing
+                .as_mut()
+                .and_then(|t| t.writes("Native shader pack translucent shadow"))
+                .or_else(|| {
+                    self.gpu_timer
+                        .as_mut()
+                        .and_then(|t| t.scope_writes(timing::Scope::Shadow, false, !entities))
+                });
             let mut pass = native.frame.shadow_map.begin_translucent(
                 &mut encoder,
                 "Native shader pack translucent shadow",
-                self.own_timing.as_mut(),
+                writes,
             );
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
@@ -9136,11 +9181,21 @@ impl Renderer {
                 );
             }
             drop(pass);
-            if entity_quads > 0 || shadow_only_quads > 0 {
-                let mut pass = native
-                    .frame
-                    .shadow_map
-                    .begin_entities(&mut encoder, "Native shader pack entity shadow");
+            if entities {
+                let writes = self
+                    .own_timing
+                    .as_mut()
+                    .and_then(|t| t.writes("Native shader pack entity shadow"))
+                    .or_else(|| {
+                        self.gpu_timer
+                            .as_mut()
+                            .and_then(|t| t.scope_writes(timing::Scope::Shadow, false, true))
+                    });
+                let mut pass = native.frame.shadow_map.begin_entities(
+                    &mut encoder,
+                    "Native shader pack entity shadow",
+                    writes,
+                );
                 pass.set_pipeline(&shadow.entity);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
@@ -10473,8 +10528,13 @@ impl Renderer {
             let world = self
                 .frame_gen
                 .world(&self.device, &self.world_post, &self.config);
-            self.world_post
-                .finish(&self.queue, &mut encoder, &world, self.own_timing.as_mut());
+            self.world_post.finish(
+                &self.queue,
+                &mut encoder,
+                &world,
+                self.own_timing.as_mut(),
+                self.gpu_timer.as_mut(),
+            );
             let camera = frame_gen::Camera {
                 jittered,
                 view_proj,
@@ -10518,6 +10578,7 @@ impl Renderer {
                 &mut encoder,
                 &view_target,
                 self.own_timing.as_mut(),
+                self.gpu_timer.as_mut(),
             );
         }
         if !frame.title {

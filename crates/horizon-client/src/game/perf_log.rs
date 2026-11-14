@@ -1,6 +1,7 @@
 //! iOS runtime overrides and ten-second, in-world diagnostics.
 #[cfg(target_os = "ios")]
 use super::Game;
+use horizon_client::gfx::GpuSample;
 #[cfg(target_os = "ios")]
 use horizon_client::lang;
 use horizon_client::spans::{self, Span};
@@ -36,6 +37,7 @@ pub(super) struct PhonePerf {
     thermal: ThermalState,
     low_power: bool,
     scale: Option<u32>,
+    pub(super) bloom: Option<u8>,
     cap: Option<i32>,
     log: PerfLog,
     frame_at: Option<Instant>,
@@ -84,6 +86,25 @@ impl Game<'_> {
             let g = &self.settings.horizon;
             r.set_world_post(scale as f32 / 100.0, g.fxaa, g.taa, g.upscaling.ratio());
             p.scale = Some(scale);
+        }
+        let player = match self.settings.horizon.bloom {
+            horizon_client::graphics::Bloom::Off => 0,
+            horizon_client::graphics::Bloom::Low => 1,
+            horizon_client::graphics::Bloom::High => 2,
+        };
+        let effective = player.min(
+            p.governor
+                .bloom_cap(p.low_power && self.settings.horizon.thermal_throttling),
+        );
+        if p.bloom != Some(effective)
+            && let Some(r) = &mut self.renderer
+        {
+            r.set_bloom(match effective {
+                0 => horizon_client::gfx::BloomLevel::Off,
+                1 => horizon_client::gfx::BloomLevel::Low,
+                _ => horizon_client::gfx::BloomLevel::High,
+            });
+            p.bloom = Some(effective);
         }
         self.offer_phone_defaults();
     }
@@ -215,9 +236,10 @@ impl Game<'_> {
         if p.usage_from.is_none() {
             p.usage_from = horizon_threads::process_usage::sample().map(|u| (now, u));
         }
-        let Some(stats) = p
-            .log
-            .record(now, elapsed, cpu, gpu, frame_id, &samples, spans)
+        let updates = self.renderer.as_ref().map_or(0, |r| r.shadow_updates());
+        let Some(stats) =
+            p.log
+                .record(now, elapsed, cpu, gpu, frame_id, (&samples, updates), spans)
         else {
             return;
         };
@@ -242,7 +264,7 @@ impl Game<'_> {
             .gpu_ms
             .map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}"));
         log::info!(
-            "perf: avg_fps={:.1} low_1pct_ms={:.2} low_0.1pct_ms={:.2} cpu_ms={:.2} gpu_ms={} render_distance={} resolution_scale={} fps_cap={} thermal={:?} low_power={} governor={:?} governor_enabled={} resident_mib={}{} slow_frames={} worst_ms={:.1} worst_gpu_ms={} worst=[{}]",
+            "perf: avg_fps={:.1} low_1pct_ms={:.2} low_0.1pct_ms={:.2} cpu_ms={:.2} gpu_ms={} render_distance={} resolution_scale={} fps_cap={} thermal={:?} low_power={} governor={:?} governor_enabled={} resident_mib={}{} slow_frames={} worst_ms={:.1} worst_gpu_ms={} worst=[{}] shadow_ms={} bloom_ms={} shadow_updates_s={:.1}",
             stats.fps,
             stats.low_1,
             stats.low_01,
@@ -261,6 +283,9 @@ impl Game<'_> {
             stats.worst.ms,
             worst_gpu,
             stats.worst.describe(),
+            stats.scope_ms[0].map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}")),
+            stats.scope_ms[1].map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}")),
+            stats.shadow_updates_s,
         );
     }
 }
@@ -295,6 +320,10 @@ struct PerfLog {
     cpu_ms: f64,
     gpu_ms: f64,
     gpu_samples: usize,
+    scope_ms: [f64; 2],
+    scope_frames: usize,
+    shadow_at: Option<u64>,
+    shadow_updates: u64,
     slow_frames: usize,
     worst: WorstFrame,
 }
@@ -304,6 +333,8 @@ struct Stats {
     low_01: f64,
     cpu_ms: f64,
     gpu_ms: Option<f64>,
+    scope_ms: [Option<f64>; 2],
+    shadow_updates_s: f64,
     slow_frames: usize,
     worst: WorstFrame,
 }
@@ -372,17 +403,20 @@ impl PerfLog {
         cpu: Duration,
         gpu: &[f32],
         frame_id: Option<u64>,
-        samples: &[(u64, f32)],
+        timings: (&[GpuSample], u64),
         raw: &[Span],
     ) -> Option<Stats> {
+        let (samples, updates) = timings;
         if frame > Duration::from_secs(2) {
             self.suspend();
             self.start = Some(now);
+            self.shadow_at = Some(updates);
             return None;
         }
         // Ignore the first interval: it may include loading or time spent in menus.
         let Some(start) = self.start else {
             self.start = Some(now);
+            self.shadow_at = Some(updates);
             return None;
         };
         let ms = frame.as_secs_f64() * 1000.0;
@@ -413,10 +447,18 @@ impl PerfLog {
             };
         }
         // Readbacks are asynchronous: use only this frame's ID, never the latest GPU sample.
-        for &(id, ms) in samples {
-            if self.worst.frame_id == Some(id) {
-                self.worst.gpu_ms = Some(ms);
+        for sample in samples {
+            if self.worst.frame_id == Some(sample.frame) {
+                self.worst.gpu_ms = Some(sample.ms);
             }
+            for (sum, ms) in self.scope_ms.iter_mut().zip(sample.scopes) {
+                *sum += f64::from(ms.unwrap_or(0.0));
+            }
+        }
+        self.scope_frames += samples.len();
+        if let Some(prev) = self.shadow_at.replace(updates) {
+            // Renderer replacement resets the cumulative counter.
+            self.shadow_updates += updates.checked_sub(prev).unwrap_or(updates);
         }
         self.cpu_ms += cpu.as_secs_f64() * 1000.0;
         self.gpu_ms += gpu.iter().map(|ms| f64::from(*ms)).sum::<f64>();
@@ -439,12 +481,19 @@ impl PerfLog {
             low_01: slow_mean(1000),
             cpu_ms: self.cpu_ms / count as f64,
             gpu_ms: (self.gpu_samples > 0).then(|| self.gpu_ms / self.gpu_samples as f64),
+            scope_ms: self
+                .scope_ms
+                .map(|sum| (self.scope_frames > 0).then(|| sum / self.scope_frames as f64)),
+            shadow_updates_s: self.shadow_updates as f64 / now.duration_since(start).as_secs_f64(),
         };
         self.frames.clear();
         self.start = Some(now);
         self.cpu_ms = 0.0;
         self.gpu_ms = 0.0;
         self.gpu_samples = 0;
+        self.scope_ms = [0.0; 2];
+        self.scope_frames = 0;
+        self.shadow_updates = 0;
         self.slow_frames = 0;
         Some(stats)
     }
@@ -461,9 +510,72 @@ mod tests {
             Duration::from_millis(3),
             &[9.0],
             None,
-            &[],
+            (&[], 0),
             &[],
         )
+    }
+
+    #[test]
+    fn scope_means_include_timed_frames_without_effects_and_count_update_deltas() {
+        let now = Instant::now();
+        let mut log = PerfLog::default();
+        log.record(
+            now,
+            Duration::from_millis(16),
+            Duration::ZERO,
+            &[],
+            None,
+            (&[], 12),
+            &[],
+        );
+        let samples = [
+            GpuSample {
+                frame: 1,
+                ms: 3.0,
+                scopes: [Some(2.0), None],
+            },
+            GpuSample {
+                frame: 2,
+                ms: 3.0,
+                scopes: [None, Some(1.0)],
+            },
+            GpuSample {
+                frame: 3,
+                ms: 3.0,
+                scopes: [None, None],
+            },
+            GpuSample {
+                frame: 4,
+                ms: 3.0,
+                scopes: [None, Some(3.0)],
+            },
+        ];
+        let stats = log
+            .record(
+                now + Duration::from_secs(10),
+                Duration::from_millis(16),
+                Duration::ZERO,
+                &[3.0; 4],
+                None,
+                (&samples, 17),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(stats.scope_ms, [Some(0.5), Some(1.0)]);
+        assert_eq!(stats.shadow_updates_s, 0.5);
+        let stats = log
+            .record(
+                now + Duration::from_secs(20),
+                Duration::from_millis(16),
+                Duration::ZERO,
+                &[],
+                None,
+                (&[], 17),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(stats.scope_ms, [None; 2]);
+        assert_eq!(stats.shadow_updates_s, 0.0);
     }
 
     #[test]
@@ -537,7 +649,14 @@ mod tests {
             Duration::from_millis(20),
             &[],
             Some(7),
-            &[(6, 99.0)],
+            (
+                &[GpuSample {
+                    frame: 6,
+                    ms: 99.0,
+                    scopes: [None; 2],
+                }],
+                0,
+            ),
             &raw,
         );
         log.record(
@@ -546,7 +665,14 @@ mod tests {
             Duration::from_millis(2),
             &[],
             Some(8),
-            &[(7, 12.0)],
+            (
+                &[GpuSample {
+                    frame: 7,
+                    ms: 12.0,
+                    scopes: [None; 2],
+                }],
+                0,
+            ),
             &[],
         );
         let stats = record(&mut log, now + Duration::from_secs(10), 33).unwrap();
@@ -584,7 +710,7 @@ mod tests {
             Duration::ZERO,
             &[],
             None,
-            &[],
+            (&[], 0),
             &raw,
         );
         let stats = record(&mut log, now + Duration::from_secs(10), 16).unwrap();

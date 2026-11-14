@@ -201,3 +201,32 @@ The baseline was CPU-bound everywhere: on the RTX 4080 the GPU spent 0.2 to 16 m
 - **Stalls**: chunks and entity chunks unloaded while moving are encoded and written by a background region writer (loads see queued records first, saves wait for the queue); deleting entity chunks a region doesn't hold no longer rewrites the region file; unloading drops block entities in one pass instead of one per chunk.
 - **Rendering**: terrain sections share one vertex arena drawn with one indirect multi-draw per pass, instead of a buffer and draw call each; the cave-culling search runs on dense arrays; mobs are culled by the view frustum and vanilla's per-entity render distance, block entities by the frustum; per-frame scratch buffers are reused.
 - **Streaming**: its bookkeeping uses the fast hash, and a column's readiness for meshing is checked once per frame rather than once per dirty section.
+
+## Bloom
+
+Bloom is Off by default on desktop and Low on iOS. It runs after the world pass,
+using gamma-space world colour and ignoring alpha: the emission mark is not
+written with HDR output off (`hdr_light.z` is 0, so terrain leaves alpha at 1). The
+fallback is a per-tap soft-knee luma threshold (0.78, knee 0.18) in the first
+downsample, normalised into a 0..1 mask (1 at white): the frame is LDR, so the light
+above the threshold alone (at most 0.22) left only a faint halo. World alpha survives
+the composite unchanged for HDR output.
+Small emitters (under about 2x2 rendered pixels on High, 4x4 on Low) bloom only partly, depending on where they fall on the first downsample's taps.
+
+High uses four Rgba8Unorm targets at 1/2, 1/4, 1/8 and 1/16 of the world target,
+with four downsample and three additive upsample passes. Low starts at 1/4 and
+uses three downsample and two upsample passes. The shoulder and gated 8-bit dither
+are fused into the existing copy/FXAA/TAA-show pass. At 100% resolution without AA,
+bloom requires a world target and one additional full-screen pass. Off or zero
+intensity uses the existing pipelines and passes; bloom targets are released.
+
+The plan estimates High at 75% of 2532×1170: 0.25–0.4 ms GPU, about 20 µs CPU
+encoding and 2.3 MiB VRAM. These are estimates pending phone measurements. The
+`perf:` line reports amortised `shadow_ms`, `bloom_ms` and `shadow_updates_s`.
+Titles and shader packs that read the world disable built-in bloom. On iOS the
+thermal governor caps Fair at Low and Serious/Critical or Low Power Mode at Off;
+cooling uses the existing 30-second hysteresis. The Thermal Throttling switch
+controls these runtime caps, preserving the player's saved setting.
+
+`Renderer::set_bloom_scale` is the M3 `post-keys` hook: a multiplier clamped to
+0–2 (default 1), within the player's chosen quality. M1 adds no mod API.
