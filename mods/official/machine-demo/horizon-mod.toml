@@ -1,0 +1,9 @@
+id = "machine_demo"
+name = "Machine Demo"
+version = "0.1.0"
+description = "API 30 display menus, saved inventory machines and breaking."
+authors = ["Horizon"]
+api = "0.3"
+side = "server"
+capabilities = ["world", "players"]
+experimental = ["world", "players"]

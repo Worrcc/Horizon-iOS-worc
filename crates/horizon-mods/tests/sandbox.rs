@@ -60,6 +60,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "behaviour-demo",
                 "-p",
+                "machine-demo",
+                "-p",
                 "coords-hud",
                 "-p",
                 "predator-missile",
@@ -96,6 +98,11 @@ fn mods_dir() -> &'static Path {
             std::fs::read_to_string(root.join(path)).unwrap()
         };
         let mods = [
+            (
+                "machine_demo",
+                std::fs::read_to_string(root.join("mods/official/machine-demo/horizon-mod.toml"))
+                    .unwrap(),
+            ),
             (
                 "behaviour_demo",
                 std::fs::read_to_string(root.join("mods/official/behaviour-demo/horizon-mod.toml"))
@@ -3718,7 +3725,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     }
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        29
+        30
     );
 }
 
@@ -3809,3 +3816,5 @@ mod behaviour;
 
 #[path = "stack_data/mod.rs"]
 mod stack_data;
+
+mod machines;

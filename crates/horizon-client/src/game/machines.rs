@@ -634,7 +634,7 @@ impl Game<'_> {
         &mut self,
         from_hopper: Option<Pos>,
         view: &View,
-        mut stack: ItemStack,
+        stack: ItemStack,
         slot: usize,
         face: Option<Direction>,
     ) -> (Option<ItemStack>, bool) {
@@ -645,37 +645,10 @@ impl Game<'_> {
         }
         let was_empty = c.is_empty(view);
         let max = c.max_stack(&stack);
-        let mut success = false;
         let Some(target) = self.slot_mut_at(view, slot) else {
             return (Some(stack), false);
         };
-        // An empty stack a mod left in its slot: the slot is free (`isEmpty`).
-        if target.as_ref().is_some_and(|s| s.count == 0) {
-            *target = None;
-        }
-        match target {
-            None => {
-                // HopperBlockEntity.setItem limits the accepted stack, then
-                // tryMoveInItem consumes the input even when it exceeded that limit.
-                *target = Some(ItemStack {
-                    count: stack.count.min(max),
-                    ..stack.clone()
-                });
-                stack.count = 0;
-                success = true;
-            }
-            Some(current)
-                // HopperBlockEntity.canMergeItems
-                if current.count <= max && current.same_item_same_components(&stack) =>
-            {
-                let space = max.saturating_sub(current.count);
-                let count = stack.count.min(space);
-                stack.count -= count;
-                current.count += count;
-                success = count > 0;
-            }
-            Some(_) => {}
-        }
+        let (rest, success) = merge_hopper_stack(target, stack, max);
         if success && was_empty && view.kind == Kind::Hopper {
             let dest = view.parts[0].0;
             let from_ticked = from_hopper.and_then(|p| self.hoppers.get(&p).map(|h| h.ticked));
@@ -685,7 +658,7 @@ impl Game<'_> {
                 state.cooldown = 8 - skip;
             }
         }
-        ((stack.count > 0).then_some(stack), success)
+        (rest, success)
     }
     /// `HopperBlockEntity.addItem(from, container, stack, direction)`; the remainder.
     fn add_item(
@@ -709,16 +682,7 @@ impl Game<'_> {
     /// Remove one item from a slot (`removeItem(slot, 1)`).
     fn take_one(&mut self, view: &View, slot: usize) -> Option<ItemStack> {
         let target = self.slot_mut_at(view, slot)?;
-        let current = target.as_mut().filter(|s| s.count > 0)?;
-        let one = ItemStack {
-            count: 1,
-            ..current.clone()
-        };
-        current.count -= 1;
-        if current.count == 0 {
-            *target = None;
-        }
-        Some(one)
+        take_one_stack(target)
     }
     /// Undo `take_one` after a failed move.
     fn put_back(&mut self, view: &View, slot: usize, one: ItemStack) {
@@ -1670,11 +1634,127 @@ mod item_column_tests {
     }
 }
 
+/// The authoritative hopper merge, shared by automation and conservation tests.
+fn merge_hopper_stack(
+    target: &mut Option<ItemStack>,
+    mut stack: ItemStack,
+    max: u32,
+) -> (Option<ItemStack>, bool) {
+    let mut success = false;
+    // An empty stack a mod left in its slot: the slot is free (`isEmpty`).
+    if target.as_ref().is_some_and(|s| s.count == 0) {
+        *target = None;
+    }
+    match target {
+            None => {
+                // HopperBlockEntity.setItem limits the accepted stack, then
+                // tryMoveInItem consumes the input even when it exceeded that limit.
+                *target = Some(ItemStack {
+                    count: stack.count.min(max),
+                    ..stack.clone()
+                });
+                stack.count = 0;
+                success = true;
+            }
+            Some(current)
+                // HopperBlockEntity.canMergeItems
+                if current.count <= max && current.same_item_same_components(&stack) =>
+            {
+                let space = max.saturating_sub(current.count);
+                let count = stack.count.min(space);
+                stack.count -= count;
+                current.count += count;
+                success = count > 0;
+            }
+            Some(_) => {}
+        }
+    ((stack.count > 0).then_some(stack), success)
+}
+fn take_one_stack(target: &mut Option<ItemStack>) -> Option<ItemStack> {
+    let current = target.as_mut().filter(|s| s.count > 0)?;
+    let one = ItemStack {
+        count: 1,
+        ..current.clone()
+    };
+    current.count -= 1;
+    if current.count == 0 {
+        *target = None;
+    }
+    Some(one)
+}
+
 #[cfg(test)]
 mod mod_container_tests {
     use super::{Kind, ModContainer, View};
     use horizon_core::geometry::Direction;
     use std::sync::Arc;
+
+    #[test]
+    fn api30_hopper_insert_extract_and_break_conserve_container_components() {
+        use super::{merge_hopper_stack, take_one_stack};
+        use horizon_client::{
+            containers::{BlockEntity, ModBlockEntityFields},
+            items::ItemStack,
+        };
+        let mut faces: [Vec<usize>; 6] = Default::default();
+        faces[Direction::Up as usize] = vec![0];
+        faces[Direction::Down as usize] = vec![1];
+        let rules = Arc::new(ModContainer {
+            slots: 2,
+            faces,
+            inputs: vec![0],
+            outputs: vec![1],
+            menu: Some("minecraft:generic_9x1".into()),
+        });
+        let view = View {
+            parts: vec![((0, 0, 0), 2)],
+            kind: Kind::Mod,
+            container: Some(rules.clone()),
+        };
+        let mut tagged = ItemStack::new("minecraft:diamond", 6);
+        tagged.set_mod_data("other_mod", Some("preserved")).unwrap();
+        let mut slots = vec![
+            None,
+            Some(ItemStack {
+                count: 3,
+                ..tagged.clone()
+            }),
+        ];
+        // The actual hopper side selection reaches input from above, result from below.
+        assert_eq!(view.slots_to_add(Some(Direction::Up)), [0]);
+        assert!(view.slots_to_add(Some(Direction::East)).is_empty());
+        let slot = view.slots_to_add(Some(Direction::Up))[0];
+        assert!(rules.inputs.contains(&slot));
+        let (rest, moved) = merge_hopper_stack(&mut slots[slot], tagged.clone(), 64);
+        assert!(moved);
+        assert_eq!(rest, None);
+        let result = view.slots_for_face(Some(Direction::Down))[0];
+        assert!(!rules.inputs.contains(&result));
+        assert!(rules.outputs.contains(&result));
+        assert!(!rules.outputs.contains(&0));
+        let extracted = take_one_stack(&mut slots[result]).unwrap();
+        assert_eq!(extracted.count, 1);
+        let entity = BlockEntity::Mod(Box::new(
+            ModBlockEntityFields {
+                id: "demo:smelter".into(),
+                items: slots,
+                ..Default::default()
+            }
+            .into(),
+        ));
+        let drops = entity.contents();
+        assert_eq!(drops.iter().map(|s| s.count).sum::<u32>(), 8);
+        assert_eq!(
+            extracted.count + drops.iter().map(|s| s.count).sum::<u32>(),
+            9
+        );
+        assert!(
+            drops
+                .iter()
+                .chain([&extracted])
+                .all(|s| s.same_item_same_components(&tagged))
+        );
+    }
 
     /// A mod's container reaches the slots its block names for each face;
     /// without a face, every slot.

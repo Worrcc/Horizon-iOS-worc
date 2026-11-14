@@ -910,6 +910,9 @@ fn decode_mod_block_entity(id: String, tag: &Tag) -> Option<crate::containers::M
     } else {
         items.clear();
     }
+    if let Some(c) = crate::containers::content_container(&id) {
+        items.resize(items.len().max(c.container.slots), None);
+    }
     Some(
         crate::containers::ModBlockEntityFields {
             id,
@@ -8234,5 +8237,48 @@ mod far_census {
                 started.elapsed().as_secs_f32()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod api30_block_data_tests {
+    use super::*;
+    use crate::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+    #[test]
+    fn api30_block_data_round_trips_with_chunk_block_entity_items() {
+        let mut m = ModBlockEntity::new(ModBlockEntityFields {
+            id: "demo:crate".into(),
+            items: vec![
+                Some(crate::items::ItemStack::new("minecraft:diamond", 7)),
+                None,
+            ],
+            ..Default::default()
+        });
+        m.set_mod_data("machine_demo", Some(&"é".repeat(2048)))
+            .unwrap();
+        m.set_mod_data("other_mod", Some("private")).unwrap();
+        assert!(
+            m.set_mod_data("machine_demo", Some(&"é".repeat(2049)))
+                .is_err()
+        );
+        let entity = BlockEntity::Mod(Box::new(m));
+        let saved = encode_block_entity((2, -60, 4), &entity, "demo:crate");
+        let bytes =
+            horizon_world::nbt::write_network(&saved, horizon_world::nbt::Limits::default())
+                .unwrap();
+        let (tag, _) =
+            horizon_world::nbt::read_network(&bytes, horizon_world::nbt::Limits::default())
+                .unwrap();
+        let (pos, back) = decode_block_entity(&tag).unwrap();
+        assert_eq!(pos, (2, -60, 4));
+        let BlockEntity::Mod(mut m) = back else {
+            panic!("not mod data")
+        };
+        assert_eq!(m.mod_data("machine_demo").unwrap(), Some("é".repeat(2048)));
+        assert_eq!(m.mod_data("other_mod").unwrap().as_deref(), Some("private"));
+        assert_eq!(m.items[0].as_ref().unwrap().count, 7);
+        m.set_mod_data("machine_demo", None).unwrap();
+        assert_eq!(m.mod_data("machine_demo").unwrap(), None);
+        assert_eq!(m.mod_data("other_mod").unwrap().as_deref(), Some("private"));
     }
 }

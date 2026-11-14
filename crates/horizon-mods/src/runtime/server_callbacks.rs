@@ -39,6 +39,8 @@ pub(super) struct ServerCallbacks {
     pub breaking: Option<TypedFunc<(ServerPlayer, BlockPos, String), (Decision,)>>,
     pub placing: Option<TypedFunc<(ServerPlayer, BlockPos, String, String), (Decision,)>>,
     pub used: Option<TypedFunc<(ServerPlayer, BlockPos, String, bool), (bool,)>>,
+    pub menu_clicked: Option<TypedFunc<(ServerPlayer, i32, i32, i32), ()>>,
+    pub menu_closed: Option<TypedFunc<(ServerPlayer,), ()>>,
     pub channel: Option<TypedFunc<(ServerPlayer, String, Vec<u8>), ()>>,
 }
 impl ServerCallbacks {
@@ -82,6 +84,8 @@ impl ServerCallbacks {
             placing: get!("block-placing"),
             used: get!("block-used"),
             channel: get!("channel-message"),
+            menu_clicked: get!("menu-clicked"),
+            menu_closed: get!("menu-closed"),
         })
     }
     pub fn horizon_mods_server_events(&self) -> &Self {

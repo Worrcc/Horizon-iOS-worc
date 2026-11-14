@@ -1350,7 +1350,11 @@ impl Game<'_> {
                     }
                     None => return false,
                 };
-                horizon_client::containers::display_name(custom(k), &key)
+                if let Some(c) = horizon_client::containers::content_container(name) {
+                    horizon_protocol::text::translatable(&c.title, &[])
+                } else {
+                    horizon_client::containers::display_name(custom(k), &key)
+                }
             }
             // Opened by a mod (`native_open_menu`), never here.
             Slots::Native => return false,

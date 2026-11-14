@@ -147,9 +147,9 @@ impl Game<'_> {
                 .iter()
                 .find(|p| p.id == super::server_mods::run::uuid_string(uuid))
             {
-                self.mods
-                    .mods
-                    .channel_message(&id, Some(player), &name, &data);
+                self.with_machine_mods(None, |mods| {
+                    mods.channel_message(&id, Some(player), &name, &data)
+                });
             }
         }
     }

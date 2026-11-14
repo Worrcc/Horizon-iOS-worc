@@ -288,6 +288,11 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
     mods.player_left(&steve);
     for out in mods.drain() {
         report.output.push(match out {
+            Output::Menu(operation) => format!("queued menu: {operation:?}"),
+            Output::BlockDataWrite(plan) => format!("queued block data for {}", plan.mod_id),
+            Output::BreakProgress { pos, stage, .. } => {
+                format!("queued break progress {pos:?}: {stage}")
+            }
             Output::StorageMove(plan) => format!("reserved {} items for transfer", plan.count),
             Output::StorageDataWrite(plan) => format!("queued stack data for {}", plan.mod_id),
             Output::GiveItemWithData { item, count, .. } => {

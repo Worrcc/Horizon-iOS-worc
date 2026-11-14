@@ -223,8 +223,10 @@ impl Mods {
                 continue;
             }
             if self.call(i, FUEL_EVENT, |r| {
-                let (used,) =
-                    f.call(&mut r.store, (player.clone(), pos, state.into(), sneaking))?;
+                r.store.data_mut().machines.anchor = Some((player.dimension.clone(), pos));
+                let result = f.call(&mut r.store, (player.clone(), pos, state.into(), sneaking));
+                r.store.data_mut().machines.anchor = None;
+                let (used,) = result?;
                 Ok(used)
             }) == Some(true)
             {

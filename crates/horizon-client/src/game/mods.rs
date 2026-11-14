@@ -145,6 +145,12 @@ pub(super) struct ModsState {
     #[cfg(feature = "mods")]
     pub(super) world_operations: Vec<horizon_mods::Output>,
     #[cfg(feature = "mods")]
+    pub(super) machine_menus: std::collections::HashMap<u128, (i32, horizon_mods::MenuLease)>,
+    #[cfg(feature = "mods")]
+    pub(super) menu_closed: Vec<horizon_mods::MenuLease>,
+    #[cfg(feature = "mods")]
+    pub(super) crack_ids: std::collections::HashMap<String, i32>,
+    #[cfg(feature = "mods")]
     pub(super) break_caller: Option<String>,
     /// Valid item ids and stack sizes for player inventory calls.
     #[cfg(feature = "mods")]
@@ -580,6 +586,48 @@ fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
 /// root.
 fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
     use horizon_client::containers;
+    let declarations = mods
+        .iter()
+        .flat_map(|m| &m.content.blocks)
+        .filter_map(|b| {
+            b.container.as_ref().map(|c| {
+                let all: Vec<usize> = (0..usize::from(c.slots)).collect();
+                let faces = std::array::from_fn(|i| {
+                    c.faces.as_ref().map_or_else(
+                        || all.clone(),
+                        |f| {
+                            f.get(["down", "up", "north", "south", "west", "east"][i])
+                                .map_or_else(Vec::new, |s| {
+                                    s.iter().map(|s| usize::from(*s)).collect()
+                                })
+                        },
+                    )
+                });
+                let results: Vec<usize> = c.results.iter().map(|s| usize::from(*s)).collect();
+                let mut inputs: Vec<usize> = c.insert.as_ref().map_or_else(
+                    || all.clone(),
+                    |s| s.iter().map(|s| usize::from(*s)).collect(),
+                );
+                inputs.retain(|s| !results.contains(s));
+                containers::ContentContainer {
+                    block: b.id.clone(),
+                    title: c.title.clone(),
+                    results,
+                    container: containers::ModContainer {
+                        slots: c.slots.into(),
+                        faces,
+                        inputs,
+                        outputs: c
+                            .extract
+                            .as_ref()
+                            .map_or(all, |s| s.iter().map(|s| usize::from(*s)).collect()),
+                        menu: Some(format!("minecraft:generic_9x{}", c.slots.div_ceil(9))),
+                    },
+                }
+            })
+        })
+        .collect();
+    containers::register_content_containers(declarations);
     let menus = horizon_client::mod_content::menu_types(mods);
     let set = containers::register_mod_menu_types(menus.iter().map(|m| {
         let results = m.results.iter().map(|&r| usize::from(r)).collect();
@@ -1321,6 +1369,9 @@ impl Game<'_> {
                 | Output::BreakBlocksAs { .. }
                 | Output::SetLootTable { .. }
                 | Output::GiveItemWithData { .. }
+                | Output::Menu(_)
+                | Output::BlockDataWrite(_)
+                | Output::BreakProgress { .. }
                 | Output::StorageDataWrite(_)
                 | Output::SpawnItemWithData { .. }
                 | Output::StorageMove(_)

@@ -129,7 +129,10 @@ pub struct TickCtx<'a> {
 /// What the gameplay code has to do for a guest.
 pub enum HostEvent {
     /// Validated, moderated chat awaiting an opted-in WASM decision on the game thread.
-    BehaviourChat { name: String, message: Box<chat::ChatMessage> },
+    BehaviourChat {
+        name: String,
+        message: Box<chat::ChatMessage>,
+    },
     /// A guest entered the world; load their saved state.
     Joined(u32),
     /// A guest left (state to save, entities to drop).

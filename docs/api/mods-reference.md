@@ -42,7 +42,7 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`, `entities`, `server-hooks`, `channel`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `server-hooks`, `channel`
 - Exports (what the mod provides): `server-events`
 
 ## World `horizon-ui-mod`
@@ -1313,6 +1313,16 @@ Access: capability `world`.
 
 Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the blocks of the server's loaded chunks, and changes to them through the server's own block updates.
 
+### record `stack`
+
+API 30: a collected real stack, including its full saved component patch. Components are lossless network NBT, read-only; no guest-selected NBT is applied.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+| `components` | `option<list<u8>>` |  |
+
 ### record `stack-info`
 
 API level 28: one slot, including the identity of all saved components.
@@ -1397,6 +1407,10 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `block-data` | `func(dimension: string, pos: block-change-pos) -> result<option<string>, string>` | API 30: only the calling mod's saved UTF-8 value, at most 4096 bytes. |
+| `set-block-data` | `func(dimension: string, pos: block-change-pos, data: option<string>) -> result<_, string>` | Deferred, preimage-checked; success is a queue receipt. |
+| `destroy-block` | `func(dimension: string, pos: block-change-pos, tool: option<string>, collect: bool) -> result<list<stack>, string>` | Engine loot with a plain tool, 64 requests/mod/tick. Collect returns drops. At most 256 stacks, 64 KiB components/stack, 1 MiB total. On overflow, drops are spawned intact and an error is returned after the break. |
+| `set-break-progress` | `func(dimension: string, pos: block-change-pos, stage: s32) -> result<_, string>` | API 30: -1 clears, 0..9 cracks; 64 requests/mod/tick, within 64 blocks. |
 | `schedule-tick` | `func(dimension: string, pos: block-change-pos, delay-ticks: u32) -> result<_, string>` | API 29: loaded watched block only, delay 1..72000, 256 pending/mod. Ephemeral: discarded on state change, chunk unload, mod stop or restart. |
 | `player-stack-data` | `func(player: string, inv-slot: u32) -> result<option<string>, string>` | API 29: only the calling manifest id's key in minecraft:custom_data. UTF-8, at most 1024 bytes; JSON/base64 may be encoded by the mod. Reads use the storage reservation snapshot. Empty slots return none. |
 | `container-stack-data` | `func(dimension: string, pos: block-change-pos, slot: u32) -> result<option<string>, string>` | Read only this mod's value in one loaded container slot; invalid slots/containers error. |
@@ -1644,11 +1658,31 @@ Whom a mob attacks.
 | `ride` | `func(rider: u32, vehicle: option<u32>) -> result<_, string>` | Seats a content mod's mob on another loaded mob (`Entity.startRiding`, as `/ride` does), or with no vehicle lets it off (`stopRiding`). Checked now: both loaded in one dimension, within 16 blocks, not the same mob, and no loop of riders. Carried out with the tick's orders, unless by then the vehicle carries another mob or a player, or either is gone. The rider then sits on the vehicle, which walks and fights as before; it is saved riding (`Passengers`) and every player sees it. |
 | `vehicle` | `func(id: u32) -> option<u32>` | The mob or boat a loaded mob rides, as at the start of the tick. |
 
+## `menus`
+
+Access: capability `world`.
+
+What the server calls in a server mod (manifest `api = "0.3"`, experimental). Only the hooks `init` asks for are ever called. The player in each event is as the server saw them when it happened. API 30, under capability world: display copies, never real item transfers.
+
+### record `menu-item`
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+| `name` | `option<string>` |  |
+| `lore` | `list<string>` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `open-menu` | `func(player: string, rows: u32, title: string, items: list<option<menu-item>>) -> result<_, string>` | 1..6 rows, at most rows*9 copies; replaces the player's previous menu. |
+| `set-menu-items` | `func(player: string, items: list<option<menu-item>>) -> result<_, string>` | Replace the calling mod's open display menu copies; 64 writes/mod/tick. |
+| `close-menu` | `func(player: string) -> result<_, string>` | Close only a menu owned by the calling mod. |
+| `inventory-slot` | `func(rows: u32, slot: s32) -> option<u32>` | Map the player's portion of a chest menu to inventory 0..35. |
+
 ## `server-events`
 
 Access: exported by the mod: the game calls it.
-
-What the server calls in a server mod (manifest `api = "0.3"`, experimental). Only the hooks `init` asks for are ever called. The player in each event is as the server saw them when it happened.
 
 ### type `player`
 
@@ -1741,6 +1775,8 @@ API 29: before a player changes a watched block. Cancel keeps block and item.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `menu-clicked` | `func(player: player, slot: s32, button: s32, mode: s32)` | API 30: optional exports, routed only to the menu's owner; 64 clicks/tick. |
+| `menu-closed` | `func(player: player)` | The owned display menu closed, including replacement, death or leave. |
 | `init` | `func() -> result<registration, string>` | Once, after loading. An error keeps the mod off and is logged. |
 | `tick` | `func(tick: u64)` | Each server tick, with the server's tick counter. |
 | `player-joined` | `func(player: player)` | A player joined the server; they are in `players.online` already. |

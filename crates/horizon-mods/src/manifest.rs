@@ -244,7 +244,7 @@ impl Capability {
         if interface == "canvas" {
             return Ok(Some(Capability::Render));
         }
-        if name.split('@').next() == Some("horizon:mods/server-hooks") {
+        if matches!(interface, "server-hooks" | "menus") {
             return Ok(Some(Capability::World));
         }
         Capability::ALL

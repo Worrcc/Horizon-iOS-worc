@@ -49,16 +49,21 @@ impl Game<'_> {
         }
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let tool_kept = tool.cloned();
-        let mut drops = self.with_level(|b, level, ticks| {
+        let (mut drops, contents) = self.with_level(|b, level, ticks| {
             level.drop_tool = Some(((pos[0], pos[1], pos[2]), tool_kept));
             level.drop_into = Some(Vec::new());
+            level.drop_contents_into = collect.then(Vec::new);
             b.destroy_block(level, ticks, at, true);
             level.drop_tool = None;
-            level.drop_into.take().unwrap_or_default()
+            (
+                level.drop_into.take().unwrap_or_default(),
+                level.drop_contents_into.take().unwrap_or_default(),
+            )
         });
         let _ = self.process_level_events();
         self.native_block_drops(pos, state, None, tool, None, &mut drops);
         if collect {
+            drops.extend(contents);
             return Some(drops);
         }
         for stack in drops {

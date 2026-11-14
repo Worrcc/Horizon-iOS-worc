@@ -193,11 +193,26 @@ pub(super) mod run {
         dims: Vec<(&'static str, ChunkMap)>,
         containers: super::super::server_mod_world::ContainerSnapshot,
         storage: horizon_mods::StorageView,
+        block_data: std::collections::HashMap<
+            (String, (i32, i32, i32), String),
+            Result<horizon_mods::BlockDataImage, String>,
+        >,
         items: std::sync::Arc<std::collections::HashMap<String, u32>>,
         resources: std::path::PathBuf,
         world_root: std::path::PathBuf,
     }
     impl WorldView for LentWorld {
+        fn block_data(
+            &self,
+            dimension: &str,
+            pos: horizon_mods::BlockChangePos,
+            mod_id: &str,
+        ) -> Result<horizon_mods::BlockDataImage, String> {
+            self.block_data
+                .get(&(dimension.into(), (pos.x, pos.y, pos.z), mod_id.into()))
+                .cloned()
+                .unwrap_or_else(|| Err("no content block inventory at loaded position".into()))
+        }
         fn storage(&mut self) -> Option<&mut horizon_mods::StorageView> {
             Some(&mut self.storage)
         }
@@ -540,33 +555,37 @@ pub(super) mod run {
                 _ => 5,
             };
             let relative = std::array::from_fn(|i| hit.point[i] - f64::from(at[i]));
-            let rich = self.mods.mods.block_interacted(
-                &player,
-                pos,
-                &state,
-                face,
-                relative,
-                if main {
-                    horizon_mods::BehaviourHand::Main
-                } else {
-                    horizon_mods::BehaviourHand::Off
-                },
-                &item,
-                sneaking,
-            );
+            let rich = self.with_machine_mods(Some(host), |mods| {
+                mods.block_interacted(
+                    &player,
+                    pos,
+                    &state,
+                    face,
+                    relative,
+                    if main {
+                        horizon_mods::BehaviourHand::Main
+                    } else {
+                        horizon_mods::BehaviourHand::Off
+                    },
+                    &item,
+                    sneaking,
+                )
+            });
             let used = rich
                 || (main
-                    && self.mods.mods.block_used(
-                        &player,
-                        BlockPos {
-                            x: at[0],
-                            y: at[1],
-                            z: at[2],
-                        },
-                        &state,
-                        sneaking,
-                        holding,
-                    ));
+                    && self.with_machine_mods(Some(host), |mods| {
+                        mods.block_used(
+                            &player,
+                            BlockPos {
+                                x: at[0],
+                                y: at[1],
+                                z: at[2],
+                            },
+                            &state,
+                            sneaking,
+                            holding,
+                        )
+                    }));
             self.return_world();
             self.return_mod_inventories(Some(host));
             self.route_mod_output(Some(host));
@@ -599,7 +618,8 @@ pub(super) mod run {
             let snapshot = self.server_snapshot(players, Some(host));
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(Some(host));
-            let text = self.mods.mods.chat_sent_filter(&player, text);
+            let text =
+                self.with_machine_mods(Some(host), |mods| mods.chat_sent_filter(&player, text));
             self.return_world();
             self.route_mod_output(Some(host));
             text
@@ -611,7 +631,7 @@ pub(super) mod run {
             &mut self,
             family: horizon_mods::BehaviourFamily,
             id: &str,
-            f: impl FnOnce(&mut horizon_mods::Mods, &ServerPlayer) -> bool,
+            f: impl FnOnce(&mut horizon_mods::Mods, &ServerPlayer) -> bool + Send,
         ) -> bool {
             if !self.hears_players() || !self.mods.mods.wants_behaviour(family, id) {
                 return false;
@@ -638,7 +658,7 @@ pub(super) mod run {
             let snapshot = self.server_snapshot(players, None);
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(None);
-            let canceled = f(&mut self.mods.mods, &player);
+            let canceled = self.with_machine_mods(None, |mods| f(mods, &player));
             self.return_world();
             self.show_mod_output();
             canceled
@@ -650,12 +670,34 @@ pub(super) mod run {
             }
         }
 
+        pub(in crate::game) fn dispatch_wasm_menu(
+            &mut self,
+            player: &ServerPlayer,
+            click: Option<(i32, i32, i32)>,
+        ) {
+            let players = self.server_players(None);
+            let snapshot = self.server_snapshot(players, None);
+            self.mods.mods.set_snapshot(snapshot);
+            self.lend_world(None);
+            self.lend_mod_inventories(None);
+            let closed = std::mem::take(&mut self.mods.menu_closed);
+            self.with_machine_mods(None, |mods| {
+                for lease in closed {
+                    mods.close_menu_lease(&lease);
+                }
+                mods.menu_event(player, click);
+            });
+            self.return_world();
+            self.return_mod_inventories(None);
+            self.show_mod_output();
+        }
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
         pub(in crate::game) fn tick_server_mods(&mut self) {
             if !self.options.execution_role.is_client() {
                 // A server has no frames to check its dev mods in.
                 self.reload_dev_mods();
             }
+            self.maintain_wasm_menus();
             self.send_server_mod_commands();
             self.announce_wasm_channels();
             if !self.mods.server {
@@ -694,13 +736,13 @@ pub(super) mod run {
                 .iter()
                 .filter(|p| !players.iter().any(|q| q.id == p.id))
             {
-                self.mods.mods.player_left(p);
+                self.with_machine_mods(None, |mods| mods.player_left(p));
             }
             for p in players
                 .iter()
                 .filter(|p| !before.iter().any(|q| q.id == p.id))
             {
-                self.mods.mods.player_joined(p);
+                self.with_machine_mods(None, |mods| mods.player_joined(p));
             }
             for event in std::mem::take(&mut self.mods.events) {
                 let who = |w: &Who| {
@@ -718,7 +760,7 @@ pub(super) mod run {
                 match event {
                     ModEvent::Chat(w, text) => {
                         if let Some(p) = who(&w) {
-                            self.mods.mods.player_chat(&p, &text);
+                            self.with_machine_mods(None, |mods| mods.player_chat(&p, &text));
                         }
                     }
                     ModEvent::Block {
@@ -735,18 +777,25 @@ pub(super) mod run {
                             z: pos[2],
                         };
                         if placed {
-                            self.mods.mods.block_placed(&p, pos, &state);
+                            self.with_machine_mods(None, |mods| mods.block_placed(&p, pos, &state));
                         } else {
-                            self.mods
-                                .mods
-                                .block_broken_except(&p, pos, &state, exclude.as_deref());
+                            self.with_machine_mods(None, |mods| {
+                                mods.block_broken_except(&p, pos, &state, exclude.as_deref())
+                            });
                         }
                     }
                 }
             }
             self.run_wasm_channels(&players);
-            self.mods.mods.flush_behaviour_ticks();
-            self.mods.mods.server_tick(self.ticks);
+            let closed = std::mem::take(&mut self.mods.menu_closed);
+            let tick = self.ticks;
+            self.with_machine_mods(None, |mods| {
+                for lease in closed {
+                    mods.close_menu_lease(&lease);
+                }
+                mods.flush_behaviour_ticks();
+                mods.server_tick(tick);
+            });
             self.return_world();
             self.return_mod_inventories(None);
             self.mods.players = players;
@@ -795,6 +844,7 @@ pub(super) mod run {
                     )
                 })
                 .clone();
+            let block_data = self.mod_block_data_snapshot(&self.mods.mods.block_data_mods());
             let mut dims = vec![(self.dim.id(), std::mem::take(&mut self.world.chunks))];
             for (dim, chunks) in self.levels.parked_chunks() {
                 dims.push((dim.id(), std::mem::take(chunks)));
@@ -809,6 +859,7 @@ pub(super) mod run {
                     .get_or_insert_with(|| std::sync::Arc::new(self.res.items().block_tags.clone()))
                     .clone(),
                 biomes,
+                block_data,
                 dims,
                 containers,
                 storage,
@@ -816,6 +867,62 @@ pub(super) mod run {
                 resources: self.options.resources.clone(),
                 world_root: self.world_root.clone(),
             }));
+        }
+
+        pub(in crate::game) fn with_machine_mods<R: Send>(
+            &mut self,
+            mut host: Option<&mut LanHost>,
+            run: impl FnOnce(&mut horizon_mods::Mods) -> R + Send,
+        ) -> R {
+            if !self.mods.mods.wants_machines() {
+                return run(&mut self.mods.mods);
+            }
+            let mut mods = std::mem::take(&mut self.mods.mods);
+            let result = mods.with_machines(
+                |request, world| {
+                    let world: &mut dyn std::any::Any = world;
+                    let lent = world
+                        .downcast_mut::<LentWorld>()
+                        .ok_or("world unavailable")?;
+                    // The guest is waiting on a rendezvous channel. Return the exact
+                    // loan, run the existing engine helper on its owning thread, then
+                    // refresh the loan. No Game reference enters a Wasmtime Store.
+                    self.swap_lent_chunks(lent);
+                    let result = self.wasm_destroy(request, host.as_deref_mut());
+                    let ids: Vec<String> = lent
+                        .block_data
+                        .keys()
+                        .map(|(_, _, id)| id.clone())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    lent.block_data = self.mod_block_data_snapshot(&ids);
+                    lent.containers = self.mod_container_snapshot();
+                    // Reservations keep their preimages. A destroyed endpoint becomes
+                    // unavailable now, and apply still checks all live endpoints.
+                    lent.storage.slots.retain(|loc, _| match loc {
+                        horizon_mods::StorageLocation::Container { dimension, pos } => {
+                            lent.containers.contains_key(&(dimension.clone(), *pos))
+                        }
+                        _ => true,
+                    });
+                    self.swap_lent_chunks(lent);
+                    result
+                },
+                run,
+            );
+            self.mods.mods = mods;
+            result
+        }
+        fn swap_lent_chunks(&mut self, lent: &mut LentWorld) {
+            if let Some((_, chunks)) = lent.dims.iter_mut().find(|(d, _)| *d == self.dim.id()) {
+                std::mem::swap(chunks, &mut self.world.chunks);
+            }
+            for (dim, chunks) in self.levels.parked_chunks() {
+                if let Some((_, loan)) = lent.dims.iter_mut().find(|(d, _)| *d == dim.id()) {
+                    std::mem::swap(chunks, loan);
+                }
+            }
         }
 
         /// Puts back the chunks [`Game::lend_world`] lent.
@@ -1556,7 +1663,9 @@ pub(super) mod run {
                             _ => true,
                         })
                     }
-                    Output::SetContainer { dimension, .. }
+                    Output::BlockDataWrite(plan) => plan.dimension == dim,
+                    Output::BreakProgress { dimension, .. }
+                    | Output::SetContainer { dimension, .. }
                     | Output::PlaceStructure { dimension, .. }
                     | Output::SetSpawner { dimension, .. }
                     | Output::PlaySound { dimension, .. }
@@ -1635,6 +1744,15 @@ pub(super) mod run {
                     }
                     Output::StorageMove(plan) => {
                         self.apply_mod_storage_move(plan, host.as_deref_mut())
+                    }
+                    Output::BlockDataWrite(plan) => self.apply_mod_block_data(plan),
+                    Output::BreakProgress {
+                        mod_id, pos, stage, ..
+                    } => {
+                        let next = -1_000_000_000 - self.mods.crack_ids.len() as i32;
+                        let id = *self.mods.crack_ids.entry(mod_id).or_insert(next);
+                        self.native_set_break_progress(id, [pos.0, pos.1, pos.2], stage);
+                        Ok(())
                     }
                     Output::SetContainer { pos, slots, .. } => self.apply_mod_container(pos, slots),
                     Output::PlaceStructure {
@@ -1799,11 +1917,13 @@ pub(super) mod run {
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(None);
             self.lend_mod_inventories(None);
-            let owned = if quiet {
-                self.mods.mods.server_command_quiet(&me, line)
-            } else {
-                self.mods.mods.server_command(&me, line)
-            };
+            let owned = self.with_machine_mods(None, |mods| {
+                if quiet {
+                    mods.server_command_quiet(&me, line)
+                } else {
+                    mods.server_command(&me, line)
+                }
+            });
             self.return_world();
             self.return_mod_inventories(None);
             self.show_mod_output();
@@ -1868,11 +1988,13 @@ pub(super) mod run {
             self.mods.mods.set_snapshot(snapshot);
             self.lend_world(Some(host));
             self.lend_mod_inventories(Some(host));
-            let owned = if quiet {
-                self.mods.mods.server_command_quiet(&me, line)
-            } else {
-                self.mods.mods.server_command(&me, line)
-            };
+            let owned = self.with_machine_mods(Some(host), |mods| {
+                if quiet {
+                    mods.server_command_quiet(&me, line)
+                } else {
+                    mods.server_command(&me, line)
+                }
+            });
             self.return_world();
             self.return_mod_inventories(Some(host));
             if !owned {
@@ -2068,7 +2190,9 @@ pub(super) mod run {
                 Output::PlayerEffect { player, effect } => {
                     self.apply_mod_player_effect(host, &player, effect);
                 }
-                operation @ (Output::GiveItemWithData { .. }
+                operation @ (Output::BlockDataWrite(_)
+                | Output::BreakProgress { .. }
+                | Output::GiveItemWithData { .. }
                 | Output::StorageDataWrite(_)
                 | Output::SpawnItemWithData { .. }
                 | Output::StorageMove(_)
@@ -2081,6 +2205,9 @@ pub(super) mod run {
                     if self.mods.world_operations.len() < MAX_QUEUED_WRITES {
                         self.mods.world_operations.push(operation);
                     }
+                }
+                Output::Menu(operation) => {
+                    self.apply_wasm_menu(host, operation);
                 }
                 Output::SetLootTable {
                     dimension,

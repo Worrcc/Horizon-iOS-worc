@@ -94,13 +94,24 @@ impl PlayerInventories for Inventories {
     fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String> {
         self.give_item_with_data(player, item, count, "", None)
     }
-    fn give_item_with_data(&mut self, player: &str, item: &str, count: u32, mod_id: &str, data: Option<&str>) -> Result<(), String> {
+    fn give_item_with_data(
+        &mut self,
+        player: &str,
+        item: &str,
+        count: u32,
+        mod_id: &str,
+        data: Option<&str>,
+    ) -> Result<(), String> {
         let (inv, max) = self.checked(player, item)?;
         if !mod_id.is_empty() && item == "minecraft:air" {
             return Err("empty/air stacks cannot carry components".into());
         }
-        if max == 0 { return Err("item cannot carry a nonempty stack".into()); }
-        if data.is_some_and(|s| s.len() > 1024) { return Err("stack data exceeds 1024 UTF-8 bytes".into()); }
+        if max == 0 {
+            return Err("item cannot carry a nonempty stack".into());
+        }
+        if data.is_some_and(|s| s.len() > 1024) {
+            return Err("stack data exceeds 1024 UTF-8 bytes".into());
+        }
         if count > max.saturating_mul(100) {
             return Err("give-item is at most 100 stacks per call".into());
         }
@@ -169,29 +180,59 @@ mod tests {
     fn giving_data_splits_legal_stacks_merges_only_equal_data_and_keeps_creative_real() {
         let mut all = inventories();
         let inv = all.players.get_mut(ALICE).unwrap();
-        inv.main = vec![None; 36]; inv.selected = 0; inv.offhand = None; inv.creative = true;
+        inv.main = vec![None; 36];
+        inv.selected = 0;
+        inv.offhand = None;
+        inv.creative = true;
         inv.main[0] = Some(ItemStack::new("minecraft:beef", 60));
-        all.give_item_with_data(ALICE, "minecraft:beef", 70, "demo", Some("one")).unwrap();
+        all.give_item_with_data(ALICE, "minecraft:beef", 70, "demo", Some("one"))
+            .unwrap();
         let inv = &all.players[ALICE];
         assert_eq!(inv.main[0].as_ref().unwrap().count, 60);
         assert_eq!(inv.main[1].as_ref().unwrap().count, 64);
         assert_eq!(inv.main[2].as_ref().unwrap().count, 6);
-        assert_eq!(inv.main[1].as_ref().unwrap().mod_data("demo").unwrap().as_deref(), Some("one"));
-        all.give_item_with_data(ALICE, "minecraft:beef", 3, "demo", Some("one")).unwrap();
+        assert_eq!(
+            inv.main[1]
+                .as_ref()
+                .unwrap()
+                .mod_data("demo")
+                .unwrap()
+                .as_deref(),
+            Some("one")
+        );
+        all.give_item_with_data(ALICE, "minecraft:beef", 3, "demo", Some("one"))
+            .unwrap();
         assert_eq!(all.players[ALICE].main[2].as_ref().unwrap().count, 9);
-        all.give_item_with_data(ALICE, "minecraft:beef", 2, "demo", Some("two")).unwrap();
+        all.give_item_with_data(ALICE, "minecraft:beef", 2, "demo", Some("two"))
+            .unwrap();
         assert_eq!(all.players[ALICE].main[3].as_ref().unwrap().count, 2);
-        all.give_item_with_data(ALICE, "minecraft:beef", 2, "demo", None).unwrap();
+        all.give_item_with_data(ALICE, "minecraft:beef", 2, "demo", None)
+            .unwrap();
         assert_eq!(all.players[ALICE].main[0].as_ref().unwrap().count, 62);
         let saved = all.players[ALICE].main.clone();
-        assert!(all.give_item_with_data(ALICE, "minecraft:beef", 6401, "demo", Some("one")).is_err());
-        assert!(all.give_item_with_data(ALICE, "minecraft:beef", 1, "demo", Some(&"x".repeat(1025))).is_err());
+        assert!(
+            all.give_item_with_data(ALICE, "minecraft:beef", 6401, "demo", Some("one"))
+                .is_err()
+        );
+        assert!(
+            all.give_item_with_data(ALICE, "minecraft:beef", 1, "demo", Some(&"x".repeat(1025)))
+                .is_err()
+        );
         assert_eq!(all.players[ALICE].main, saved);
-        all.give_item_with_data(ALICE, "ruby:scale", 100, "demo", Some("opaque")).unwrap();
+        all.give_item_with_data(ALICE, "ruby:scale", 100, "demo", Some("opaque"))
+            .unwrap();
         let inv = &all.players[ALICE];
         assert_eq!(inv.drops.len(), 68);
-        assert!(inv.drops.iter().all(|s| s.count == 1 && s.mod_data("demo").unwrap().as_deref() == Some("opaque")));
-        assert_eq!(inv.main.iter().flatten().map(|s| s.count).sum::<u32>() + inv.drops.iter().map(|s| s.count).sum::<u32>(), 237);
+        assert!(
+            inv.drops
+                .iter()
+                .all(|s| s.count == 1 && s.mod_data("demo").unwrap().as_deref() == Some("opaque"))
+        );
+        assert_eq!(
+            inv.main.iter().flatten().map(|s| s.count).sum::<u32>()
+                + inv.drops.iter().map(|s| s.count).sum::<u32>(),
+            237
+        );
     }
     fn inventories() -> Inventories {
         Inventories {

@@ -605,13 +605,15 @@ impl Hub {
         // A native mod's menu: the click is the mod's to answer, and the
         // whole menu and the cursor go back as they were.
         if in_menu && self.guests[i].menu.as_ref().map(|m| m.slots) == Some(Slots::Native) {
-            self.native_menu_events.push(NativeMenuEvent::Click {
-                uuid: self.guests[i].uuid,
-                window: p.container,
-                slot: i32::from(p.slot),
-                button: i32::from(p.button),
-                mode: p.input,
-            });
+            if self.native_menu_events.len() < 256 {
+                self.native_menu_events.push(NativeMenuEvent::Click {
+                    uuid: self.guests[i].uuid,
+                    window: p.container,
+                    slot: i32::from(p.slot),
+                    button: i32::from(p.button),
+                    mode: p.input,
+                });
+            }
             self.resend_menu(conn, p.container, world);
             return Vec::new();
         }
@@ -654,11 +656,23 @@ impl Hub {
         if in_menu && items.is_none() {
             return Vec::new();
         }
+        let take_only = match source {
+            Some(Slots::Block(k)) => world
+                .block_entities
+                .get(&k)
+                .and_then(|e| match e {
+                    BlockEntity::Mod(m) => crate::containers::content_container(&m.id),
+                    _ => None,
+                })
+                .map_or(&[][..], |c| c.results.as_slice()),
+            _ => &[],
+        };
         let mut view = View {
             guest,
             container: items.as_deref_mut(),
             shulker,
             hidden: &hidden,
+            take_only,
         };
         let (drops, changed) = menu::click(
             &mut view,

@@ -1721,3 +1721,35 @@ The [behaviour demo](../mods/official/behaviour-demo) increments held stick data
 on a main-hand lectern click, logs the counter and registers `/stickdata` to
 report it without renaming the item. See [Phase A's data contract](api-expansion-a.md#a-2-per-stack-custom-data-also-level-29)
 for errors, reservations, limits and coverage. Block-entity data is Phase B.
+
+
+## API level 30: server menus and machines
+
+Server capability `world` adds `menus.open-menu`, `set-menu-items`, `close-menu`
+and `inventory-slot`, with optional `ServerMod::menu_clicked` / `menu_closed`
+callbacks. Display menus use stock chest screens with 1–6 rows. They contain
+copies: the host never moves inventory or cursor stacks on a display click.
+There are 64 menu writes and 64 clicks per mod per server tick; block-origin
+menus enforce 8-block reach. Only online server players can receive them.
+
+Content block JSON may declare a real `container` with 1–54 slots, title,
+`faces`, `insert`, `extract` and `results`. Its default chest-like menu uses the
+engine's real container rules, hoppers/droppers honor its sides, results are
+take-only, and comparators measure fullness. Existing storage/stack-data calls
+work on it. An interaction hook returning cancel may replace the default menu.
+
+`world.block-data` / `set-block-data` save only the calling mod id's string
+(maximum 4096 UTF-8 bytes) with the block entity. Writes apply after hooks with
+preimage checks and share the 64 storage move/data-write budget. Read data in
+`block-breaking` before removal if a tagged drop should keep it; stack data
+still has its independent 1024-byte bound. Scheduled machine work uses the
+existing `world.schedule-tick`: chunk unload drops pending ticks, and
+`world.time(...).game_time` supports catch-up logic.
+
+`world.destroy-block` reuses tool loot/removal and can return collected stacks,
+including read-only saved component bytes; 64 requests/mod/tick. Oversized
+collection spawns the intact drops and returns an error after the break.
+`set-break-progress` queues -1/0–9 cracks within 64 blocks, 64 requests/mod/tick,
+with a distinct negative id per mod. No fake players, fluids, energy or pipes.
+See [Phase B](api-expansion-b.md) for signatures, exact limits, lifecycle,
+collection semantics and the two-part `mods/official/machine-demo` live scenario.

@@ -227,10 +227,56 @@ fn state_name(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// API 30: a content block's real inventory, using the native container engine.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlockContainer {
+    pub slots: u8,
+    pub title: String,
+    /// Missing faces exposes every slot on every face; an explicit map exposes only its entries.
+    pub faces: Option<BTreeMap<String, Vec<u8>>>,
+    /// Missing insert/extract allows every slot (results still refuse insertion).
+    pub insert: Option<Vec<u8>>,
+    pub extract: Option<Vec<u8>>,
+    #[serde(default)]
+    pub results: Vec<u8>,
+}
+impl BlockContainer {
+    pub fn check(&self) -> Result<(), String> {
+        if !(1..=54).contains(&self.slots) || self.title.len() > 256 {
+            return Err("container slots must be 1..=54; title at most 256 bytes".into());
+        }
+        if let Some(faces) = &self.faces
+            && faces
+                .keys()
+                .any(|f| !["down", "up", "north", "south", "west", "east"].contains(&f.as_str()))
+        {
+            return Err("unknown container face".into());
+        }
+        for slots in self
+            .faces
+            .iter()
+            .flat_map(|f| f.values())
+            .chain(self.insert.iter())
+            .chain(self.extract.iter())
+            .chain([&self.results])
+        {
+            if slots.len() > usize::from(self.slots)
+                || slots.iter().any(|s| *s >= self.slots)
+                || slots.iter().collect::<BTreeSet<_>>().len() != slots.len()
+            {
+                return Err("container slot lists must be distinct and in range".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockFile {
     template: String,
+    container: Option<BlockContainer>,
     #[serde(default)]
     properties: BlockProperties,
     shapes: Option<BlockShapes>,
@@ -266,6 +312,7 @@ pub struct Block {
     pub id: String,
     /// The vanilla block it copies, `minecraft:<path>`.
     pub template: String,
+    pub container: Option<BlockContainer>,
     pub properties: BlockProperties,
     pub shapes: Option<BlockShapes>,
     pub collision_shapes: Option<BlockShapes>,
@@ -1186,6 +1233,7 @@ impl Content {
             let block = Block {
                 id: block,
                 template: file.template,
+                container: file.container,
                 properties: file.properties,
                 shapes: file.shapes,
                 collision_shapes: file.collision_shapes,
@@ -1442,6 +1490,9 @@ fn check_item(item: &Item) -> Result<(), String> {
 /// A block's fields, as a file or code gives them (`connects_to` without
 /// its `#`).
 fn check_block(file: &Block) -> Result<(), String> {
+    if let Some(container) = &file.container {
+        container.check()?;
+    }
     if !vanilla_id(&file.template) {
         return Err(format!(
             "template {:?} is not a vanilla block (minecraft:...)",
@@ -1895,6 +1946,7 @@ capabilities = ["registries"]
             [Block {
                 id: "ruby:ruby_block".into(),
                 template: "minecraft:iron_block".into(),
+                container: None,
                 shapes: None,
                 collision_shapes: None,
                 state_properties: BTreeMap::new(),
@@ -3102,5 +3154,32 @@ capabilities = ["registries"]
         ] {
             assert!(check_path(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod api30_container_tests {
+    use super::*;
+    #[test]
+    fn api30_container_declarations_reject_unsafe_slots_and_faces() {
+        let check = |json: &str| {
+            serde_json::from_str::<BlockContainer>(json)
+                .map_err(|e| e.to_string())
+                .and_then(|c| c.check())
+        };
+        for json in [
+            r#"{"slots":0,"title":"crate"}"#,
+            r#"{"slots":55,"title":"crate"}"#,
+            r#"{"slots":9,"title":"crate","faces":{"above":[0]}}"#,
+            r#"{"slots":9,"title":"crate","insert":[9]}"#,
+            r#"{"slots":9,"title":"crate","results":[1,1]}"#,
+            r#"{"slots":9,"title":"crate","unknown":true}"#,
+        ] {
+            assert!(check(json).is_err(), "{json}");
+        }
+        for slots in 1..=54 {
+            assert!(check(&format!(r#"{{"slots":{slots},"title":"crate"}}"#)).is_ok());
+        }
+        assert!(check(r#"{"slots":9,"title":"crate","faces":{"up":[0],"down":[1]},"insert":[0],"extract":[1],"results":[1]}"#).is_ok());
     }
 }

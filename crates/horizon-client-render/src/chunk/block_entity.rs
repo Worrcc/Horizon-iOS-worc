@@ -131,6 +131,54 @@ pub struct ModRevision {
 }
 static MOD_BLOCK_ENTITIES_MADE: AtomicU64 = AtomicU64::new(0);
 impl ModBlockEntity {
+    /// Saved API 30 values, isolated by the host-supplied manifest id.
+    pub fn mod_data(&self, mod_id: &str) -> Result<Option<String>, String> {
+        use horizon_world::nbt::{JavaString, Tag};
+        let Some(tag) = self.nbt.get(&JavaString::from("horizon:mod_data")) else {
+            return Ok(None);
+        };
+        let Tag::Compound(values) = tag else {
+            return Err("block mod data is not a compound".into());
+        };
+        let Some(value) = values.get(&JavaString::from(mod_id)) else {
+            return Ok(None);
+        };
+        let Tag::String(value) = value else {
+            return Err("block mod data is not a string".into());
+        };
+        if value.0.len() > 4096 {
+            return Err("block data exceeds 4096 bytes".into());
+        }
+        let value = value.to_string().map_err(|_| "block data is not UTF-8")?;
+        if value.len() > 4096 {
+            return Err("block data exceeds 4096 bytes".into());
+        }
+        Ok(Some(value))
+    }
+    pub fn set_mod_data(&mut self, mod_id: &str, value: Option<&str>) -> Result<(), String> {
+        use horizon_world::nbt::{JavaString, Tag};
+        if value.is_some_and(|s| s.len() > 4096) {
+            return Err("block data exceeds 4096 bytes".into());
+        }
+        let key = JavaString::from("horizon:mod_data");
+        let mut values = match self.nbt.get(&key) {
+            None => Default::default(),
+            Some(Tag::Compound(values)) => values.clone(),
+            Some(_) => return Err("block mod data is not a compound".into()),
+        };
+        if let Some(value) = value {
+            values.insert(mod_id.into(), Tag::String(value.into()));
+        } else {
+            values.remove(&JavaString::from(mod_id));
+        }
+        if values.is_empty() {
+            self.nbt.remove(&key);
+        } else {
+            self.nbt.insert(key, Tag::Compound(values));
+        }
+        Ok(())
+    }
+
     pub fn new(fields: ModBlockEntityFields) -> Self {
         Self {
             fields,
@@ -139,6 +187,9 @@ impl ModBlockEntity {
                 changes: 0,
             },
         }
+    }
+    pub fn incarnation(&self) -> u64 {
+        self.revision.born
     }
     pub fn revision(&self) -> ModRevision {
         self.revision

@@ -137,6 +137,7 @@ fn describe_data(
 /// slots are read-only until the API can express their rules faithfully.
 fn transferable(entity: &BlockEntity) -> bool {
     matches!(entity, BlockEntity::Chest(_))
+        || matches!(entity, BlockEntity::Mod(m) if horizon_client::containers::content_container(&m.id).is_some())
 }
 
 fn transfer(

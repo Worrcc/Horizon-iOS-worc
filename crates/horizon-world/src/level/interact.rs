@@ -129,6 +129,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let data = b.data(state);
         let block = b.block(state);
         use InteractionResult::*;
+        // A declared `container` opens its menu whatever the template is.
+        if self.level.opens_declared_menu(state) {
+            self.player_effect(pos, state, PlayerEffect::OpenMenu);
+            return Success;
+        }
         for &class in data.chain.iter() {
             return match class {
                 Class::Door => {

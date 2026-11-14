@@ -714,11 +714,16 @@ impl GameLevel<'_> {
         let count = stack.as_ref().map_or(0, |s| s.count);
         for piece in removal::drop_item_stack(&mut self.world.random, pos, count) {
             let Some(stack) = &stack else { break };
+            let stack = ItemStack {
+                count: piece.count,
+                ..stack.clone()
+            };
+            if let Some(kept) = self.drop_contents_into.as_mut() {
+                kept.push(stack);
+                continue;
+            }
             self.spill.spawns.push(Spawn {
-                stack: ItemStack {
-                    count: piece.count,
-                    ..stack.clone()
-                },
+                stack,
                 pos: piece.pos,
                 motion: Some(piece.motion),
                 delay: 0,

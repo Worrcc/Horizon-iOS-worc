@@ -334,9 +334,10 @@ pub mod server {
     };
     pub use horizon::mods::world::{
         self, BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack, Point as WorldPoint,
-        StackInfo, StackInfoWithData, WorldTime,
+        Stack as MachineStack, StackInfo, StackInfoWithData, WorldTime,
     };
-    pub use horizon::mods::{channel, server_hooks};
+    pub use horizon::mods::{channel, menus, server_hooks};
+    pub use menus::MenuItem;
     pub use server_hooks::BehaviourConfig;
     // The generated WIT type cannot carry a per-type derive here.
     #[allow(clippy::derivable_impls)]
@@ -395,6 +396,8 @@ pub mod server {
         ) {
         }
         fn block_random_tick(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
+        fn menu_clicked(&mut self, _player: &Player, _slot: i32, _button: i32, _mode: i32) {}
+        fn menu_closed(&mut self, _player: &Player) {}
         fn block_scheduled_tick(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
         fn item_used_on_block(
             &mut self,
@@ -677,6 +680,12 @@ macro_rules! export_server_mod {
                 }
                 fn block_random_tick(dimension: String, pos: BlockPos, state: String) {
                     with(|m| m.block_random_tick(&dimension, pos, &state))
+                }
+                fn menu_clicked(player: Player, slot: i32, button: i32, mode: i32) {
+                    with(|m| m.menu_clicked(&player, slot, button, mode))
+                }
+                fn menu_closed(player: Player) {
+                    with(|m| m.menu_closed(&player))
                 }
                 fn block_scheduled_tick(dimension: String, pos: BlockPos, state: String) {
                     with(|m| m.block_scheduled_tick(&dimension, pos, &state))

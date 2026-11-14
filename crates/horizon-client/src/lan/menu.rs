@@ -158,6 +158,11 @@ impl Slots {
         let mut items = Vec::new();
         for k in self.halves() {
             items.extend_from_slice(shown(world, k)?);
+            if let Some(BlockEntity::Mod(m)) = world.block_entities.get(&k)
+                && let Some(c) = crate::containers::content_container(&m.id)
+            {
+                items.resize(c.container.slots.div_ceil(9) * 9, None);
+            }
         }
         Some(items)
     }
@@ -208,6 +213,7 @@ pub struct View<'a> {
     pub shulker: bool,
     /// Container slots that do not exist in this menu (see [`Menu::hidden`]).
     pub hidden: &'a [usize],
+    pub take_only: &'a [usize],
 }
 
 impl View<'_> {
@@ -256,7 +262,7 @@ impl View<'_> {
         {
             return false;
         }
-        self.enabled(i)
+        self.enabled(i) && !self.take_only.contains(&i)
     }
     fn slot_max(&self, i: usize, stack: &ItemStack, rules: &dyn Rules) -> u32 {
         if self.container.is_none() && (5..=8).contains(&i) {
@@ -312,7 +318,7 @@ fn move_to(
         if stack.count == 0 {
             break;
         }
-        if !view.enabled(i) {
+        if !view.enabled(i) || !view.may_place(i, &stack, rules) {
             continue;
         }
         if let Some(mut existing) = view.get(i)
@@ -912,6 +918,88 @@ mod tests {
         )
     }
 
+    struct PlainRules;
+    impl Rules for PlainRules {
+        fn items(&self) -> &Items {
+            panic!("quick move does not inspect item registries")
+        }
+        fn max_stack(&self, _: &str) -> u32 {
+            64
+        }
+        fn armor_index(&self, _: &str) -> Option<usize> {
+            None
+        }
+    }
+    #[test]
+    fn api30_content_menu_quick_moves_conserve_real_components_and_skip_results_and_padding() {
+        let mut guest = guest();
+        guest.inventory.resize(36, None);
+        let mut tagged = ItemStack::new("minecraft:diamond", 12);
+        tagged.set_mod_data("other_mod", Some("saved")).unwrap();
+        guest.inventory[9] = Some(tagged.clone());
+        let mut container = vec![None; 9];
+        container[1] = Some(ItemStack {
+            count: 3,
+            ..tagged.clone()
+        });
+        let mut view = View {
+            guest: &mut guest,
+            container: Some(&mut container),
+            shulker: false,
+            hidden: &[2, 3, 4, 5, 6, 7, 8],
+            take_only: &[1],
+        };
+        quick_move(&mut view, 9, &PlainRules);
+        assert_eq!(view.get(0).unwrap().count, 12);
+        assert_eq!(view.get(1).unwrap().count, 3);
+        assert_eq!(view.get(9), None);
+        assert_eq!(
+            view.get(0)
+                .unwrap()
+                .mod_data("other_mod")
+                .unwrap()
+                .as_deref(),
+            Some("saved")
+        );
+        quick_move(&mut view, 1, &PlainRules);
+        quick_move(&mut view, 0, &PlainRules);
+        assert_eq!(view.get(0), None);
+        assert_eq!(view.get(1), None);
+        assert_eq!(
+            view.guest
+                .inventory
+                .iter()
+                .flatten()
+                .map(|s| s.count)
+                .sum::<u32>(),
+            15
+        );
+        assert!(
+            view.guest
+                .inventory
+                .iter()
+                .flatten()
+                .all(|s| s.same_item_same_components(&tagged))
+        );
+        // Breaking reuses BlockEntity::contents; padding is absent from saved storage.
+        let entity = BlockEntity::Mod(Box::new(
+            crate::containers::ModBlockEntityFields {
+                id: "demo:crate".into(),
+                items: vec![Some(tagged)],
+                ..Default::default()
+            }
+            .into(),
+        ));
+        assert_eq!(entity.contents().iter().map(|s| s.count).sum::<u32>(), 12);
+        assert_eq!(
+            entity.contents()[0]
+                .mod_data("other_mod")
+                .unwrap()
+                .as_deref(),
+            Some("saved")
+        );
+    }
+
     /// The prepared resources' items, or None (the test is skipped) without them.
     fn rules() -> Option<ItemRules> {
         let root = std::env::var_os("HORIZON_RESOURCES")
@@ -959,6 +1047,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // `doClick` only starts the collect when the carried stack is not
         // empty and the clicked slot has no item or may not be taken
@@ -999,6 +1088,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         view.guest.carried = Some(ItemStack::new("minecraft:bundle", 1));
         // Left click with the bundle: the stone goes in.
@@ -1070,6 +1160,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // Left click with stone in hand over the refused bundle: nothing goes in.
         view.guest.carried = Some(ItemStack::new("minecraft:stone", 5));
@@ -1133,6 +1224,7 @@ mod tests {
                 container: Some(&mut read),
                 shulker: false,
                 hidden: &[],
+                take_only: &[],
             };
             click(&mut view, &mut drag, 5 + 27, 0, input::QUICK_MOVE, &rules);
             assert_eq!(view.get(0).map(|s| s.item), Some("minecraft:dirt".into()));
@@ -1170,6 +1262,7 @@ mod tests {
             container: Some(&mut container),
             shulker: false,
             hidden: &hidden,
+            take_only: &[],
         };
         // The hotbar's first slot (menu slot 3 + 27) lands in the one slot shown.
         click(&mut view, &mut drag, 3 + 27, 0, input::QUICK_MOVE, &rules);
@@ -1195,6 +1288,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         view.guest.carried = Some(ItemStack::new("minecraft:stone", 64));
         // Start, two slots, end, for the two types a survival guest may not
@@ -1311,6 +1405,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // Key 1 over the refused slot moves neither stack.
         click(&mut view, &mut drag, 0, 0, input::SWAP, &rules);
@@ -1362,6 +1457,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         click(&mut view, &mut drag, 0, 40, input::SWAP, &rules);
         assert_eq!(
@@ -1407,6 +1503,7 @@ mod tests {
                 container: Some(&mut container),
                 shulker,
                 hidden: &[],
+                take_only: &[],
             };
             // Carried onto an empty slot, shift-clicked from the hotbar
             // (menu slot 27 + 27) and swapped in with the number key 1.
@@ -1458,6 +1555,7 @@ mod tests {
             container: None,
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // Menu slot 9 is the first main-inventory slot, 45 the off hand.
         view.guest.inventory[9] = Some(ItemStack::new("minecraft:shield", 1));
@@ -1536,6 +1634,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // The refused slot takes no click and gives nothing to the cursor.
         click(&mut view, &mut drag, 0, 0, input::PICKUP, &rules);
@@ -1576,6 +1675,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // One stone short of a full stack, over a slot that holds stone.
         view.guest.carried = Some(ItemStack::new("minecraft:stone", 63));
@@ -1612,6 +1712,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         let (drops, _) = click(&mut view, &mut drag, 0, 0, input::THROW, &rules);
         assert!(drops.is_empty());
@@ -1643,6 +1744,7 @@ mod tests {
                     container: None,
                     shulker: false,
                     hidden: &[],
+                    take_only: &[],
                 };
                 // Menu slot 6 is the chest slot.
                 click(&mut view, &mut drag, 6, 0, mode, &rules);
@@ -1674,6 +1776,7 @@ mod tests {
                     container: None,
                     shulker: false,
                     hidden: &[],
+                    take_only: &[],
                 };
                 // Menu slot 6 is the chest slot. A drop click throws the
                 // stack out; number key 1 puts it in the first hotbar slot
@@ -1720,6 +1823,7 @@ mod tests {
             container: None,
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // Menu slot 45 is the off hand; 5 to 8 are the armour slots, head first.
         view.guest.offhand = Some(ItemStack::new("minecraft:iron_helmet", 1));
@@ -1775,6 +1879,7 @@ mod tests {
             container: Some(&mut chest),
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // A container's quick move fills the inventory from its end: 16
         // snowballs in the last hotbar slot (menu slot 36), 16 in the one
@@ -1821,6 +1926,7 @@ mod tests {
             container: None,
             shulker: false,
             hidden: &[],
+            take_only: &[],
         };
         // Menu slot 9 stands for inventory index 9, 36 for the hotbar's first.
         view.guest.inventory[9] = Some(ItemStack::new("minecraft:diamond", 3));

@@ -652,6 +652,12 @@ pub trait LevelAccess {
     fn adjust_signal_source(&self, _state: BlockStateId, vanilla: bool) -> bool {
         vanilla
     }
+    /// Whether the block declares a real inventory (a content block's
+    /// `container`): using it with an empty hand opens its menu whatever its
+    /// template does. The default is no.
+    fn opens_declared_menu(&self, _state: BlockStateId) -> bool {
+        false
+    }
     /// `BlockState.hasAnalogOutputSignal` once the library answered `vanilla`:
     /// whether comparators read the block. The default keeps it.
     fn adjust_has_analog_output(&self, _state: BlockStateId, vanilla: bool) -> bool {

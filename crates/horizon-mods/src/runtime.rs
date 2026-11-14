@@ -73,6 +73,7 @@ pub use server_bindings::{
         Rider as EntityRider, Sound as EntitySound, StrikeHit, Target as EntityTarget,
         Walk as EntityWalk,
     },
+    horizon::mods::menus::MenuItem,
     horizon::mods::players::{
         Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
         ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer, PlayerDamage,
@@ -80,7 +81,7 @@ pub use server_bindings::{
     },
     horizon::mods::world::{
         BlockChange, BlockChangePos, BreakOptions, ChunkPos, ItemStack as ContainerItemStack,
-        Point as WorldPoint, StackInfo, StackInfoWithData, WorldTime,
+        Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData, WorldTime,
     },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
@@ -89,6 +90,8 @@ use server_callbacks::ServerCallbacks as HorizonServerMod;
 type ServerEvents = HorizonServerMod;
 mod storage_api;
 pub use storage_api::*;
+mod machines;
+pub use machines::*;
 mod behaviour;
 pub use behaviour::*;
 pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
@@ -464,6 +467,14 @@ pub enum Output {
         mod_id: String,
         data: Option<String>,
     },
+    Menu(MenuOperation),
+    BlockDataWrite(BlockDataWrite),
+    BreakProgress {
+        mod_id: String,
+        dimension: String,
+        pos: (i32, i32, i32),
+        stage: i32,
+    },
     /// API 28: scoped bytes, delivered over negotiated custom payloads after hooks.
     Channel {
         mod_id: String,
@@ -605,6 +616,15 @@ pub enum Output {
 /// The game's world as capability `world` reads it during a call: the
 /// game lends one with [`Mods::lend_world`] and takes it back after.
 pub trait WorldView: std::any::Any + Send {
+    fn block_data(
+        &self,
+        _dimension: &str,
+        _pos: BlockChangePos,
+        _mod_id: &str,
+    ) -> Result<BlockDataImage, String> {
+        Err("no content block inventory at loaded position".into())
+    }
+
     fn block_has_tag(&self, _block: &str, _tag: &str) -> bool {
         false
     }
@@ -743,6 +763,8 @@ struct Running {
     reads_client_world: bool,
     storage_api: bool,
     stack_data_api: bool,
+    block_data_api: bool,
+    machine_api: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -955,6 +977,7 @@ struct State {
     channel_callback: Option<TypedFunc<(String, Vec<u8>), ()>>,
     server: bool,
     storage_move_budget: (Option<u64>, usize),
+    machines: machines::MachineState,
     limits: StoreLimits,
     world: WorldSlot,
     inventories: InventoriesSlot,
@@ -969,6 +992,8 @@ struct State {
 pub struct Mods {
     engine_cache: Option<Arc<engine::Cache>>,
     container_bridge: container_host::Bridge,
+    machine_bridge: machines::Bridge,
+    menu_leases: machines::MenuLeases,
     container_shift: ContainerShift,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
@@ -1324,6 +1349,10 @@ impl Mods {
             channel_callback: None,
             server,
             storage_move_budget: (None, 0),
+            machines: machines::MachineState::new(
+                self.machine_bridge.clone(),
+                self.menu_leases.clone(),
+            ),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -1417,8 +1446,14 @@ impl Mods {
             }),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
+            block_data_api: functions
+                .iter()
+                .any(|f| matches!(f.as_str(), "world.block-data" | "world.set-block-data")),
+            machine_api: functions.iter().any(|f| f == "world.destroy-block"),
             stack_data_api: functions.iter().any(|f| {
-                f.starts_with("world.") && (f.ends_with("-data") || f.ends_with("-with-data"))
+                f.starts_with("world.")
+                    && !matches!(f.as_str(), "world.block-data" | "world.set-block-data")
+                    && (f.ends_with("-data") || f.ends_with("-with-data"))
             }),
             storage_api: functions.iter().any(|f| {
                 matches!(
@@ -2232,6 +2267,11 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
     let mut linker = Linker::new(engine);
     HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
         .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::menus::add_to_linker::<State, HasSelf<State>>(
+        &mut linker,
+        |s| s,
+    )
+    .map_err(|e| e.to_string())?;
     channel_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
     players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
         .map_err(|e| e.to_string())?;
@@ -2681,6 +2721,64 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn block_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Result<Option<String>, String> {
+        Ok(self.block_image(&dimension, pos)?.value)
+    }
+    fn set_block_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        machines::validate_block_data(data.as_deref())?;
+        let before = self.block_image(&dimension, pos)?;
+        if !channel_host::allowance(&mut self.storage_move_budget, self.snapshot.tick, 64) {
+            return Err("at most 64 storage moves/data writes per mod per tick".into());
+        }
+        self.out.push(Output::BlockDataWrite(BlockDataWrite {
+            mod_id: self.id.clone(),
+            dimension,
+            pos,
+            before,
+            value: data,
+        }));
+        Ok(())
+    }
+    fn destroy_block(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        tool: Option<String>,
+        collect: bool,
+    ) -> Result<Vec<MachineStack>, String> {
+        self.machine_destroy(dimension, pos, tool, collect)
+    }
+    fn set_break_progress(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        stage: i32,
+    ) -> Result<(), String> {
+        if !(-1..=9).contains(&stage) {
+            return Err("stage must be -1 or 0..=9".into());
+        }
+        self.machine_position(&dimension, pos)?;
+        if !channel_host::allowance(&mut self.machines.progress_budget, self.snapshot.tick, 64) {
+            return Err("at most 64 break progress requests per mod per tick".into());
+        }
+        self.out.push(Output::BreakProgress {
+            mod_id: self.id.clone(),
+            dimension,
+            pos: (pos.x, pos.y, pos.z),
+            stage,
+        });
+        Ok(())
+    }
+
     fn player_stack_data(
         &mut self,
         player: String,
@@ -4563,6 +4661,7 @@ mod entity_tests {
             channel_callback: None,
             server: false,
             storage_move_budget: (None, 0),
+            machines: Default::default(),
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
             inventories: InventoriesSlot::default(),

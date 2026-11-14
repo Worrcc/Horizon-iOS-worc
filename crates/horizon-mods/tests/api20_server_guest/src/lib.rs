@@ -3,6 +3,7 @@ use horizon_mod_sdk::server::{
     Args, BlockChangePos, BlockPos, BreakOptions, Player, PlayerPoint, Registration, ServerMod,
     TeleportTarget, channel, players, server_hooks, world,
 };
+mod machines30;
 struct Guest;
 impl ServerMod for Guest {
     fn init() -> Result<(Self, Registration), String> {
@@ -14,6 +15,7 @@ impl ServerMod for Guest {
                 .on_blocks()
                 .command("storage28")
                 .command("data29")
+                .command("machines30")
                 .command("behaviour29")
                 .command("schedule29")
                 .command("filters29")
@@ -106,6 +108,12 @@ impl ServerMod for Guest {
         }
         horizon_mod_sdk::server::Decision::Cancel
     }
+    fn menu_clicked(&mut self, p: &Player, slot: i32, button: i32, mode: i32) {
+        players::tell(&p.id, &format!("menu-click {slot} {button} {mode}"));
+    }
+    fn menu_closed(&mut self, p: &Player) {
+        players::tell(&p.id, "menu-close");
+    }
     fn tick(&mut self, _tick: u64) {
         if let Some(player) = players::online().first() {
             world::break_blocks_as(
@@ -126,6 +134,9 @@ impl ServerMod for Guest {
         name: &str,
         args: &Args,
     ) -> Result<Option<String>, String> {
+        if name == "machines30" {
+            return machines30::run(player, args.text());
+        }
         if name == "data29" {
             let pos = BlockChangePos { x: 0, y: 64, z: 0 };
             let dim = &player.dimension;

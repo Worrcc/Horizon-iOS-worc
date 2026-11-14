@@ -3094,6 +3094,9 @@ impl Game<'_> {
         block: &str,
         entity: &mut Option<(String, Compound)>,
     ) {
+        if horizon_client::containers::content_container(block).is_some() {
+            *entity = Some((block.to_owned(), Compound::default()));
+        }
         mod_api::dispatch_block_entity(self, mod_api::mods(), block, entity);
     }
     /// Whether block `block`'s block entity ticks (`EntityBlock.getTicker`):
@@ -3136,14 +3139,18 @@ impl Game<'_> {
     /// numbers past the count are left out. Its `menu`, one of
     /// `containers::MOD_MENUS` or a content mod's menu type
     /// (`data/<id>/horizon/menu/`, API 85) with as many
-    /// slots, opens when the block is used (its template must open a menu, as
-    /// a chest or a furnace does); another is left out. A mod menu type shows
+    /// slots, opens when the block is used (any template works: a declared
+    /// `container` wins over the template's own use behaviour); another is
+    /// left out. A mod menu type shows
     /// on Horizon clients through the mod's `native_screen` only. API 17.
     pub(super) fn native_block_entity_container(
         &self,
         block: &str,
         container: &mut Option<ModContainer>,
     ) {
+        if let Some(c) = horizon_client::containers::content_container(block) {
+            *container = Some(c.container.clone());
+        }
         mod_api::dispatch_block_entity_container(self, mod_api::mods(), block, container);
     }
     /// Block `block`'s block entity has fluid tanks: set `fluids` when the
@@ -6525,11 +6532,15 @@ impl Game<'_> {
         button: i32,
         mode: i32,
     ) {
+        #[cfg(feature = "mods")]
+        self.wasm_menu_event(uuid, window, Some((slot, button, mode)));
         mod_api::dispatch_menu_clicked(self, mod_api::mods(), uuid, window, slot, button, mode);
     }
     /// A menu a mod opened closed: the player closed it, the server or a mod
     /// opened another, or the player left. API 10.
     pub(super) fn native_menu_closed(&mut self, uuid: u128, window: i32) {
+        #[cfg(feature = "mods")]
+        self.wasm_menu_event(uuid, window, None);
         mod_api::dispatch_menu_closed(self, mod_api::mods(), uuid, window);
     }
     /// An item's tooltip, wherever the game shows one (slots, the creative
@@ -9782,10 +9793,13 @@ impl Game<'_> {
         let mut entity = None;
         self.native_block_entity(name, &mut entity);
         let (id, nbt) = entity?;
+        let items = horizon_client::containers::content_container(name)
+            .map_or_else(Vec::new, |c| vec![None; c.container.slots]);
         Some(BlockEntity::Mod(Box::new(
             ModBlockEntityFields {
                 id,
                 nbt,
+                items,
                 ..Default::default()
             }
             .into(),
@@ -9813,9 +9827,14 @@ impl Game<'_> {
                     for list in c.faces.iter_mut().chain([&mut c.inputs, &mut c.outputs]) {
                         list.retain(|&s| s < n);
                     }
-                    c.menu = c
-                        .menu
-                        .filter(|m| mod_menu(m).is_some_and(|(_, size)| size == n));
+                    c.menu = c.menu.filter(|m| {
+                        mod_menu(m).is_some_and(|(_, size)| {
+                            size == n
+                                || (horizon_client::containers::content_container(&state.name)
+                                    .is_some()
+                                    && size == n.div_ceil(9) * 9)
+                        })
+                    });
                     Arc::new(c)
                 })
             });
@@ -9962,6 +9981,14 @@ impl Game<'_> {
     /// `pos` does not show: the server's menu does not have them either, so a
     /// shift-click never moves an item where the player cannot see it.
     pub(super) fn native_hidden_slots(&self, pos: Pos, size: usize) -> Vec<usize> {
+        let block = &self
+            .res
+            .facts()
+            .get(self.world.block(pos.0, pos.1, pos.2))
+            .name;
+        if let Some(c) = horizon_client::containers::content_container(block) {
+            return (c.container.slots..size).collect();
+        }
         if self.mod_menu_at(pos).is_none() {
             return Vec::new();
         }

@@ -59,6 +59,8 @@ pub(crate) struct TestLevel {
     /// `analog_states` (`adjust_has_analog_output`).
     pub analog: HashMap<BlockPos, i32>,
     pub analog_states: HashSet<BlockStateId>,
+    /// States `opens_declared_menu` answers true for.
+    pub menu_states: HashSet<BlockStateId>,
     /// What `before_fire_odds` answers for a state.
     pub fire_odds: HashMap<BlockStateId, (i32, i32)>,
     /// What `before_smoke_source` answers for a state.
@@ -81,6 +83,7 @@ impl TestLevel {
             signals: HashMap::new(),
             analog: HashMap::new(),
             analog_states: HashSet::new(),
+            menu_states: HashSet::new(),
             time: 0,
             day_time: 0,
             events: Vec::new(),
@@ -102,6 +105,9 @@ impl LevelAccess for TestLevel {
     }
     fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
         self.shulker_closed.get(&pos).copied()
+    }
+    fn opens_declared_menu(&self, state: BlockStateId) -> bool {
+        self.menu_states.contains(&state)
     }
     fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
         vanilla || self.analog_states.contains(&state)
@@ -2269,6 +2275,38 @@ fn a_level_can_answer_for_a_blocks_comparator_output() {
     w.level.analog.insert(further, 40);
     w.set(further, gold);
     assert_eq!(read(&mut w), 15);
+}
+
+#[test]
+fn declared_menu_opens_on_any_template() {
+    let mut w = world!();
+    w.floor(0, 6, "stone");
+    let stone = w.id("stone", &[]);
+    let pos = BlockPos::new(0, 1, 0);
+    let open_menus = |w: &World| {
+        w.level
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    LevelEvent::Player {
+                        effect: PlayerEffect::OpenMenu,
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    w.set(pos, stone);
+    w.level.events.clear();
+    assert!(matches!(w.use_block(pos), InteractionResult::Pass));
+    assert_eq!(open_menus(&w), 0);
+
+    w.level.menu_states.insert(stone);
+    w.level.events.clear();
+    assert!(matches!(w.use_block(pos), InteractionResult::Success));
+    assert_eq!(open_menus(&w), 1);
 }
 
 #[test]

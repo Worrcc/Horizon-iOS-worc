@@ -278,7 +278,8 @@ impl Mods {
             if let Hooks::Server(m, _) = &r.hooks
                 && let Some(f) = m.interacted
             {
-                let (v,) = f.call(
+                r.store.data_mut().machines.anchor = Some((p.dimension.clone(), pos));
+                let result = f.call(
                     &mut r.store,
                     (
                         p.clone(),
@@ -292,7 +293,9 @@ impl Mods {
                         item.into(),
                         sneaking,
                     ),
-                )?;
+                );
+                r.store.data_mut().machines.anchor = None;
+                let (v,) = result?;
                 return Ok(v == Decision::Cancel);
             }
             Ok(false)

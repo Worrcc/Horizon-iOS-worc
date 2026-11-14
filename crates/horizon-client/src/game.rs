@@ -337,6 +337,8 @@ mod server_links;
 #[cfg(feature = "mods")]
 mod server_mod_actions;
 #[cfg(feature = "mods")]
+mod server_mod_machines;
+#[cfg(feature = "mods")]
 mod server_mod_storage;
 #[cfg(feature = "mods")]
 mod server_mod_world;
@@ -1072,6 +1074,7 @@ struct GameLevel<'w> {
     /// Where `Block.dropResources` puts the drops instead of popping them,
     /// while a mod's machine breaks a block (`native_machine_destroy_block`).
     drop_into: Option<Vec<ItemStack>>,
+    drop_contents_into: Option<Vec<ItemStack>>,
 }
 struct PlayerCollision {
     y: f64,
@@ -1419,8 +1422,14 @@ impl LevelAccess for GameLevel<'_> {
         }
         signal.clamp(0, 15)
     }
+    fn opens_declared_menu(&self, state: BlockStateId) -> bool {
+        self.registry
+            .state(state)
+            .is_some_and(|s| horizon_client::containers::content_container(&s.name).is_some())
+    }
     fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
-        let mut output = vanilla;
+        let declared = self.opens_declared_menu(state);
+        let mut output = vanilla || declared;
         if self.native_authoritative {
             self.native_has_analog_output(state, &mut output);
         }
@@ -4835,6 +4844,7 @@ impl Game<'_> {
             native_particles: &mut self.creatures.lan_particles,
             drop_tool: None,
             drop_into: None,
+            drop_contents_into: None,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
         self.flush_spill();

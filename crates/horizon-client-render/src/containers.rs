@@ -870,3 +870,27 @@ mod tests {
         assert!((0..100).all(|_| (1..=2).contains(&create_experience(1, 1.7, &mut random))));
     }
 }
+
+/// Declarative real containers registered once alongside content menu types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentContainer {
+    pub block: String,
+    pub container: ModContainer,
+    pub title: String,
+    pub results: Vec<usize>,
+}
+static CONTENT_CONTAINERS: std::sync::OnceLock<HashMap<String, ContentContainer>> =
+    std::sync::OnceLock::new();
+pub fn register_content_containers(containers: Vec<ContentContainer>) -> bool {
+    CONTENT_CONTAINERS
+        .set(
+            containers
+                .into_iter()
+                .map(|c| (c.block.clone(), c))
+                .collect(),
+        )
+        .is_ok()
+}
+pub fn content_container(block: &str) -> Option<&'static ContentContainer> {
+    CONTENT_CONTAINERS.get()?.get(block)
+}
