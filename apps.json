@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.78",
+          "buildVersion": "0.2.0.78",
+          "date": "2026-11-14T20:14:37Z",
+          "localizedDescription": "Branch claude/atmosphere-api, commit bb8f466ab.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-78/Horizon.ipa",
+          "size": 34036307,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.76",
           "buildVersion": "0.2.0.76",
           "date": "2026-11-14T03:54:03Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-68/Horizon.ipa",
           "size": 34460633,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.67",
-          "buildVersion": "0.2.0.67",
-          "date": "2026-11-12T09:21:58Z",
-          "localizedDescription": "Branch claude/streams-api, commit 685eac69b.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-67/Horizon.ipa",
-          "size": 34433384,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.76",
-      "versionDate": "2026-11-14T03:54:03Z",
-      "versionDescription": "Branch claude/apple-battery, commit 1e8b42992.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-76/Horizon.ipa",
-      "size": 33924111
+      "version": "0.2.0.78",
+      "versionDate": "2026-11-14T20:14:37Z",
+      "versionDescription": "Branch claude/atmosphere-api, commit bb8f466ab.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-78/Horizon.ipa",
+      "size": 34036307
     }
   ],
   "news": []
