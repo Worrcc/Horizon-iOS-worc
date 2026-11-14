@@ -187,6 +187,7 @@ pub(super) mod run {
     /// of the game for the call and back after it (no copy).
     struct LentWorld {
         registry: &'static BlockRegistry,
+        properties: horizon_client::assets::Properties,
         block_tags:
             std::sync::Arc<std::collections::HashMap<String, std::collections::HashSet<String>>>,
         biomes: std::sync::Arc<horizon_client::biome::Biomes>,
@@ -278,6 +279,10 @@ pub(super) mod run {
                 return None;
             }
             Some(state_string(self.registry, chunk.block(x & 15, y, z & 15)))
+        }
+        fn heightmap(&self, dimension: &str, x: i32, z: i32) -> Option<Vec<i32>> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            horizon_client::mod_world::heightmap(chunks, x, z, &self.properties)
         }
         fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
@@ -933,6 +938,7 @@ pub(super) mod run {
             let biomes = self.res.biomes().clone();
             self.mods.mods.lend_world(Box::new(LentWorld {
                 registry,
+                properties: self.pack.assets.properties.clone(),
                 block_tags: self
                     .mods
                     .block_tags
