@@ -1713,6 +1713,7 @@ dependencies = [
  "horizon-client-core",
  "horizon-dualsense",
  "horizon-theme",
+ "horizon-threads",
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit",
