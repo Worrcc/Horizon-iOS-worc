@@ -105,6 +105,7 @@ impl Game<'_> {
         sky: &horizon_client::environment::Sky,
         biome: u16,
         water_fog_color: [f32; 3],
+        atmosphere: &super::mod_atmosphere::AtmosphereBlend,
     ) -> FogData {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
@@ -148,6 +149,10 @@ impl Game<'_> {
             night_vision: self.fog_night_vision(),
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
+        // Capability `atmosphere` after vanilla; the Fog option and native mods still win.
+        if self.title.is_none() {
+            atmosphere.apply_fog(&mut fog, &input);
+        }
         if !self.settings.horizon.fog {
             horizon_client::fog::clear_distance_fog(&mut fog, &input);
         }

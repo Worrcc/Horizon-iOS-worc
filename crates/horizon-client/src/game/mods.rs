@@ -90,6 +90,9 @@ pub(super) struct ModsState {
     /// Capability `render`'s camera shakes.
     #[cfg(feature = "mods")]
     pub(super) shake: super::mod_render::Shake,
+    /// Capability `atmosphere`'s cross-fade between mixes.
+    #[cfg(feature = "mods")]
+    pub(super) atmosphere: super::mod_atmosphere::AtmosphereFade,
     /// `--dev-mod PATH`: always on, reloaded when rebuilt.
     pub(super) dev: Vec<PathBuf>,
     /// When dev mods were last checked for a rebuild.
@@ -1100,6 +1103,7 @@ impl Game<'_> {
                 }
                 super::aim_assist::LookDevice::Touch => horizon_mods::LookDeviceKind::Touch,
             },
+            atmosphere: self.atmosphere_scene(),
             player,
             clock,
             gui_size: self.gui_size(),

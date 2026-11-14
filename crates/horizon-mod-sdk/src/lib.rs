@@ -54,6 +54,9 @@
 //! Data writes and creation share storage moves' 64 requests/mod/tick and apply
 //! after hooks. [`server::StackInfoWithData`] leaves the older record unchanged.
 //! Level 32 adds [`server::world::heightmap`]: a loaded chunk's 256 OCEAN_FLOOR heights.
+//! Level 33 adds [`atmosphere`] (experimental capability `atmosphere`): fog and sky profiles keyed
+//! by time of day, a weighted mix the game cross-fades to ([`atmosphere::set_mix`], or
+//! [`atmosphere_mix::show`] and [`atmosphere_mix::clear`]) and the camera's conditions.
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -76,9 +79,26 @@ pub use exports::horizon::mods::container_events::{
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::{Guest as __UiEventsGuest, PointerKind};
 pub use horizon::mods::{
-    browser, browser_ext, canvas, channel, chat, client_world, command, container, game, hud,
-    input, log, recipes, render, storage, ui,
+    atmosphere, browser, browser_ext, canvas, channel, chat, client_world, command, container,
+    game, hud, input, log, recipes, render, storage, ui,
 };
+
+/// Shorthands for [`atmosphere::set_mix`] (capability `atmosphere`, API level 33).
+pub mod atmosphere_mix {
+    use super::atmosphere;
+    /// Shows one profile alone, cross-fading over `seconds`.
+    pub fn show(profile: u32, seconds: f32) -> Result<(), String> {
+        atmosphere::set_mix(&[(profile, 1.0)], seconds)
+    }
+    /// Back to vanilla fog and sky over `seconds`.
+    pub fn clear(seconds: f32) -> Result<(), String> {
+        atmosphere::set_mix(&[], seconds)
+    }
+    /// `0xRRGGBB` from 0..255 channels.
+    pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+        (r as u32) << 16 | (g as u32) << 8 | b as u32
+    }
+}
 
 /// `client_world::BlockStates::state_flags`' bits (capability `world-read`).
 pub mod state_flags {

@@ -1,0 +1,9 @@
+id = "atmosphere_demo"
+name = "Atmosphere Demo"
+version = "0.1.0"
+description = "API 33 fog and sky profiles: a misty day cycle, a storm mix when it rains, and /atmo to pick or define one."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["atmosphere", "chat", "command"]
+experimental = ["atmosphere"]

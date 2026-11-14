@@ -2065,6 +2065,82 @@ interface server-hooks {
     watch-items: func(ids: list<string>) -> result<_, string>;
 }
 
+/// API level 33: experimental capability `atmosphere` (client mods). The mod defines fog and sky
+/// profiles keyed by time of day once, then picks a weighted mix of them a few times a second; the
+/// game samples, blends and cross-fades them every frame, after vanilla fog and weather and before
+/// native mods' fog hooks. Nothing changes in lava, powder snow, blindness, darkness or on the title.
+interface atmosphere {
+    /// Atmospheric fog at one time of day; keys wrap from the last back to the first.
+    record fog-key {
+        /// 0..24000 ticks (0 is 6:00); two keys of a list may not share a time.
+        day-time: u32,
+        /// 0xRRGGBB.
+        color: u32,
+        /// Where fog starts and where it is full: blocks 0..4096, or fractions of the render
+        /// distance 0..2 when `relative`. start <= end.
+        start: f32,
+        end: f32,
+        relative: bool,
+    }
+    /// The sky's colours at one time of day (0xRRGGBB each).
+    record sky-key {
+        day-time: u32,
+        /// Overhead.
+        zenith: u32,
+        /// Near the horizon (the colour vanilla fog fades to).
+        horizon: u32,
+        /// Clouds.
+        cloud: u32,
+        /// Distant clouds: kept for later levels, the game tints all clouds with `cloud` for now.
+        cloud-far: u32,
+    }
+    /// Fog with the camera under water: blocks 0..4096, start <= end.
+    record water-fog {
+        color: u32,
+        start: f32,
+        end: f32,
+    }
+    /// Up to 32 keys per list; a part a profile leaves out (no fog keys, no sky keys, no water
+    /// fog) stays vanilla where it is mixed in. At least one part.
+    record profile {
+        fog-keys: list<fog-key>,
+        sky-keys: list<sky-key>,
+        water-fog: option<water-fog>,
+    }
+    /// Stores a profile (at most 64 per mod) and returns its id. Profiles are never removed.
+    define-profile: func(profile: profile) -> result<u32, string>;
+    /// Blends up to 4 of this mod's profiles: weights >= 0, normalised by the game; an empty list
+    /// returns to vanilla. The game cross-fades from what it shows now over `transition-seconds`
+    /// (0..30, clamped). Errors keep the previous mix. More than 8 calls per second are ignored.
+    /// With several mods, the first in load order with a mix wins.
+    set-mix: func(weights: list<tuple<u32, f32>>, transition-seconds: f32) -> result<_, string>;
+    /// What the camera is in.
+    enum eye-medium { air, water, lava, powder-snow }
+    /// What a mod picks its mix from, read once per tick.
+    record scene {
+        /// 0..1, as the frame draws them.
+        rain: f32,
+        thunder: f32,
+        /// 0..24000.
+        day-time: u32,
+        /// 0 (full) to 7.
+        moon-phase: u8,
+        camera-x: f64,
+        camera-y: f64,
+        camera-z: f64,
+        yaw: f32,
+        pitch: f32,
+        eye: eye-medium,
+        /// 0..15 at the camera's block.
+        sky-light: u8,
+        block-light: u8,
+        /// No block above the camera's column blocks the sky.
+        sky-visible: bool,
+    }
+    /// None on the title screen.
+    conditions: func() -> option<scene>;
+}
+
 /// API level 28: experimental capability `channel`, on either side.
 interface channel {
     /// Client to the same mod id on the server. Name [a-z0-9_./-]{1,64}.
@@ -2132,6 +2208,7 @@ world horizon-ui-mod {
     export container-events;
     import channel;
     export channel-events;
+    import atmosphere;
 }
 
 /// The game's side of `horizon-ui-mod` beyond `horizon-mod`.
@@ -2163,4 +2240,9 @@ world recipes-host {
 world container-host {
     import container;
     export container-events;
+}
+
+/// The game's side of capability `atmosphere` (imports only).
+world atmosphere-host {
+    import atmosphere;
 }

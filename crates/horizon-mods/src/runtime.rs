@@ -100,6 +100,8 @@ pub use behaviour::*;
 pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
 mod channel_host;
 pub use channel_host::{CHANNEL_DATA, CHANNEL_MESSAGES, ChannelPeers};
+mod atmosphere_host;
+pub use atmosphere_host::{AtmosphereMix, AtmosphereScene, EyeMedium};
 /// Canvas-screen pointer actions (API level 18).
 pub use ui_bindings::exports::horizon::mods::ui_events::PointerKind;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
@@ -276,6 +278,8 @@ pub struct Snapshot {
     pub touch_active: bool,
     /// The device of the most recent applied look movement.
     pub look_device: LookDeviceKind,
+    /// API 33: what capability `atmosphere`'s `conditions` reads; none on the title.
+    pub atmosphere: Option<AtmosphereScene>,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -1050,6 +1054,8 @@ struct State {
     channel_budget: (Option<u64>, usize),
     channel_receive_budget: (Option<u64>, usize),
     channel_callback: Option<TypedFunc<(String, Vec<u8>), ()>>,
+    /// Capability `atmosphere`'s profiles and mix (API 33).
+    atmosphere: atmosphere_host::AtmosphereState,
     server: bool,
     storage_move_budget: (Option<u64>, usize),
     machines: machines::MachineState,
@@ -1423,6 +1429,7 @@ impl Mods {
             channel_budget: (None, 0),
             channel_receive_budget: (None, 0),
             channel_callback: None,
+            atmosphere: Default::default(),
             server,
             storage_move_budget: (None, 0),
             machines: machines::MachineState::new(
@@ -2349,6 +2356,7 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
     )
     .map_err(|e| e.to_string())?;
     channel_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
+    atmosphere_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
     players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
         .map_err(|e| e.to_string())?;
     mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -5010,6 +5018,7 @@ mod entity_tests {
             channel_budget: (None, 0),
             channel_receive_budget: (None, 0),
             channel_callback: None,
+            atmosphere: Default::default(),
             server: false,
             storage_move_budget: (None, 0),
             machines: Default::default(),

@@ -202,6 +202,7 @@ mod mob_index;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
+mod mod_atmosphere;
 mod mod_canvas;
 mod mod_canvas_screen;
 mod mod_channel;
@@ -16374,6 +16375,8 @@ impl Game<'_> {
             .get(&(block[0] >> 4, block[2] >> 4))
             .map(|c| c.biome(block[0], block[1], block[2]))
             .unwrap_or(0);
+        // Capability `atmosphere`: the mods' profile mix for this frame.
+        let atmosphere = self.atmosphere_blend();
         let environment = self.dim_environment();
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains
@@ -16406,6 +16409,7 @@ impl Game<'_> {
         let mut sky = environment.sample(self.view_day_time(), Some(biome_sky), Some(biome_fog));
         let (rain, thunder) = self.view_weather(alpha as f32);
         horizon_client::environment::apply_weather(&mut sky, rain, thunder);
+        atmosphere.apply_sky(&mut sky);
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -16753,7 +16757,7 @@ impl Game<'_> {
             environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
-            fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
+            fog: Some(self.frame_fog(camera, &sky, biome, water_fog, &atmosphere)),
             dark_disc: self.dark_disc(camera),
             outline,
             outline_after_terrain,

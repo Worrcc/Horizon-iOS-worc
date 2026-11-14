@@ -16,8 +16,8 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    ContainerPointerKind, Mod, Registration, browser, browser_ext, channel, chat, command,
-    container, game,
+    ContainerPointerKind, Mod, Registration, atmosphere, browser, browser_ext, channel, chat,
+    command, container, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -125,6 +125,9 @@ impl Mod for Guest {
             "input_wheel",
             "aim_assist",
             "look_device",
+            "atmo_profile",
+            "atmo_mix",
+            "atmo_conditions",
             "zoom",
             "minimap",
             "far_terrain",
@@ -347,6 +350,84 @@ impl Mod for Guest {
                 chat::show(&format!("holding {held}"));
             }
             "input_wheel" => input::claim_wheel(args != "off"),
+            // `/atmo_profile COLOR START END [relative] [sky] [water]`: one fog key at 0
+            // (`-` for none) and optional sky and water parts; says the id.
+            "atmo_profile" => {
+                let mut words = args.split_whitespace();
+                let color = words.next().unwrap_or("-");
+                let number = |w: Option<&str>| w.and_then(|w| w.parse().ok()).unwrap_or(f32::NAN);
+                let (start, end) = (number(words.next()), number(words.next()));
+                let rest: Vec<&str> = words.collect();
+                let fog_keys = match u32::from_str_radix(color.trim_start_matches("0x"), 16) {
+                    Ok(color) => vec![atmosphere::FogKey {
+                        day_time: 0,
+                        color,
+                        start,
+                        end,
+                        relative: rest.contains(&"relative"),
+                    }],
+                    Err(_) => vec![],
+                };
+                let sky_keys = if rest.contains(&"sky") {
+                    vec![atmosphere::SkyKey {
+                        day_time: 6000,
+                        zenith: 0x0000FF,
+                        horizon: 0x00FF00,
+                        cloud: 0xFFFFFF,
+                        cloud_far: 0x808080,
+                    }]
+                } else {
+                    vec![]
+                };
+                let water_fog = rest.contains(&"water").then_some(atmosphere::WaterFog {
+                    color: 0x0000FF,
+                    start: 1.0,
+                    end: 16.0,
+                });
+                let id = atmosphere::define_profile(&atmosphere::Profile {
+                    fog_keys,
+                    sky_keys,
+                    water_fog,
+                })?;
+                chat::show(&format!("profile {id}"));
+            }
+            // `/atmo_mix SECONDS [ID:WEIGHT]...`.
+            "atmo_mix" => {
+                let mut words = args.split_whitespace();
+                let seconds = words
+                    .next()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(f32::NAN);
+                let weights: Vec<(u32, f32)> = words
+                    .filter_map(|w| {
+                        let (id, weight) = w.split_once(':')?;
+                        Some((id.parse().ok()?, weight.parse().ok()?))
+                    })
+                    .collect();
+                atmosphere::set_mix(&weights, seconds)?;
+            }
+            "atmo_conditions" => chat::show(&match atmosphere::conditions() {
+                None => "none".to_owned(),
+                Some(c) => format!(
+                    "rain {} thunder {} day {} moon {} at {} {} {} eye {} light {} {} sky {}",
+                    c.rain,
+                    c.thunder,
+                    c.day_time,
+                    c.moon_phase,
+                    c.camera_x,
+                    c.camera_y,
+                    c.camera_z,
+                    match c.eye {
+                        atmosphere::EyeMedium::Air => "Air",
+                        atmosphere::EyeMedium::Water => "Water",
+                        atmosphere::EyeMedium::Lava => "Lava",
+                        atmosphere::EyeMedium::PowderSnow => "PowderSnow",
+                    },
+                    c.sky_light,
+                    c.block_light,
+                    c.sky_visible
+                ),
+            }),
             "look_device" => chat::show(match input::look_device() {
                 input::LookDeviceKind::Mouse => "mouse",
                 input::LookDeviceKind::Controller => "controller",

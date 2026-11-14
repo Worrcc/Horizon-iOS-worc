@@ -23,6 +23,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `world-read` | [`client-world`](#client-world) | see the blocks, biomes and light your game has loaded around you |
 | `container` | [`container`](#container) | inspect and click your open inventory and container screens |
 | `channel` | [`channel`](#channel) | exchange mod messages with the server and its players |
+| `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky |
 
 ## World `channel-host`
 
@@ -49,7 +50,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `container`, `channel`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `browser-ext`, `canvas`, `client-world`, `container`, `channel`, `atmosphere`, `log`, `game`, `chat`, `hud`, `storage`, `command`
 - Exports (what the mod provides): `ui-events`, `container-events`, `channel-events`, `events`
 
 ## World `ui-host`
@@ -86,6 +87,13 @@ The game's additive container imports and optional exports.
 
 - Imports (what the game offers): `container`
 - Exports (what the mod provides): `container-events`
+
+## World `atmosphere-host`
+
+The game's side of capability `atmosphere` (imports only).
+
+- Imports (what the game offers): `atmosphere`
+- Exports (what the mod provides): 
 
 ## `log`
 
@@ -1934,6 +1942,93 @@ API 29: all flags default false. Each family has 32 calls/mod/server tick.
 | `set-behaviour-hooks` | `func(config: behaviour-config)` | API 29: replace the opt-in flags; disabled flags cost no guest calls. |
 | `watch-blocks` | `func(ids: list<string>) -> result<_, string>` | Exact resource ids or namespace:*, at most 64. No global wildcard. Replaces the list atomically; invalid input leaves the previous list intact. |
 | `watch-items` | `func(ids: list<string>) -> result<_, string>` | Replace item id filters atomically, with the same bounds as watch-blocks. |
+
+## `atmosphere`
+
+Access: capability `atmosphere`.
+
+API level 33: experimental capability `atmosphere` (client mods). The mod defines fog and sky profiles keyed by time of day once, then picks a weighted mix of them a few times a second; the game samples, blends and cross-fades them every frame, after vanilla fog and weather and before native mods' fog hooks. Nothing changes in lava, powder snow, blindness, darkness or on the title.
+
+### record `fog-key`
+
+Atmospheric fog at one time of day; keys wrap from the last back to the first.
+
+| Field | Type | |
+| --- | --- | --- |
+| `day-time` | `u32` | 0..24000 ticks (0 is 6:00); two keys of a list may not share a time. |
+| `color` | `u32` | 0xRRGGBB. |
+| `start` | `f32` | Where fog starts and where it is full: blocks 0..4096, or fractions of the render distance 0..2 when `relative`. start <= end. |
+| `end` | `f32` |  |
+| `relative` | `bool` |  |
+
+### record `sky-key`
+
+The sky's colours at one time of day (0xRRGGBB each).
+
+| Field | Type | |
+| --- | --- | --- |
+| `day-time` | `u32` |  |
+| `zenith` | `u32` | Overhead. |
+| `horizon` | `u32` | Near the horizon (the colour vanilla fog fades to). |
+| `cloud` | `u32` | Clouds. |
+| `cloud-far` | `u32` | Distant clouds: kept for later levels, the game tints all clouds with `cloud` for now. |
+
+### record `water-fog`
+
+Fog with the camera under water: blocks 0..4096, start <= end.
+
+| Field | Type | |
+| --- | --- | --- |
+| `color` | `u32` |  |
+| `start` | `f32` |  |
+| `end` | `f32` |  |
+
+### record `profile`
+
+Up to 32 keys per list; a part a profile leaves out (no fog keys, no sky keys, no water fog) stays vanilla where it is mixed in. At least one part.
+
+| Field | Type | |
+| --- | --- | --- |
+| `fog-keys` | `list<fog-key>` |  |
+| `sky-keys` | `list<sky-key>` |  |
+| `water-fog` | `option<water-fog>` |  |
+
+### enum `eye-medium`
+
+What the camera is in.
+
+| Case | |
+| --- | --- |
+| `air` |  |
+| `water` |  |
+| `lava` |  |
+| `powder-snow` |  |
+
+### record `scene`
+
+What a mod picks its mix from, read once per tick.
+
+| Field | Type | |
+| --- | --- | --- |
+| `rain` | `f32` | 0..1, as the frame draws them. |
+| `thunder` | `f32` |  |
+| `day-time` | `u32` | 0..24000. |
+| `moon-phase` | `u8` | 0 (full) to 7. |
+| `camera-x` | `f64` |  |
+| `camera-y` | `f64` |  |
+| `camera-z` | `f64` |  |
+| `yaw` | `f32` |  |
+| `pitch` | `f32` |  |
+| `eye` | `eye-medium` |  |
+| `sky-light` | `u8` | 0..15 at the camera's block. |
+| `block-light` | `u8` |  |
+| `sky-visible` | `bool` | No block above the camera's column blocks the sky. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `define-profile` | `func(profile: profile) -> result<u32, string>` | Stores a profile (at most 64 per mod) and returns its id. Profiles are never removed. |
+| `set-mix` | `func(weights: list<tuple<u32, f32>>, transition-seconds: f32) -> result<_, string>` | Blends up to 4 of this mod's profiles: weights >= 0, normalised by the game; an empty list returns to vanilla. The game cross-fades from what it shows now over `transition-seconds` (0..30, clamped). Errors keep the previous mix. More than 8 calls per second are ignored. With several mods, the first in load order with a mix wins. |
+| `conditions` | `func() -> option<scene>` | None on the title screen. |
 
 ## `channel`
 

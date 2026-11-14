@@ -26,8 +26,8 @@ id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "container", "channel"]
-experimental = ["ui", "render", "input", "recipes", "container", "channel"]
+capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes", "container", "channel", "atmosphere"]
+experimental = ["ui", "render", "input", "recipes", "container", "channel", "atmosphere"]
 "#;
 const CANVAS_MANIFEST: &str = r#"
 id = "test_canvas_guest"
@@ -82,6 +82,8 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "phase-c-demo",
                 "-p",
+                "atmosphere-demo",
+                "-p",
                 "canvas-test",
                 "--target-dir",
             ])
@@ -127,6 +129,13 @@ fn mods_dir() -> &'static Path {
                     .unwrap(),
             ),
             ("canvas_test", example("canvas-test")),
+            (
+                "atmosphere_demo",
+                std::fs::read_to_string(
+                    root.join("mods/official/atmosphere-demo/horizon-mod.toml"),
+                )
+                .unwrap(),
+            ),
             (
                 "horizon_mods_test_api20_server_guest",
                 r#"
@@ -472,8 +481,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read", "container", "channel"]
-experimental = ["ui", "render", "input", "recipes", "world-read", "container", "channel"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "world-read", "container", "channel", "atmosphere"]
+experimental = ["ui", "render", "input", "recipes", "world-read", "container", "channel", "atmosphere"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -486,8 +495,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container", "
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest also exercises API 28 channels.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 28);
+    // The UI guest also exercises API 33 atmosphere.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 33);
     // canvas-test now draws items over its canvas screen (level 28).
     assert_eq!(level("canvas_test.hmod"), 28);
 }
@@ -3271,7 +3280,7 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
-        28
+        33
     );
     let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
     assert!(
@@ -3827,3 +3836,203 @@ mod stack_data;
 mod machines;
 #[path = "player_world/mod.rs"]
 mod player_world;
+
+/// The chat lines and error feedback a command made.
+fn said(mods: &mut Mods, command: &str) -> (Vec<String>, Vec<String>) {
+    mods.drain();
+    assert!(mods.command(command), "{command}");
+    let (mut chat, mut errors) = (Vec::new(), Vec::new());
+    for o in mods.drain() {
+        match o {
+            Output::Chat { text, .. } => chat.push(text),
+            Output::Feedback {
+                text, error: true, ..
+            } => errors.push(text),
+            _ => {}
+        }
+    }
+    (chat, errors)
+}
+
+#[test]
+fn api33_atmosphere_profiles_are_checked_and_capped_across_the_sandbox() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert_eq!(said(&mut mods, "atmo_profile ff0000 0 40").0, ["profile 0"]);
+    assert_eq!(
+        said(&mut mods, "atmo_profile - 0 0 sky water").0,
+        ["profile 1"]
+    );
+    for bad in [
+        "ff0000 50 10",
+        "1000000 0 1",
+        "ff0000 NaN 1",
+        "ff0000 0 5000",
+        "ff0000 0 3 relative",
+        "- 0 0",
+    ] {
+        let (chat, errors) = said(&mut mods, &format!("atmo_profile {bad}"));
+        assert!(
+            chat.is_empty() && errors.len() == 1,
+            "{bad}: {chat:?} {errors:?}"
+        );
+    }
+    let (_, errors) = said(&mut mods, "atmo_profile 00ff00 0.5 1.5 relative");
+    assert!(errors.is_empty());
+    for _ in 3..64 {
+        assert!(said(&mut mods, "atmo_profile 123456 1 2").1.is_empty());
+    }
+    let (chat, errors) = said(&mut mods, "atmo_profile 123456 1 2");
+    assert!(chat.is_empty() && errors[0].contains("64"), "{errors:?}");
+    let profile = mods.atmosphere_profile("test_ui_guest", 0).unwrap();
+    let sample = profile.sample(12345.0, 160.0);
+    assert_eq!(sample.fog.unwrap().color, [1.0, 0.0, 0.0]);
+    assert!(sample.sky.is_none() && sample.water.is_none());
+    let relative = mods.atmosphere_profile("test_ui_guest", 2).unwrap();
+    let fog = relative.sample(0.0, 160.0).fog.unwrap();
+    assert_eq!((fog.start, fog.end), (80.0, 240.0));
+    assert!(mods.atmosphere_profile("test_ui_guest", 64).is_none());
+    assert!(mods.atmosphere_profile("other", 0).is_none());
+    // A manifest without the capability may not import it.
+    let manifest =
+        horizon_mods::Manifest::parse(&UI_MANIFEST.replace(", \"atmosphere\"", "")).unwrap();
+    assert!(
+        manifest
+            .check_code_imports(
+                ["horizon:mods/atmosphere@0.1.0"],
+                &["atmosphere.set-mix".into()]
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn api33_atmosphere_mix_normalises_keeps_on_errors_and_limits_its_rate() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert!(mods.atmosphere_mix().is_none());
+    said(&mut mods, "atmo_profile ff0000 0 40");
+    said(&mut mods, "atmo_profile - 0 0 sky");
+    assert!(said(&mut mods, "atmo_mix 99 0:1 1:3").1.is_empty());
+    let mix = mods.atmosphere_mix().unwrap();
+    assert_eq!(mix.mod_id, "test_ui_guest");
+    assert_eq!(mix.weights, [(0, 0.25), (1, 0.75)]);
+    assert_eq!(mix.transition, 30.0);
+    let serial = mix.serial;
+    for bad in [
+        "1 2:1",
+        "1 0:-1",
+        "1 0:0",
+        "NaN 0:1",
+        "1 0:1 0:1",
+        "1 0:1 1:1 0:1 1:1 0:1",
+    ] {
+        let errors = said(&mut mods, &format!("atmo_mix {bad}")).1;
+        assert_eq!(errors.len(), 1, "{bad}");
+        let mix = mods.atmosphere_mix().unwrap();
+        assert_eq!(
+            (mix.serial, mix.weights),
+            (serial, &[(0, 0.25), (1, 0.75)][..])
+        );
+    }
+    // Eight accepted calls per second (20 ticks), the ninth ignored without an error.
+    for i in 1..8 {
+        assert!(said(&mut mods, &format!("atmo_mix {i} 1:1")).1.is_empty());
+    }
+    let eighth = mods.atmosphere_mix().unwrap().serial;
+    assert_ne!(eighth, serial);
+    assert!(said(&mut mods, "atmo_mix 0 0:1").1.is_empty());
+    let mix = mods.atmosphere_mix().unwrap();
+    assert_eq!(
+        (mix.serial, mix.weights, mix.transition),
+        (eighth, &[(1, 1.0)][..], 7.0)
+    );
+    mods.set_snapshot(Snapshot {
+        tick: 20,
+        ..Snapshot::default()
+    });
+    // An empty mix fades back to vanilla: still the mix shown, with no weights.
+    assert!(said(&mut mods, "atmo_mix 3").1.is_empty());
+    let mix = mods.atmosphere_mix().unwrap();
+    assert!(mix.weights.is_empty() && mix.transition == 3.0 && mix.serial != eighth);
+}
+
+#[test]
+fn api33_atmosphere_conditions_read_the_snapshot() {
+    use horizon_mods::{AtmosphereScene, EyeMedium};
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert_eq!(said(&mut mods, "atmo_conditions").0, ["none"]);
+    mods.set_snapshot(Snapshot {
+        atmosphere: Some(AtmosphereScene {
+            rain: 0.5,
+            thunder: 0.25,
+            day_time: 13000,
+            moon_phase: 3,
+            camera_x: 1.5,
+            camera_y: 70.0,
+            camera_z: -2.5,
+            yaw: 90.0,
+            pitch: 10.0,
+            eye: EyeMedium::Water,
+            sky_light: 12,
+            block_light: 4,
+            sky_visible: true,
+        }),
+        ..Snapshot::default()
+    });
+    assert_eq!(
+        said(&mut mods, "atmo_conditions").0,
+        ["rain 0.5 thunder 0.25 day 13000 moon 3 at 1.5 70 -2.5 eye Water light 12 4 sky true"]
+    );
+}
+
+#[test]
+fn api33_atmosphere_demo_mixes_by_rain_and_picks_profiles() {
+    use horizon_mods::{AtmosphereScene, EyeMedium};
+    let mut mods = load("atmosphere_demo.hmod");
+    assert!(
+        matches!(mods.entries()[0].status, Status::Running),
+        "{:?}",
+        mods.entries()[0].status
+    );
+    let mix = mods.atmosphere_mix().unwrap();
+    assert_eq!(
+        (mix.mod_id, mix.weights),
+        ("atmosphere_demo", &[(0, 1.0)][..])
+    );
+    let rainy = |tick| Snapshot {
+        tick,
+        atmosphere: Some(AtmosphereScene {
+            rain: 0.5,
+            thunder: 0.0,
+            day_time: 6000,
+            moon_phase: 0,
+            camera_x: 0.0,
+            camera_y: 64.0,
+            camera_z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            eye: EyeMedium::Air,
+            sky_light: 15,
+            block_light: 0,
+            sky_visible: true,
+        }),
+        ..Snapshot::default()
+    };
+    mods.set_snapshot(rainy(20));
+    mods.tick(20);
+    let mix = mods.atmosphere_mix().unwrap();
+    assert_eq!(mix.weights, [(0, 0.5), (1, 0.5)]);
+    assert_eq!(mix.transition, 2.0);
+    let (_, errors) = said(&mut mods, "atmo fog 12ab34 0 16");
+    assert!(errors.is_empty(), "{errors:?}");
+    let mix = mods.atmosphere_mix().unwrap();
+    assert_eq!((mix.weights, mix.transition), (&[(3, 1.0)][..], 0.0));
+    let fog = mods
+        .atmosphere_profile("atmosphere_demo", 3)
+        .unwrap()
+        .sample(1000.0, 128.0)
+        .fog
+        .unwrap();
+    assert_eq!((fog.start, fog.end), (0.0, 16.0));
+    assert!(said(&mut mods, "atmo off").1.is_empty());
+    assert!(mods.atmosphere_mix().unwrap().weights.is_empty());
+}

@@ -123,9 +123,12 @@ pub enum Capability {
     Container,
     /// Sandboxed messages between the same mod id on client and server.
     Channel,
+    /// Fog and sky colours blended in by the game (client mods; interface
+    /// `atmosphere`, API level 33, experimental).
+    Atmosphere,
 }
 impl Capability {
-    pub const ALL: [Capability; 16] = [
+    pub const ALL: [Capability; 17] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -142,6 +145,7 @@ impl Capability {
         Capability::WorldRead,
         Capability::Container,
         Capability::Channel,
+        Capability::Atmosphere,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -173,6 +177,7 @@ impl Capability {
             Capability::WorldRead => "client-world",
             Capability::Container => "container",
             Capability::Channel => "channel",
+            Capability::Atmosphere => "atmosphere",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -188,6 +193,7 @@ impl Capability {
                 | Capability::WorldRead
                 | Capability::Container
                 | Capability::Channel
+                | Capability::Atmosphere
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -215,6 +221,7 @@ impl Capability {
                 "see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them"
             }
             Capability::Channel => "exchange mod messages with the server and its players",
+            Capability::Atmosphere => "change the colours and distance of fog and the sky",
             Capability::Container => "inspect and click your open inventory and container screens",
             Capability::WorldRead => {
                 "see the blocks, biomes and light your game has loaded around you"
@@ -279,6 +286,7 @@ impl fmt::Display for Capability {
             Capability::WorldRead => "world-read",
             Capability::Container => "container",
             Capability::Channel => "channel",
+            Capability::Atmosphere => "atmosphere",
         };
         f.write_str(name)
     }
