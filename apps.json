@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.75",
+          "buildVersion": "0.2.0.75",
+          "date": "2026-11-14T03:12:31Z",
+          "localizedDescription": "Branch claude/apple-battery, commit 9589790d5.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-75/Horizon.ipa",
+          "size": 33906042,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.74",
           "buildVersion": "0.2.0.74",
           "date": "2026-11-14T01:19:38Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-66/Horizon.ipa",
           "size": 34428300,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.65",
-          "buildVersion": "0.2.0.65",
-          "date": "2026-11-12T06:00:20Z",
-          "localizedDescription": "Branch claude/keyboard-on-mousetweaks, commit 84258fed7.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-65/Horizon.ipa",
-          "size": 34428312,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.74",
-      "versionDate": "2026-11-14T01:19:38Z",
-      "versionDescription": "Branch claude/api-expansion, commit 6397e51f4.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-74/Horizon.ipa",
-      "size": 34886556
+      "version": "0.2.0.75",
+      "versionDate": "2026-11-14T03:12:31Z",
+      "versionDescription": "Branch claude/apple-battery, commit 9589790d5.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-75/Horizon.ipa",
+      "size": 33906042
     }
   ],
   "news": []
