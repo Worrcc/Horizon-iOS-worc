@@ -260,6 +260,10 @@ pub(super) struct ModsState {
     /// Capability `world-read`'s change counters and caches, between lends.
     #[cfg(feature = "mods")]
     pub(super) client_world: super::mod_client_world::ClientWorldHost,
+    #[cfg(feature = "mods")]
+    pub(super) entity_kinds: Option<std::sync::Arc<[String]>>,
+    #[cfg(feature = "mods")]
+    pub(super) hud_bars: Option<((f32, f32), Vec<horizon_mods::HudBar>)>,
 }
 
 /// The mappings `input.mapping` answers for, with the default key their
@@ -1069,6 +1073,16 @@ impl Game<'_> {
     }
     /// What mods read, with these players on the server.
     pub(super) fn mod_snapshot_with(&mut self, players: Vec<ServerPlayer>) -> Snapshot {
+        let (client_entities, client_entity_kinds) = self.mod_client_entities();
+        let food_stats = self.mod_food_stats();
+        let hud_bars = self
+            .mods
+            .hud_bars
+            .as_ref()
+            .filter(|(size, _)| {
+                *size == self.gui_size() && self.title.is_none() && self.player.is_some()
+            })
+            .map(|(_, bars)| bars.clone());
         let player = self.player.as_ref().map(|p| Player {
             x: p.position.x,
             y: p.position.y,
@@ -1121,6 +1135,10 @@ impl Game<'_> {
             } else {
                 Default::default()
             },
+            client_entities,
+            client_entity_kinds,
+            food_stats,
+            hud_bars,
             player,
             clock,
             gui_size: self.gui_size(),

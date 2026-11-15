@@ -210,6 +210,8 @@ mod mod_client_world;
 mod mod_container;
 mod mod_input;
 #[cfg(feature = "mods")]
+mod mod_observations;
+#[cfg(feature = "mods")]
 mod mod_panel;
 #[cfg(feature = "mods")]
 mod mod_particles;
@@ -8908,6 +8910,10 @@ impl Game<'_> {
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
+        #[cfg(feature = "mods")]
+        {
+            self.mods.hud_bars = None;
+        }
         let mut batch = HudBatch::new(size);
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
@@ -8999,6 +9005,10 @@ impl Game<'_> {
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
         let show_hud = !self.ui.hide_gui;
+        #[cfg(feature = "mods")]
+        {
+            self.mods.hud_bars = Some((self.gui_size(), Vec::new()));
+        }
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
         let mut bar_height = 39;
@@ -9180,13 +9190,23 @@ impl Game<'_> {
                 // that answers draws every row instead.
                 let mut native_health_hud = None;
                 self.native_health_hud(&inputs, wi, hi, &mut native_health_hud);
+                #[cfg(feature = "mods")]
+                let vanilla_layout = native_health_hud.is_none();
                 let draws = match native_health_hud {
                     Some(draws) => draws,
                     None => self.health_hud.layout(&inputs, wi, hi),
                 };
+                #[cfg(feature = "mods")]
+                if !vanilla_layout {
+                    self.mods.hud_bars = None;
+                }
                 // The rows draw in one pass here, so a mod's `player_health`
                 // layer stands for the armor, food and air rows too.
                 self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
+                    #[cfg(feature = "mods")]
+                    if vanilla_layout {
+                        g.capture_mod_hud(&draws);
+                    }
                     hud_layout::paint(batch, &g.gui.atlas, &draws);
                 });
                 bar_height = self

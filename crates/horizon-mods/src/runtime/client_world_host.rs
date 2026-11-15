@@ -5,9 +5,9 @@
 //! to server mods).
 use super::{Mods, State, world_read_bindings::horizon::mods::client_world};
 pub use client_world::{
-    BlockStates as BlockTable, ChunkColumns, DimensionInfo as ClientDimension, Face as BlockFace,
-    HarvestInfo as Harvest, Layer as ColumnLayer, TexturePixels as ClientTexture,
-    TintSource as FaceTint,
+    BlockStates as BlockTable, ChunkColumns, DimensionInfo as ClientDimension, EntityCategory,
+    EntityDot, Face as BlockFace, HarvestInfo as Harvest, Layer as ColumnLayer,
+    TexturePixels as ClientTexture, TintSource as FaceTint,
 };
 use std::sync::{Arc, Mutex};
 
@@ -43,6 +43,11 @@ pub const NO_SPRITE: u32 = u32::MAX;
 pub trait ClientWorldView: std::any::Any + Send {
     /// The player's dimension; none on the title screen.
     fn dimension(&self) -> Option<ClientDimension>;
+    /// API 35: the loaded default food component (nutrition, saturation points, always edible).
+    fn food_value(&self, _item: &str) -> Result<Option<(u32, f32, bool)>, String> {
+        Ok(None)
+    }
+
     /// API 20: a loaded state in the current dimension.
     fn block_at(&self, _x: i32, _y: i32, _z: i32) -> Option<String> {
         None
@@ -78,7 +83,7 @@ pub trait ClientWorldView: std::any::Any + Send {
 pub(super) type ClientWorldSlot = Arc<Mutex<Option<Box<dyn ClientWorldView>>>>;
 
 impl State {
-    fn with_view<R>(&self, f: impl FnOnce(&mut dyn ClientWorldView) -> R) -> Option<R> {
+    pub(super) fn with_view<R>(&self, f: impl FnOnce(&mut dyn ClientWorldView) -> R) -> Option<R> {
         let mut slot = self
             .client_world
             .lock()
@@ -103,6 +108,36 @@ fn no_table() -> BlockTable {
 }
 
 impl client_world::Host for State {
+    fn entities_near(&mut self, radius: f32, max: u32) -> Result<Vec<EntityDot>, String> {
+        if self.server {
+            return Err("entities-near is client-only".into());
+        }
+        crate::client_queries::validate_entity_query(radius, max)?;
+        self.entity_calls.take()?;
+        let started = std::time::Instant::now();
+        let out = self.snapshot.player.as_ref().map_or_else(Vec::new, |p| {
+            let radius2 = f64::from(radius).powi(2);
+            self.snapshot
+                .client_entities
+                .iter()
+                .take(crate::client_queries::ENTITY_MAX)
+                .filter(|e| {
+                    (e.x - p.x).powi(2) + (e.y - p.y).powi(2) + (e.z - p.z).powi(2) <= radius2
+                })
+                .take(max as usize)
+                .cloned()
+                .collect()
+        });
+        self.canvas.charge(started);
+        Ok(out)
+    }
+    fn entity_kinds(&mut self) -> Result<Vec<String>, String> {
+        if self.server {
+            return Err("entity-kinds is client-only".into());
+        }
+        Ok(self.snapshot.client_entity_kinds.to_vec())
+    }
+
     fn set_see_through(&mut self, states: Vec<u32>) -> Result<(), String> {
         if states.len() > 65536 {
             return Err("at most 65536 see-through state ids".into());

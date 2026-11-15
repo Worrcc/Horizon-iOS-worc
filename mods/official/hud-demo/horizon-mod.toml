@@ -1,0 +1,9 @@
+id = "hud_demo"
+name = "HUD Demo"
+version = "0.1.0"
+description = "API 35 nutrition, nearby entities and actual vanilla HUD bounds; /hud35 on|off."
+authors = ["Horizon"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "world-read", "render", "input", "chat", "command"]
+experimental = ["world-read", "render", "input"]

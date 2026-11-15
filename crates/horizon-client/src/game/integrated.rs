@@ -57,6 +57,9 @@ struct Flags {
     /// while it is not.
     published: AtomicU16,
     smoothed_tick_ms: AtomicU32,
+    /// API 35: owner-only FoodData, published after each server tick; never a network packet.
+    #[cfg(feature = "mods")]
+    food_exhaustion: Mutex<Option<(u128, f32)>>,
     /// `options.renderDistance` and `options.simulationDistance`, which the
     /// server follows while it runs (IntegratedServer.tickServer).
     render_distance: AtomicI32,
@@ -101,6 +104,12 @@ pub(super) struct Integrated {
     pub folder: String,
 }
 impl Integrated {
+    #[cfg(feature = "mods")]
+    pub(super) fn food_exhaustion(&self, uuid: u128) -> Option<f32> {
+        let value = *self.flags.food_exhaustion.lock().ok()?;
+        value.and_then(|(owner, value)| (owner == uuid).then_some(value))
+    }
+
     /// The generator of the server's level in `dimension`, once it has run.
     pub fn terrain(
         &self,
@@ -700,6 +709,21 @@ impl Game<'_> {
                     (self.end.locator(), flags.terrain.lock())
                 {
                     terrains.insert(self.dim.id(), terrain);
+                }
+            }
+            #[cfg(feature = "mods")]
+            if let Some(serving) = &self.serving {
+                let value = self.lan.as_ref().and_then(|host| {
+                    let guest = host
+                        .hub
+                        .guests
+                        .iter()
+                        .find(|g| g.uuid == serving.owner && g.placed && g.loaded && !g.dead)?;
+                    let exhaustion = guest.motion.as_ref()?.health.food.exhaustion;
+                    Some((guest.uuid, exhaustion))
+                });
+                if let Ok(mut published) = flags.food_exhaustion.lock() {
+                    *published = value;
                 }
             }
             self.apply_publish();

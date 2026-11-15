@@ -65,6 +65,10 @@
 //! Bloom and Shadows settings ([`atmosphere::define_post_profile`],
 //! [`atmosphere::set_post_keys`], builders in [`atmosphere_post`]).
 //!
+//! Level 35 adds [`client_world::entities_near`] (64 blocks, 256 entries, four calls per frame)
+//! and [`client_world::entity_kinds`], [`game::food_stats`], [`game::food_value`] and
+//! [`render::hud_bars`]. These generated wrappers return `Result`; exhaustion is optional.
+//!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
 //! API level 21: [`canvas::set_box_key`] makes a touch on the HUD box hold a registered mod key.

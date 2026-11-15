@@ -9,6 +9,7 @@ pub mod api_level;
 pub mod atmosphere;
 pub mod atmosphere_fx;
 pub mod atmosphere_sky;
+pub mod client_queries;
 #[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;

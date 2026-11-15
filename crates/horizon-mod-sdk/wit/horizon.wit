@@ -21,6 +21,28 @@ interface log {
 /// Capability `game-read`: the local player, the world clock and the block
 /// or living entity the player looks at.
 interface game {
+    /// API level 35: client-known nutrition and health. Exhaustion is only
+    /// available from this window's integrated server (single player / LAN host).
+    record food-state {
+        food: u32,
+        saturation: f32,
+        exhaustion: option<f32>,
+        health: f32,
+        max-health: f32,
+        absorption: f32,
+    }
+    record food-info {
+        nutrition: u32,
+        /// Saturation points restored, not the component's saturation modifier.
+        saturation: f32,
+        always-edible: bool,
+    }
+    /// API level 35: none outside a world; read-only, client mods only.
+    food-stats: func() -> result<option<food-state>, string>;
+    /// API level 35: default food component from loaded item data. Invalid
+    /// namespaced ids are errors; unknown and non-food items return none.
+    food-value: func(item: string) -> result<option<food-info>, string>;
+
     record player {
         /// Feet position, in blocks.
         x: f64,
@@ -487,6 +509,14 @@ interface input {
 /// own renderer, kept until the mod replaces them (no call per frame). A mod
 /// never supplies shader code.
 interface render {
+    enum bar-kind { health, food, armor, air, mount-health }
+    record hud-bar { kind: bar-kind, bounds: rect }
+    /// API level 35: actual GUI-pixel bounds of the last rendered vanilla
+    /// bars, including animation, touch layout and mount hearts replacing food.
+    /// Hidden bars are absent. Error before a HUD has been laid out, after a
+    /// resize, or when a native mod replaces the health layout.
+    hud-bars: func() -> result<list<hud-bar>, string>;
+
     /// A world-space segment, in blocks; whole numbers are block corners.
     record world-line { x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64 }
     /// API level 20: replace up to 4096 segments, at the block outline's width.
@@ -756,6 +786,25 @@ interface canvas {
 /// read in whole chunks for minimaps; and the block table and textures of
 /// the loaded resource packs.
 interface client-world {
+    enum entity-category {
+        hostile, passive, neutral, water, ambient, player, own-tamed, other-tamed, other
+    }
+    record entity-dot {
+        x: f64, y: f64, z: f64,
+        yaw: f32,
+        /// Index in entity-kinds; table stable until mods/resources reload.
+        kind: u32,
+        category: entity-category,
+    }
+    /// API level 35: loaded living entities, local player excluded, nearest
+    /// first in a 3D sphere. Radius finite and 0..64, max 0..256; invalid
+    /// inputs are errors. At most 4 calls per mod per frame; excess is an error.
+    /// Snapshot capped at the nearest 256 within 64 blocks, no network traffic.
+    entities-near: func(radius: f32, max: u32) -> result<list<entity-dot>, string>;
+    /// API level 35: namespaced types indexed by entity-dot.kind, sorted by id.
+    /// Empty outside a world; client mods only, capability world-read.
+    entity-kinds: func() -> result<list<string>, string>;
+
     /// API level 20: the client-loaded block state, e.g. minecraft:oak_log[axis=y].
     /// None for unloaded chunks and on the title screen.
     block-at: func(x: s32, y: s32, z: s32) -> option<string>;

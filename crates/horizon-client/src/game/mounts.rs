@@ -821,6 +821,8 @@ impl Game<'_> {
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
         let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
         self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
+            #[cfg(feature = "mods")]
+            g.capture_mod_hud(&draws);
             horizon_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
         });
         hearts
