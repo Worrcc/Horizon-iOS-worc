@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.79",
+          "buildVersion": "0.2.0.79",
+          "date": "2026-11-15T00:50:13Z",
+          "localizedDescription": "Branch claude/post-effects, commit e2842baf3.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-79/Horizon.ipa",
+          "size": 34063516,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.78",
           "buildVersion": "0.2.0.78",
           "date": "2026-11-14T20:14:37Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-69/Horizon.ipa",
           "size": 34462260,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.68",
-          "buildVersion": "0.2.0.68",
-          "date": "2026-11-12T21:44:53Z",
-          "localizedDescription": "Branch claude/essentials-aim-api, commit 163191448.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-68/Horizon.ipa",
-          "size": 34460633,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.78",
-      "versionDate": "2026-11-14T20:14:37Z",
-      "versionDescription": "Branch claude/atmosphere-api, commit bb8f466ab.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-78/Horizon.ipa",
-      "size": 34036307
+      "version": "0.2.0.79",
+      "versionDate": "2026-11-15T00:50:13Z",
+      "versionDescription": "Branch claude/post-effects, commit e2842baf3.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-79/Horizon.ipa",
+      "size": 34063516
     }
   ],
   "news": []
