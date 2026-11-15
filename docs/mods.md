@@ -736,6 +736,13 @@ A pool addition holds `"elements"` as a pool does, a processor list addition `"p
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
 
+A jigsaw piece from a mod's own template (any namespace but `minecraft`) has its connecting blocks joined up after it
+is placed: fences, glass panes, iron bars and other cross-collision blocks, walls, fence gates and stairs take their
+sides (stairs their shape) from the blocks beside them, as when a player places them, so a generator need not write
+`north`/`east`/... or `shape` itself. Only neighbours inside the chunk being decorated count; a side facing another
+chunk keeps the template's value, so a fence on a chunk edge should still carry its outward connection. Vanilla's
+pieces keep their saved shapes, as in vanilla (`SinglePoolElement` places with a known shape).
+
 A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) and mob spawn
 changes reach biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in
 `data/<ns>/neoforge/biome_modifier/` (older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types).
@@ -753,7 +760,8 @@ each in mod and file order, and a feature already in the step is not added twice
   "features": "zinc:ore_zinc", "step": "underground_ores" }
 ```
 
-The modifiers rewrite the biomes when the content root builds, and the generator orders every biome's features as
+The modifiers rewrite the biomes when the content root builds (content mods' own biomes, `data/<ns>/worldgen/biome/`,
+included: a modifier's `biomes` can name them or a tag holding them), and the generator orders every biome's features as
 vanilla's `FeatureSorter` does, so an added feature takes its place in that order (its random seed follows from it). A
 biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. A modifier
 naming a biome, biome tag, feature, feature tag, entity type or entity type tag the game doesn't have (another mod's, a
@@ -791,10 +799,10 @@ one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
 
 | Interface | Capability | Functions |
 |---|---|---|
-| `log` | always | as for client mods |
+| `log` | always | as for client mods: in the server's `logs/latest.log` (the integrated server's is the game's) as `[mod <id>]` |
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
 | `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call; API level 26: `teleport(player, target)`, `permission-level(player)` (below) |
-| `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `heightmap(dimension, x, z)` (API level 32): a loaded chunk's 256 OCEAN_FLOOR heights, using chunk coordinates, indexed `local_z * 16 + local_x`; each is the first Y above the highest opaque block (fluids excluded, leaves included), or the column's minimum Y when empty; none for an unloaded chunk or unknown dimension; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
+| `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `heightmap(dimension, x, z)` (API level 32): a loaded chunk's 256 OCEAN_FLOOR heights, using chunk coordinates, indexed `local_z * 16 + local_x`; each is the first Y above the highest opaque block (fluids excluded, leaves included), or the column's minimum Y when empty; none for an unloaded chunk or unknown dimension; read from the live chunk, so made block changes (commands, players, earlier `set-blocks`) show at once, but this call's queued `set-blocks` show from the next call; `top-block(dimension, x, z, below-y)` (API level 36): the highest non-air block's Y at or below `below-y` in a loaded column, read from the blocks (fluids, plants and leaves count; none when unloaded or empty); `seed()` (API level 36): the world's seed as in level.dat; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
 | `entities` | `entities` (experimental) | `mobs()`: the content mods' mobs loaded on the server (id, kind, dimension, position, yaw, health, target, age, scale, animation, texture, rider, data), up to 1024; `near(dimension, at, radius)`: every mob within 64 blocks, nearest first, up to 256; `interactions()`: the last tick's right clicks on content mods' mobs (player UUID, mob id, kind, held item), in order, up to 256; `give-orders(orders)`: up to 1024 orders to content mods' mobs, checked at once, carried out before their dimension's next tick (below); `spawn(kind, dimension, at, yaw, data)`: a content mod's mob, persistent, with data on it, before that dimension's next tick, up to 64 per hook call |
 
 | Hook (export `server-events`) | When |

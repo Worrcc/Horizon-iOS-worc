@@ -1205,6 +1205,7 @@ impl Game<'_> {
             player_permissions: Default::default(),
             teleport_borders: Default::default(),
             world_spawn: None,
+            world_seed: self.level.seed,
             generated_chunks: Default::default(),
             view_hit: self.mod_view_hit(),
             view_entity: self.mod_view_entity(),

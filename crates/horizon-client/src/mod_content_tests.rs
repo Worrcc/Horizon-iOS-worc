@@ -4266,6 +4266,55 @@ fn biome_modifiers_place_mod_features_in_vanilla_biomes() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A mod that registers its own biome and ships a biome modifier keeps the
+/// biome: the modifier pass rewrites the bundle the content biomes were just
+/// written to, not the base's (which dropped them and failed world creation
+/// with unresolved tag entries).
+#[test]
+fn biome_modifiers_keep_content_biomes() {
+    let base = biome_base("biome-modifiers-content");
+    let scratch = base.parent().unwrap().to_owned();
+    zinc_mod(
+        &scratch.join("zinc"),
+        &[(
+            "add_zinc",
+            r##"{"type":"neoforge:add_features","biomes":"#zinc:flats",
+                "features":"zinc:ore_zinc","step":"underground_ores"}"##,
+        )],
+    );
+    let dir = scratch.join("zinc");
+    for (name, text) in [
+        (
+            "data/zinc/worldgen/biome/zinc_flats.json",
+            r#"{"temperature":0.3,"downfall":0.1,"has_precipitation":false,"effects":{"water_color":4159204},"carvers":[],"features":[]}"#,
+        ),
+        (
+            "data/zinc/tags/worldgen/biome/flats.json",
+            r#"{"values":["zinc:zinc_flats","minecraft:plains"]}"#,
+        ),
+    ] {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let m = folder_mod(&dir, &[]);
+    let out = scratch.join("out");
+    build(&base, &[m], &out).unwrap();
+    let features = biome_features(&out);
+    assert_eq!(
+        features.get("zinc:zinc_flats"),
+        Some(&serde_json::json!([[], [], [], [], [], [], ["zinc:ore_zinc"]])),
+        "content biome kept and modified: {:?}",
+        features.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        features["minecraft:plains"][6],
+        serde_json::json!(["minecraft:ore_coal", "zinc:ore_zinc"])
+    );
+    assert!(features.contains_key("minecraft:desert"));
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A mod with features but no modifier leaves vanilla's biome bundle alone.
 #[test]
 fn biome_modifiers_none_keep_the_vanilla_biomes() {

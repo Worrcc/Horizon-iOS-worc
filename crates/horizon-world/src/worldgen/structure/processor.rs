@@ -946,6 +946,12 @@ pub struct PlaceSettings<'a> {
     /// StructurePlaceSettings.knownShape: skip the neighbor shape updates
     /// after placement (jigsaw pieces).
     pub known_shape: bool,
+    /// Horizon: with `known_shape`, still connect the placed connecting
+    /// blocks (fences, panes, bars, walls, gates, stairs) to their neighbours
+    /// inside `bounding_box` ([`connect_placed_shapes`]). Set for mod
+    /// templates' jigsaw pieces, so their generators need not write the
+    /// connections; vanilla's pieces keep the shapes their templates hold.
+    pub connect_shapes: bool,
     /// StructurePlaceSettings.ignoreEntities / finalizeEntities.
     pub ignore_entities: bool,
     pub finalize_entities: bool,
@@ -963,6 +969,7 @@ impl<'a> PlaceSettings<'a> {
             waterlogging: true,
             random: None,
             known_shape: false,
+            connect_shapes: false,
             ignore_entities: false,
             finalize_entities: false,
             counted: 0,
@@ -1607,6 +1614,8 @@ pub fn place_in_world<W: FeatureWorld + PlacementContext>(
         for &pos in &placed {
             world.update_from_neighbour_shapes(pos, flags & !1 | 16)?;
         }
+    } else if settings.connect_shapes && !placed.is_empty() {
+        connect_placed_shapes(world, &placed, settings.bounding_box, flags)?;
     }
     if !settings.ignore_entities {
         place_entities(world, template, position, settings)?;
@@ -1715,6 +1724,65 @@ fn turn_facing(f: i8, mirror: Mirror, rotation: Rotation) -> i8 {
         Rotation::Counterclockwise90 => 3,
     };
     order[(i + steps) % 4]
+}
+
+/// Horizon's connection pass over a known-shape piece: each placed
+/// connecting block (fences, panes, bars, walls, fence gates, stairs) takes
+/// its shape from its neighbours as `Block.updateFromNeighbourShapes` would,
+/// but only toward neighbours inside `bounds` (the chunk being decorated,
+/// whose blocks are settled; a side facing another chunk keeps the
+/// template's value, so the result does not depend on which chunk generated
+/// first). Stairs, whose shape reads all four horizontal neighbours, are
+/// updated only when all four are inside. Neighbours are not notified.
+pub fn connect_placed_shapes<W: PlacementContext>(
+    world: &mut W,
+    placed: &[[i32; 3]],
+    bounds: Option<BoundingBox>,
+    flags: i32,
+) -> Result<(), PlacementQueryError> {
+    use crate::level::ConnectingShape;
+    use horizon_core::geometry::Direction;
+    // Block.UPDATE_SHAPE_ORDER.
+    const ORDER: [Direction; 6] = [
+        Direction::West,
+        Direction::East,
+        Direction::North,
+        Direction::South,
+        Direction::Down,
+        Direction::Up,
+    ];
+    let inside = |p: [i32; 3]| bounds.is_none_or(|b| b.is_inside(p));
+    let mut kinds: std::collections::HashMap<BlockStateId, Option<ConnectingShape>> =
+        std::collections::HashMap::new();
+    let mut directions = Vec::with_capacity(6);
+    for &pos in placed {
+        let state = world.block_state(pos)?;
+        let kind = match kinds.get(&state) {
+            Some(&kind) => kind,
+            None => {
+                let kind = world.connecting_shape(state)?;
+                kinds.insert(state, kind);
+                kind
+            }
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        directions.clear();
+        directions.extend(ORDER.into_iter().filter(|d| {
+            let n = d.normal();
+            inside([pos[0] + n[0], pos[1] + n[1], pos[2] + n[2]])
+        }));
+        if kind == ConnectingShape::Stairs
+            && directions.iter().filter(|d| d.normal()[1] == 0).count() < 4
+        {
+            continue;
+        }
+        if !directions.is_empty() {
+            world.update_shape_toward(pos, &directions, flags & !1 | 16)?;
+        }
+    }
+    Ok(())
 }
 
 /// StructureTemplate.updateShapeAtEdge over the placed positions' voxel

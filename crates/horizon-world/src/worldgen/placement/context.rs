@@ -50,6 +50,27 @@ pub trait PlacementContext {
     ) -> Result<(), PlacementQueryError> {
         Ok(())
     }
+    /// Horizon: how the state's shape follows its neighbours (fences, panes,
+    /// walls, stairs...), for [`crate::worldgen::structure::processor`]'s
+    /// connection pass. Worlds without block behaviour answer None.
+    fn connecting_shape(
+        &mut self,
+        _state: crate::registry::BlockStateId,
+    ) -> Result<Option<crate::level::ConnectingShape>, PlacementQueryError> {
+        Ok(None)
+    }
+    /// Horizon: `Block.updateFromNeighbourShapes` for the state at `position`
+    /// against only the neighbours in `directions` (in that order), written
+    /// with `flags` when it changes, without notifying the neighbours. Worlds
+    /// without block shape-update behaviour accept this as a no-op.
+    fn update_shape_toward(
+        &mut self,
+        _position: [i32; 3],
+        _directions: &[horizon_core::geometry::Direction],
+        _flags: i32,
+    ) -> Result<(), PlacementQueryError> {
+        Ok(())
+    }
     /// WorldGenRegion.ensureCanWrite: horizontal write radius and upgrade height.
     fn ensure_can_write(&mut self, _position: [i32; 3]) -> Result<bool, PlacementQueryError> {
         Ok(true)

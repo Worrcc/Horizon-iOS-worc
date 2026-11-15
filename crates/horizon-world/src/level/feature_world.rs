@@ -122,6 +122,33 @@ impl<L: LevelAccess + ?Sized> PlacementContext for LevelFeatureWorld<'_, '_, L> 
         self.sim.update_neighbors_at(place, block);
         Ok(())
     }
+    fn connecting_shape(
+        &mut self,
+        state: BlockStateId,
+    ) -> Result<Option<super::ConnectingShape>, PlacementQueryError> {
+        Ok(self.sim.b.connecting_shape(state))
+    }
+    fn update_shape_toward(
+        &mut self,
+        position: [i32; 3],
+        directions: &[Direction],
+        flags: i32,
+    ) -> Result<(), PlacementQueryError> {
+        let place = pos(position);
+        let state = self.sim.state(place);
+        let mut new_state = state;
+        for &direction in directions {
+            let neighbour_pos = rel(place, direction);
+            let neighbour = self.sim.state(neighbour_pos);
+            new_state =
+                self.sim
+                    .update_shape(new_state, place, direction, neighbour_pos, neighbour);
+        }
+        if new_state != state {
+            self.sim.set_block(place, new_state, flags);
+        }
+        Ok(())
+    }
     fn set_section_block(
         &mut self,
         position: [i32; 3],

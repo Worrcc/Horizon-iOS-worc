@@ -1624,7 +1624,21 @@ interface %world {
     /// z * 16 + x for local x, z in 0..16. Each is the first Y above the
     /// highest opaque block (fluids do not count, leaves do), or the column's
     /// minimum Y when empty. None for an unloaded chunk or unknown dimension.
+    /// Read from the live chunk: a block change that can move a column's
+    /// height drops that column's cached height, so `/setblock`, `/fill`,
+    /// players and `set-blocks` show at once once made. Changes this mod
+    /// queued with `set-blocks` are made after the hook call returns (before
+    /// the dimension's next tick), so they show from the next call on.
     heightmap: func(dimension: string, x: s32, z: s32) -> option<list<s32>>;
+    /// API level 36: the Y of the highest block that is not air (air, cave
+    /// air, void air) at block column x, z, at or below `below-y`, read from
+    /// the loaded chunk's blocks as of this call (no cached height). Fluids,
+    /// plants and leaves count. None for an unloaded chunk, an unknown
+    /// dimension, or air all the way down. Queued `set-blocks` show as for
+    /// `heightmap`.
+    top-block: func(dimension: string, x: s32, z: s32, below-y: s32) -> option<s32>;
+    /// API level 36: the world's seed, as in level.dat (`/seed`).
+    seed: func() -> s64;
     /// The biome at a position (`minecraft:plains`, ...), as the server
     /// stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded.
     get-biome: func(dimension: string, x: s32, y: s32, z: s32) -> option<string>;

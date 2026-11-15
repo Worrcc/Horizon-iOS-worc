@@ -790,3 +790,181 @@ fn a_non_strict_template_updates_its_shapes_and_neighbours() {
         );
     }
 }
+
+/// Horizon's connection pass for mod templates' known-shape pieces: fences,
+/// bars, panes and stairs join up with the blocks beside them inside the
+/// placement box; a side facing outside the box keeps the template's value,
+/// and without the pass nothing changes.
+#[test]
+fn a_known_shape_piece_connects_its_connecting_blocks_inside_the_box() {
+    use crate::worldgen::structure::{
+        BlockInfo, BoundingBox, Rotation, StructureTemplate,
+        processor::{PlaceSettings, place_in_world},
+        save_nbt,
+    };
+    let Some(f) = fixture() else { return };
+    let resources = f
+        .behaviours
+        .live_features()
+        .and_then(|features| features.structure_resources())
+        .expect("structure resources");
+    let w0 = World::new(f, 0);
+    let fence = w0.id("oak_fence", &[]);
+    let bars = w0.id("iron_bars", &[]);
+    let pane = w0.id("glass_pane", &[]);
+    let stone = w0.id("stone", &[]);
+    let east_stair = w0.id("oak_stairs", &[("facing", "east")]);
+    let north_stair = w0.id("oak_stairs", &[("facing", "north")]);
+    let block = |pos: [i32; 3], state: BlockStateId| BlockInfo {
+        pos,
+        state,
+        nbt: None,
+    };
+    let blocks = vec![
+        block([0, 0, 0], fence),
+        block([1, 0, 0], fence),
+        block([2, 0, 0], stone),
+        block([0, 0, 2], bars),
+        block([1, 0, 2], bars),
+        block([0, 0, 4], pane),
+        block([1, 0, 4], stone),
+        block([0, 0, 6], east_stair),
+        block([1, 0, 6], north_stair),
+    ];
+    let tag = save_nbt(
+        f.registry,
+        &resources.transforms,
+        [3, 1, 7],
+        blocks,
+        &[],
+        horizon_core::version::DATA_VERSION,
+    );
+    let template = StructureTemplate::from_nbt(&tag, f.registry, &resources.transforms);
+    // (connect, box): unbounded, then a box ending at x = 1 with the stone at
+    // x = 2 already in the world outside it.
+    for (connect, bounded) in [(false, false), (true, false), (true, true)] {
+        let mut w = World::new(f, 0);
+        let mut settings = PlaceSettings::new(Rotation::None);
+        settings.known_shape = true;
+        settings.connect_shapes = connect;
+        if bounded {
+            w.put(BlockPos::new(2, 64, 0), stone);
+            settings.bounding_box = Some(BoundingBox::new([-8, 0, -8], [1, 128, 16]));
+        }
+        let mut sim = f.behaviours.sim(&mut w.level, &mut w.ticks);
+        let features = f.behaviours.live_features().unwrap();
+        let mut world = super::feature_world::LevelFeatureWorld {
+            sim: &mut sim,
+            features,
+            entities: Vec::new(),
+        };
+        let at = [0, 64, 0];
+        assert!(
+            place_in_world(
+                &mut world,
+                &resources,
+                &template,
+                at,
+                at,
+                &mut settings,
+                None,
+                18,
+            )
+            .unwrap()
+        );
+        let at = |x, z| w.level.block_state(BlockPos::new(x, 64, z));
+        let id = |name, props: &[(&str, &str)]| w.id(name, props);
+        if !connect {
+            assert_eq!(at(0, 0), fence, "no pass: the template's shape stays");
+            assert_eq!(at(1, 0), fence);
+            assert_eq!(at(0, 6), east_stair);
+            continue;
+        }
+        assert_eq!(at(0, 0), id("oak_fence", &[("east", "true")]));
+        assert_eq!(
+            at(1, 0),
+            id(
+                "oak_fence",
+                &[
+                    ("west", "true"),
+                    ("east", if bounded { "false" } else { "true" })
+                ]
+            ),
+            "bounded {bounded}: the side facing outside the box keeps its value"
+        );
+        assert_eq!(at(0, 2), id("iron_bars", &[("east", "true")]));
+        assert_eq!(at(1, 2), id("iron_bars", &[("west", "true")]));
+        assert_eq!(at(0, 4), id("glass_pane", &[("east", "true")]));
+        assert_eq!(
+            at(0, 6),
+            id("oak_stairs", &[("facing", "east"), ("shape", "outer_left")]),
+            "the stair takes its shape from the stair in front"
+        );
+    }
+}
+
+/// Timing of the connection pass on a big mod piece:
+/// `HORIZON_TEMPLATE=<file.nbt> cargo test -p horizon-world --release --lib --
+/// --ignored connection_pass_timing --nocapture`.
+#[test]
+#[ignore = "timing: needs HORIZON_TEMPLATE and the prepared resources"]
+fn connection_pass_timing() {
+    use crate::worldgen::structure::{
+        BoundingBox, Rotation, StructureTemplate,
+        processor::{PlaceSettings, place_in_world},
+    };
+    use std::io::Read;
+    let Some(f) = fixture() else { return };
+    let Some(file) = std::env::var_os("HORIZON_TEMPLATE") else {
+        return;
+    };
+    let resources = f
+        .behaviours
+        .live_features()
+        .and_then(|features| features.structure_resources())
+        .unwrap();
+    let mut raw = Vec::new();
+    flate2::read::GzDecoder::new(std::fs::read(file).unwrap().as_slice())
+        .read_to_end(&mut raw)
+        .unwrap();
+    let tag = crate::nbt::read_named(&raw, crate::nbt::Limits::templates())
+        .unwrap()
+        .0
+        .tag;
+    let mut template = StructureTemplate::from_nbt(&tag, f.registry, &resources.transforms);
+    template.location = "wasteland:timing".into();
+    for round in 0..3 {
+        for connect in [false, true] {
+            let mut w = World::new(f, 0);
+            let mut settings = PlaceSettings::new(Rotation::None);
+            settings.known_shape = true;
+            settings.connect_shapes = connect;
+            // One chunk column's share of the piece, as worldgen places it.
+            settings.bounding_box = Some(BoundingBox::new([0, -64, 0], [15, 319, 15]));
+            let mut sim = f.behaviours.sim(&mut w.level, &mut w.ticks);
+            let features = f.behaviours.live_features().unwrap();
+            let mut world = super::feature_world::LevelFeatureWorld {
+                sim: &mut sim,
+                features,
+                entities: Vec::new(),
+            };
+            let start = std::time::Instant::now();
+            place_in_world(
+                &mut world,
+                &resources,
+                &template,
+                [0, 64, 0],
+                [0, 64, 0],
+                &mut settings,
+                None,
+                18,
+            )
+            .unwrap();
+            let blocks = w.level.blocks.len();
+            eprintln!(
+                "round {round} connect {connect}: {:?} for {blocks} blocks",
+                start.elapsed()
+            );
+        }
+    }
+}

@@ -349,6 +349,8 @@ pub struct Snapshot {
     pub teleport_borders: std::collections::BTreeMap<String, [f64; 4]>,
     /// Overworld level.dat spawn data, shared across the server's dimensions.
     pub world_spawn: Option<(String, WorldPoint, f32)>,
+    /// API 36: the world's seed (level.dat), for `world.seed`.
+    pub world_seed: i64,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
     pub generated_chunks: Arc<[ChunkPos]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
@@ -704,6 +706,11 @@ pub trait WorldView: std::any::Any + Send {
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// OCEAN_FLOOR first-available heights of a loaded chunk, in local z * 16 + x order.
     fn heightmap(&self, _dimension: &str, _x: i32, _z: i32) -> Option<Vec<i32>> {
+        None
+    }
+    /// API 36: the highest non-air block Y at or below `below_y` in a loaded
+    /// column, read from the blocks (not a cached height).
+    fn top_block(&self, _dimension: &str, _x: i32, _z: i32, _below_y: i32) -> Option<i32> {
         None
     }
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
@@ -2539,14 +2546,35 @@ fn clip_widgets(widgets: Vec<UiWidget>) -> Vec<UiWidget> {
 
 impl mod_log::Host for State {
     fn write(&mut self, level: mod_log::Level, message: String) {
-        let level = match level {
-            mod_log::Level::Debug => log::Level::Debug,
-            mod_log::Level::Info => log::Level::Info,
-            mod_log::Level::Warn => log::Level::Warn,
-            mod_log::Level::Error => log::Level::Error,
-        };
-        log::log!(level, "[mod {}] {}", self.id, clip(message));
+        mod_log_line(&self.id, level, &clip(message));
     }
+}
+
+/// A mod's `log.write` as a game log line, `[mod <id>] message`, client and
+/// server mods alike. The game's log keeps info and above, so a debug line
+/// is written at info, marked `(debug)`, rather than dropped. Each mod is
+/// its own source for the log's flood gate (a minute's warnings per source),
+/// so one noisy mod cannot hide another's warnings and errors.
+fn mod_log_line(id: &str, level: mod_log::Level, message: &str) {
+    let (level, mark) = match level {
+        mod_log::Level::Debug => (log::Level::Info, "(debug) "),
+        mod_log::Level::Info => (log::Level::Info, ""),
+        mod_log::Level::Warn => (log::Level::Warn, ""),
+        mod_log::Level::Error => (log::Level::Error, ""),
+    };
+    if level > log::max_level() {
+        return;
+    }
+    let source = format!("mod {id}");
+    log::logger().log(
+        &log::Record::builder()
+            .args(format_args!("[mod {id}] {mark}{message}"))
+            .level(level)
+            .target(module_path!())
+            .file(Some(&source))
+            .line(Some(0))
+            .build(),
+    );
 }
 impl game::Host for State {
     fn food_stats(&mut self) -> Result<Option<FoodState>, String> {
@@ -3484,6 +3512,13 @@ impl mod_world::Host for State {
     fn heightmap(&mut self, dimension: String, x: i32, z: i32) -> Option<Vec<i32>> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.heightmap(&dimension, x, z)
+    }
+    fn top_block(&mut self, dimension: String, x: i32, z: i32, below_y: i32) -> Option<i32> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.top_block(&dimension, x, z, below_y)
+    }
+    fn seed(&mut self) -> i64 {
+        self.snapshot.world_seed
     }
     fn generated_chunks(&mut self) -> Vec<ChunkPos> {
         (self.snapshot.generated_chunks.iter())
@@ -5399,6 +5434,13 @@ mod entity_tests {
     #[test]
     fn pre_level_25_components_still_link() {
         older_components_still_link(25);
+    }
+
+    /// API 36 adds `world.seed` and `world.top-block`: a level-35 server mod
+    /// (no import of either) still links.
+    #[test]
+    fn pre_level_36_components_still_link() {
+        older_components_still_link(36);
     }
 
     #[test]

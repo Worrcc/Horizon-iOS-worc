@@ -3748,7 +3748,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     }
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        31
+        36
     );
 }
 
@@ -4415,3 +4415,6 @@ fn api34_atmosphere_demo_sets_and_clears_post_keys() {
 
 #[path = "api35/mod.rs"]
 mod api35;
+
+#[path = "api36/mod.rs"]
+mod api36;

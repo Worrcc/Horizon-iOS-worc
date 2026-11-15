@@ -1376,6 +1376,43 @@ impl PlacementContext for World<'_> {
         }
         Ok(())
     }
+    fn connecting_shape(
+        &mut self,
+        state: BlockStateId,
+    ) -> Result<Option<crate::level::ConnectingShape>, PlacementQueryError> {
+        Ok(self.behaviours.and_then(|b| b.connecting_shape(state)))
+    }
+    fn update_shape_toward(
+        &mut self,
+        position: [i32; 3],
+        directions: &[Direction],
+        flags: i32,
+    ) -> Result<(), PlacementQueryError> {
+        let Some(behaviours) = self.behaviours else {
+            return Ok(());
+        };
+        let state = self.region.block(position).map_err(query)?;
+        let mut new_state = state;
+        for &direction in directions {
+            let n = direction.normal();
+            let neighbor_pos = [position[0] + n[0], position[1] + n[1], position[2] + n[2]];
+            let neighbor = self.region.block(neighbor_pos).map_err(query)?;
+            let (updated, ticks) = self.shape_update(
+                behaviours,
+                new_state,
+                position,
+                direction,
+                neighbor_pos,
+                neighbor,
+            );
+            self.schedule_captured(behaviours, ticks)?;
+            new_state = updated;
+        }
+        if new_state != state {
+            self.set_block(position, new_state, flags).map_err(query)?;
+        }
+        Ok(())
+    }
     fn ensure_can_write(&mut self, position: [i32; 3]) -> Result<bool, PlacementQueryError> {
         Ok(self
             .zone
