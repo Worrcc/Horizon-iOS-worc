@@ -1,5 +1,5 @@
-//! Capability `atmosphere` (API level 33) without the runtime: the checks on
-//! a mod's fog and sky profiles, sampling a profile at a time of day,
+//! Capability `atmosphere` (API levels 33 and 34) without the runtime: the checks on
+//! a mod's fog, sky and post profiles, sampling a profile at a time of day,
 //! blending samples with vanilla, and the cross-fade between mixes. The
 //! game samples every frame (`docs/api-expansion-d.md`); the mod only picks
 //! the mix.
@@ -47,6 +47,40 @@ pub struct WaterFogIn {
     pub end: f32,
 }
 
+/// A post key as the mod sends it (WIT `post-key`, API level 34).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PostKeyIn {
+    pub day_time: u32,
+    pub exposure: f32,
+    pub bloom_intensity: f32,
+    pub bloom_threshold: f32,
+    pub shadow_strength: f32,
+    pub shadow_softness: f32,
+    pub saturation: f32,
+}
+
+/// The built-in post effects at one moment (API level 34): multipliers and
+/// levels the renderer applies within the player's Bloom and Shadows settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PostSample {
+    pub exposure: f32,
+    pub bloom_intensity: f32,
+    pub bloom_threshold: f32,
+    pub shadow_strength: f32,
+    pub shadow_softness: f32,
+    pub saturation: f32,
+}
+
+/// The ranges of a post key's values, in [`PostSample::to_array`]'s order.
+pub const POST_RANGES: [(&str, f32, f32); 6] = [
+    ("exposure", 0.25, 4.0),
+    ("bloom-intensity", 0.0, 2.0),
+    ("bloom-threshold", 0.0, 1.0),
+    ("shadow-strength", 0.0, 1.0),
+    ("shadow-softness", 0.0, 1.0),
+    ("saturation", 0.0, 2.0),
+];
+
 /// A colour in linear RGB.
 pub type Linear = [f32; 3];
 
@@ -64,12 +98,19 @@ struct SkyKey {
     colors: [Linear; 4],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PostKey {
+    day_time: u32,
+    values: [f32; 6],
+}
+
 /// A checked profile: keys sorted by time, colours in linear RGB.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     fog: Vec<FogKey>,
     sky: Vec<SkyKey>,
     water: Option<FogSample>,
+    post: Vec<PostKey>,
 }
 
 /// Fog at one moment: colour (linear RGB) and absolute distances in blocks.
@@ -93,6 +134,8 @@ pub struct Sample {
     pub fog: Option<FogSample>,
     pub sky: Option<SkySample>,
     pub water: Option<FogSample>,
+    /// API level 34's post effects; None leaves the game's own.
+    pub post: Option<PostSample>,
 }
 
 /// sRGB `0xRRGGBB` to linear RGB.
@@ -210,7 +253,35 @@ impl Profile {
             fog: fog_keys,
             sky: sky_keys,
             water,
+            post: Vec::new(),
         })
+    }
+
+    /// A profile of post keys alone (`define-post-profile`): 1 to
+    /// [`KEYS_PER_LIST`] keys.
+    pub fn post_only(keys: &[PostKeyIn]) -> Result<Self, String> {
+        if keys.is_empty() {
+            return Err("a post profile needs at least one post key".into());
+        }
+        let post = check_post(keys)?;
+        Ok(Self {
+            fog: Vec::new(),
+            sky: Vec::new(),
+            water: None,
+            post,
+        })
+    }
+
+    /// Replaces the post keys (`set-post-keys`; empty removes them). An
+    /// error keeps the previous keys; a profile left with no part at all is
+    /// refused, as `define-profile` refuses one.
+    pub fn set_post(&mut self, keys: &[PostKeyIn]) -> Result<(), String> {
+        let post = check_post(keys)?;
+        if post.is_empty() && self.fog.is_empty() && self.sky.is_empty() && self.water.is_none() {
+            return Err("this profile holds post keys alone: it needs at least one".into());
+        }
+        self.post = post;
+        Ok(())
     }
 
     /// The profile at `day_time` (ticks, any value: wrapped to a day), with
@@ -240,12 +311,49 @@ impl Profile {
                 cloud_far: c[3],
             }
         });
+        let post = segment(self.post.len(), |i| self.post[i].day_time, t).map(|(a, b, f)| {
+            let (a, b) = (&self.post[a].values, &self.post[b].values);
+            PostSample::from_array(std::array::from_fn(|i| lerp(a[i], b[i], f)))
+        });
         Sample {
             fog,
             sky,
             water: self.water,
+            post,
         }
     }
+}
+
+/// Checks post keys: up to [`KEYS_PER_LIST`], distinct times, every value
+/// finite and in [`POST_RANGES`]. Returns them sorted by time.
+fn check_post(keys: &[PostKeyIn]) -> Result<Vec<PostKey>, String> {
+    if keys.len() > KEYS_PER_LIST {
+        return Err(format!("at most {KEYS_PER_LIST} keys per list"));
+    }
+    let times = check_times("post key", keys.iter().map(|k| k.day_time))?;
+    let mut out = Vec::with_capacity(keys.len());
+    for (k, day_time) in keys.iter().zip(times) {
+        let values = PostSample {
+            exposure: k.exposure,
+            bloom_intensity: k.bloom_intensity,
+            bloom_threshold: k.bloom_threshold,
+            shadow_strength: k.shadow_strength,
+            shadow_softness: k.shadow_softness,
+            saturation: k.saturation,
+        }
+        .to_array();
+        for (v, (name, lo, hi)) in values.iter().zip(POST_RANGES) {
+            if !v.is_finite() {
+                return Err(format!("post key {name} must be finite"));
+            }
+            if !(lo..=hi).contains(v) {
+                return Err(format!("post key {name} {v} must be {lo}..{hi}"));
+            }
+        }
+        out.push(PostKey { day_time, values });
+    }
+    out.sort_by_key(|k| k.day_time);
+    Ok(out)
 }
 
 /// The two keys around `t` and how far `t` is from the first to the second;
@@ -312,6 +420,29 @@ impl FogSample {
             color: [a[0], a[1], a[2]],
             start: a[3],
             end: a[4],
+        }
+    }
+}
+impl PostSample {
+    /// The values in [`POST_RANGES`]' order, for [`blend`].
+    pub fn to_array(self) -> [f32; 6] {
+        [
+            self.exposure,
+            self.bloom_intensity,
+            self.bloom_threshold,
+            self.shadow_strength,
+            self.shadow_softness,
+            self.saturation,
+        ]
+    }
+    pub fn from_array(a: [f32; 6]) -> Self {
+        Self {
+            exposure: a[0],
+            bloom_intensity: a[1],
+            bloom_threshold: a[2],
+            shadow_strength: a[3],
+            shadow_softness: a[4],
+            saturation: a[5],
         }
     }
 }
@@ -586,6 +717,84 @@ mod tests {
         };
         assert!(Profile::new(&[], &[], water(5.0, 1.0)).is_err());
         assert!(Profile::new(&[], &[], water(f32::NAN, 1.0)).is_err());
+    }
+
+    fn post(day_time: u32, exposure: f32, bloom: f32) -> PostKeyIn {
+        PostKeyIn {
+            day_time,
+            exposure,
+            bloom_intensity: bloom,
+            bloom_threshold: 0.0,
+            shadow_strength: 0.5,
+            shadow_softness: 0.0,
+            saturation: 1.0,
+        }
+    }
+
+    #[test]
+    fn post_keys_interpolate_wrap_and_attach_to_profiles() {
+        let p = Profile::post_only(&[post(18000, 0.5, 0.0), post(6000, 2.0, 2.0)]).unwrap();
+        let s = p.sample(12000.0, 1.0);
+        assert!(s.fog.is_none() && s.sky.is_none() && s.water.is_none());
+        let s = s.post.unwrap();
+        assert!(
+            close(s.exposure, 1.25) && close(s.bloom_intensity, 1.0),
+            "{s:?}"
+        );
+        // Over midnight: 0 is halfway from 18000 back to 6000.
+        assert!(close(p.sample(0.0, 1.0).post.unwrap().exposure, 1.25));
+        // A fog profile gains and loses post keys; its fog stays.
+        let mut f = Profile::new(&[fog(0, 0, 1.0, 2.0)], &[], None).unwrap();
+        assert!(f.sample(0.0, 1.0).post.is_none());
+        f.set_post(&[post(0, 3.0, 1.0)]).unwrap();
+        assert_eq!(f.sample(500.0, 1.0).post.unwrap().exposure, 3.0);
+        assert!(f.set_post(&[post(0, 9.0, 1.0)]).is_err());
+        assert_eq!(f.sample(500.0, 1.0).post.unwrap().exposure, 3.0);
+        f.set_post(&[]).unwrap();
+        assert!(f.sample(0.0, 1.0).post.is_none() && f.sample(0.0, 1.0).fog.is_some());
+        // A post-only profile keeps at least one key.
+        let mut p = p;
+        assert!(p.set_post(&[]).is_err());
+        assert!(p.sample(0.0, 1.0).post.is_some());
+    }
+
+    #[test]
+    fn post_keys_are_checked() {
+        let with = |f: fn(&mut PostKeyIn)| {
+            let mut k = post(0, 1.0, 1.0);
+            f(&mut k);
+            k
+        };
+        let bad = [
+            with(|k| k.exposure = 0.2),
+            with(|k| k.exposure = 4.5),
+            with(|k| k.exposure = f32::NAN),
+            with(|k| k.bloom_intensity = 2.01),
+            with(|k| k.bloom_intensity = -0.1),
+            with(|k| k.bloom_threshold = 1.5),
+            with(|k| k.shadow_strength = f32::INFINITY),
+            with(|k| k.shadow_softness = -1.0),
+            with(|k| k.saturation = 3.0),
+            with(|k| k.day_time = 24001),
+        ];
+        for k in bad {
+            assert!(Profile::post_only(&[k]).is_err(), "{k:?}");
+        }
+        assert!(Profile::post_only(&[]).is_err());
+        assert!(Profile::post_only(&[post(5, 1.0, 1.0), post(5, 1.0, 1.0)]).is_err());
+        let many: Vec<_> = (0..33).map(|i| post(i * 10, 1.0, 1.0)).collect();
+        assert!(Profile::post_only(&many).is_err());
+        assert!(Profile::post_only(&many[..32]).is_ok());
+        let edges = PostKeyIn {
+            day_time: 0,
+            exposure: 0.25,
+            bloom_intensity: 2.0,
+            bloom_threshold: 1.0,
+            shadow_strength: 0.0,
+            shadow_softness: 1.0,
+            saturation: 0.0,
+        };
+        assert!(Profile::post_only(&[edges]).is_ok());
     }
 
     #[test]

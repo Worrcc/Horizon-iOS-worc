@@ -16380,6 +16380,10 @@ impl Game<'_> {
             .unwrap_or(0);
         // Capability `atmosphere`: the mods' profile mix for this frame.
         let atmosphere = self.atmosphere_blend();
+        // Its post keys (API level 34) scale the bloom and shadows within the player's settings.
+        if let Some(renderer) = self.renderer.as_mut() {
+            atmosphere.apply_post(renderer);
+        }
         let environment = self.dim_environment();
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains

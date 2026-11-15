@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live check of API level 33 `atmosphere` with mods/official/atmosphere-demo in a scratch game.
+"""Live check of API levels 33-34 `atmosphere` with mods/official/atmosphere-demo in a scratch game.
 
 Builds nothing: needs `target/fast/horizon-client` (feature `mods`), `target/fast/horizon-ctl` and
 `target/horizon-mod/atmosphere_demo.hmod` (see the demo's README). Every run gets fresh homes.
@@ -12,8 +12,12 @@ starts the motes emitter and the live count of the demo's particles (`horizon-ct
 `mod_particles`) must rise within its cap of 400, and fall to none after `/atmo emit stop` once the
 motes' 6-second lives end. Last, at midnight facing north and up, `/atmo sky` puts its aurora on
 the sky: `mod_sky_sprites` must report sprites drawn and textures on the page, and the screen must
-gain green aurora light the night sky did not have; `/atmo sky off` removes them again. Prints
-one line per check and exits non-zero on a failed one.
+gain green aurora light the night sky did not have; `/atmo sky off` removes them again. Then the
+API 34 post keys, with Bloom High and Shadows Medium written to the scratch game's
+horizon-graphics.txt: at noon `/atmo post 0.5` must darken the screen to well under the neutral
+key's brightness and saturation 0 must grey it; at midnight facing a wall of glowstone, bloom
+intensity 2 must brighten the screen around it against bloom intensity 0. Prints one line per check
+and exits non-zero on a failed one.
 """
 import argparse, json, os, struct, subprocess, sys, tempfile, time, zlib
 
@@ -35,6 +39,9 @@ for need in (f"{BIN}/horizon-ctl", f"{BIN}/horizon-client", DEMO, args.resources
 home = tempfile.mkdtemp(prefix="horizon-atmo-")
 for d in ("data", "cfg", "lh", "game"):
     os.makedirs(f"{home}/{d}")
+# The post keys only scale the player's own Bloom and Shadows settings: turn them on.
+with open(f"{home}/game/horizon-graphics.txt", "w") as f:
+    f.write("bloom:high\nshadows:medium\n")
 env = dict(os.environ, HORIZON_HOME=home, HORIZON_LAUNCHER_HOME=f"{home}/lh", XDG_DATA_HOME=f"{home}/data",
            XDG_CONFIG_HOME=f"{home}/cfg", HORIZON_LAUNCHER_NO_SELF_UPDATE="1", HORIZON_NO_AUDIO="1")
 sock = f"{home}/ctl.sock"
@@ -120,6 +127,23 @@ def green_pixels(name):
     return sum(1 for y in range(0, h, 2) for (r, g, b) in rows[y][::2] if g > 40 and g > r + 20 and g > b)
 
 
+def screen_stats(name):
+    """(mean brightness 0..255, mean channel spread) over every fourth pixel of the world's part."""
+    path = f"{home}/{name}.png"
+    ctl("screenshot", path)
+    for _ in range(40):
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            break
+        time.sleep(0.25)
+    time.sleep(0.3)
+    w, h, rows = png_pixels(path)
+    # Above the chat and left of the toasts.
+    px = [p for y in range(h // 6, h * 11 // 20, 4) for p in rows[y][: w * 3 // 5 : 4]]
+    mean = sum(sum(p) for p in px) / (3 * len(px))
+    spread = sum(max(p) - min(p) for p in px) / len(px)
+    return mean, spread
+
+
 def sky_status():
     try:
         status = json.loads((ctl("status").splitlines() or ["{}"])[-1])
@@ -195,6 +219,35 @@ try:
     say("/atmo sky off", 1.0)
     sky = sky_status()
     check("sky sprites removed", bool(sky) and sky.get("drawn") == 0, f"status {sky}")
+    # API 34 post keys, high in open air facing a wall of glowstone (Bloom High is on). Only the
+    # world's part of the screen counts: the chat, hotbar, hand and toasts are drawn after it.
+    ctl("command", "time set 6000")
+    ctl("command", "fill -3 199 -3 3 199 6 minecraft:stone")
+    ctl("command", "fill -1 200 5 1 202 5 minecraft:glowstone")
+    ctl("command", "tp @s 0.5 200 0.5 0 0")
+    ctl("look", 0, 0)
+    time.sleep(3.0)
+    out = say("/atmo post 1 1 0 0.5 0 1", 1.5)
+    check("post profile shown", any("post profile" in m for m in out), out[-2:])
+    neutral, colour = screen_stats("post-neutral")
+    say("/atmo post 0.5 1 0 0.5 0 1", 1.5)
+    dark, _ = screen_stats("post-dark")
+    check("exposure 0.5 darkens", dark < neutral * 0.65, f"brightness {neutral:.1f} -> {dark:.1f}")
+    say("/atmo post 1 1 0 0.5 0 0", 1.5)
+    _, grey = screen_stats("post-grey")
+    check("saturation 0 greys", grey < colour * 0.3 + 1, f"channel spread {colour:.1f} -> {grey:.1f}")
+    out = say("/atmo post 9", 1.0)
+    check("out-of-range key refused", not any("post profile" in m for m in out), out[-1:])
+    # Bloom around the glowstone at midnight: intensity 2 against 0 (no bloom drawn).
+    ctl("command", "time set 18000")
+    time.sleep(1.5)
+    say("/atmo post 1 0 0 0.5 0 1", 1.5)
+    plain, _ = screen_stats("bloom-off")
+    say("/atmo post 1 2 0 0.5 0 1", 1.5)
+    bloomed, _ = screen_stats("bloom-2")
+    check("bloom intensity 2 brightens around glowstone", bloomed > plain + 2.0,
+          f"brightness {plain:.1f} -> {bloomed:.1f}")
+    say("/atmo post off", 1.0)
     logs = ctl("logs", "--lines", 400)
     bad = [l[-160:] for l in logs.splitlines()
            if ("atmosphere" in l.lower() or "sky sprite" in l.lower()) and ("warn" in l.lower() or "error" in l.lower())]

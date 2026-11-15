@@ -1,12 +1,26 @@
-//! Capability `atmosphere` (API level 33) in the frame: the running mods'
-//! profile mix, cross-faded and sampled once per frame, blended into the
-//! sky after vanilla weather and into the fog after `setup_fog`, before the
-//! Fog option and native mods' fog hooks (`docs/api-expansion-d.md`).
+//! Capability `atmosphere` (API levels 33 and 34) in the frame: the running
+//! mods' profile mix, cross-faded and sampled once per frame, blended into
+//! the sky after vanilla weather and into the fog after `setup_fog`, before
+//! the Fog option and native mods' fog hooks, and its post keys into the
+//! renderer's bloom and shadow scales (`docs/api-expansion-d.md`).
 use super::Game;
 use horizon_client::environment::Sky;
 use horizon_client::fog::{FogData, FogInputs, FogType};
+use horizon_client::gfx::{DEFAULT_SHADOW_STRENGTH, PostGrade, Renderer};
 use horizon_mods::atmosphere::{
-    FogSample, Sample, SkySample, blend, linear_to_srgb, srgb_to_linear,
+    FogSample, PostSample, Sample, SkySample, blend, linear_to_srgb, srgb_to_linear,
+};
+
+/// The game's own post values, which a part without post keys (and the rest
+/// of the weights) keeps: nothing scaled, no threshold, the renderer's
+/// default shadow strength, no softening.
+const GAME_POST: PostSample = PostSample {
+    exposure: 1.0,
+    bloom_intensity: 1.0,
+    bloom_threshold: 0.0,
+    shadow_strength: DEFAULT_SHADOW_STRENGTH,
+    shadow_softness: 0.0,
+    saturation: 1.0,
 };
 
 /// This frame's mod atmosphere: each profile's weight and sample; vanilla
@@ -27,6 +41,32 @@ impl AtmosphereBlend {
     #[cfg_attr(not(feature = "mods"), allow(dead_code))]
     fn new(parts: Vec<(f32, Sample)>) -> Self {
         Self { parts }
+    }
+    /// The post keys blended over the game's own values.
+    fn post(&self) -> PostSample {
+        if !self.parts.iter().any(|(_, s)| s.post.is_some()) {
+            return GAME_POST;
+        }
+        PostSample::from_array(blend(
+            GAME_POST.to_array(),
+            self.parts
+                .iter()
+                .map(|(w, s)| (*w, s.post.map(PostSample::to_array))),
+        ))
+    }
+    /// Hands this frame's post values to the renderer, which applies them only within the
+    /// player's Bloom and Shadows settings (an effect set Off stays off); a vanilla frame sets
+    /// the game's own back.
+    pub(super) fn apply_post(&self, renderer: &mut Renderer) {
+        let p = self.post();
+        renderer.set_bloom_scale(p.bloom_intensity);
+        renderer.set_post_grade(PostGrade {
+            threshold: p.bloom_threshold,
+            exposure: p.exposure,
+            saturation: p.saturation,
+        });
+        renderer.set_shadow_strength(p.shadow_strength);
+        renderer.set_shadow_softness(p.shadow_softness);
     }
     /// Zenith, horizon and cloud colours over the weathered vanilla sky.
     pub(super) fn apply_sky(&self, sky: &mut Sky) {
@@ -288,6 +328,37 @@ mod tests {
             blend.apply_fog_in(&mut fog, fog_type, effects);
             assert_eq!(fog, vanilla_fog());
         }
+    }
+
+    #[test]
+    fn post_keys_blend_over_the_games_own_values() {
+        use horizon_mods::atmosphere::PostKeyIn;
+        assert_eq!(AtmosphereBlend::default().post(), GAME_POST);
+        // Fog alone leaves the post values as they are.
+        assert_eq!(
+            AtmosphereBlend::new(vec![(1.0, red_profile())]).post(),
+            GAME_POST
+        );
+        let bright = Profile::post_only(&[PostKeyIn {
+            day_time: 0,
+            exposure: 3.0,
+            bloom_intensity: 2.0,
+            bloom_threshold: 0.5,
+            shadow_strength: 1.0,
+            shadow_softness: 1.0,
+            saturation: 0.0,
+        }])
+        .unwrap()
+        .sample(0.0, 1.0);
+        let full = AtmosphereBlend::new(vec![(1.0, bright)]).post();
+        assert_eq!(
+            full.to_array(),
+            [3.0, 2.0, 0.5, 1.0, 1.0, 0.0],
+            "a full-weight profile sets them"
+        );
+        // A quarter of the profile, a quarter of fog only, half the game's.
+        let mixed = AtmosphereBlend::new(vec![(0.25, bright), (0.25, red_profile())]).post();
+        near(mixed.to_array(), [1.5, 1.25, 0.125, 0.625, 0.25, 0.75]);
     }
 
     #[test]

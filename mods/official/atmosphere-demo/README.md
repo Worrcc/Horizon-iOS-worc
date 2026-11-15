@@ -1,4 +1,4 @@
-# Atmosphere demo (API 33)
+# Atmosphere demo (API 33, 34)
 
 Capability `atmosphere`: three fog and sky profiles keyed by time of day (`misty`, `storm`,
 `crimson`), mixed by the rain level twice a second. Build with the worktree's release
@@ -22,3 +22,4 @@ with feature `mods`. `tools/live_atmosphere.py` does this and checks the fog col
 | `/atmo conditions` | rain, thunder, day time, moon phase, camera height, light, sky |
 | `/atmo emit [DENSITY]` | glowing motes around the camera (an API 33 particle effect on vanilla end-rod sprites); again replaces it, `stop` fades it |
 | `/atmo sky` | an aurora of drifting veils low in the north, a meteor every few seconds, a dark second moon and vanilla's sun far off turning with the stars (API 33 sky sprites); `off` removes them |
+| `/atmo post [E B T S F SAT]` | a constant post profile (API 34): exposure, bloom intensity and threshold, shadow strength and softness, saturation (no values: a vivid grade); only scales the player's own Bloom and Shadows settings; `off` clears it |

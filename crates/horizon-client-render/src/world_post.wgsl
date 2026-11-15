@@ -61,10 +61,19 @@ fn fxaa(in: PostOut) -> vec4<f32> {
 }
 
 @group(1) @binding(0) var bloom: texture_2d<f32>;
+// x the bloom's intensity, y the exposure, z the saturation (an atmosphere's post keys).
 @group(1) @binding(1) var<uniform> bloom_params: vec4<f32>;
 fn composite_bloom(c: vec4<f32>, in: PostOut) -> vec4<f32> {
+    var base = c.rgb;
+    // The grade (uniform: untouched, bit for bit, at 1 and 1): a multiply and a mix toward the
+    // luma, clipped at white as the LDR frame is.
+    if bloom_params.y != 1.0 || bloom_params.z != 1.0 {
+        base = base * bloom_params.y;
+        let l = dot(base, vec3(0.2126, 0.7152, 0.0722));
+        base = clamp(mix(vec3(l), base, bloom_params.z), vec3(0.0), vec3(1.0));
+    }
     let a = bloom_params.x * textureSampleLevel(bloom, world_sampler, in.uv, 0.0).rgb;
-    var rgb = c.rgb + (1.0 - c.rgb) * a / (a + (1.0 - c.rgb) + 1e-5);
+    var rgb = base + (1.0 - base) * a / (a + (1.0 - base) + 1e-5);
     let pixel = vec2<u32>(in.clip.xy);
     var h = pixel.x * 1664525u + pixel.y * 1013904223u;
     h = (h ^ (h >> 16u)) * 2246822519u;

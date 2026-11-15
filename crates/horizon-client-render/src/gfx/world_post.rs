@@ -62,6 +62,8 @@ pub struct Post {
     pub(super) bloom: super::bloom::Bloom,
     pub bloom_level: super::bloom::BloomLevel,
     pub bloom_scale: f32,
+    /// An atmosphere's threshold, exposure and saturation (`Renderer::set_post_grade`).
+    pub bloom_grade: super::bloom::Grade,
     pub bloom_on: bool,
     format: wgpu::TextureFormat,
     /// World resolution relative to the window (0.5..=2.0).
@@ -260,6 +262,7 @@ impl Post {
             bloom,
             bloom_level: super::bloom::BloomLevel::Off,
             bloom_scale: 1.0,
+            bloom_grade: Default::default(),
             bloom_on: false,
             antialias: false,
             taa: false,
@@ -543,6 +546,7 @@ impl Post {
                 queue,
                 encoder,
                 self.bloom_scale,
+                self.bloom_grade,
                 timing.as_deref_mut(),
                 timer,
             );

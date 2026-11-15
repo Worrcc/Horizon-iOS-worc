@@ -137,9 +137,11 @@ pub fn pixel_view_proj(camera_view_proj: Mat4, view_proj: Mat4, size: [u32; 2]) 
 
 /// The shadow inputs terrain.wgsl reads (`Globals`' `shadow` and `shadow_light`) for a map of
 /// `resolution` over `half` blocks each side: the strength now (0: off), the normal offset in
-/// blocks, the reach, the depth bias; the direction toward the light.
+/// blocks, the reach, the depth bias; the direction toward the light and the softening's
+/// radius in map coordinates (0: one lookup), `softness` (0..1) times two texels.
 pub fn shader_inputs(
     strength: f32,
+    softness: f32,
     resolution: u32,
     half: f32,
     reach: f32,
@@ -150,7 +152,12 @@ pub fn shader_inputs(
     let bias = 2.0 / 65535.0 + 0.02 / depth(half);
     [
         [strength, 1.5 * texel, reach, bias],
-        [dir.x, dir.y, dir.z, 0.0],
+        [
+            dir.x,
+            dir.y,
+            dir.z,
+            softness.clamp(0.0, 1.0) * 2.0 / resolution.max(1) as f32,
+        ],
     ]
 }
 
@@ -467,6 +474,8 @@ impl Pipelines {
 pub struct SunShadow {
     level: ShadowLevel,
     strength: f32,
+    /// An atmosphere's `shadow-softness`, 0..1 (Low ignores it).
+    softness: f32,
     pub policy: Policy,
     /// The terrain map, cached between draws; on High the entities go over a copy of it
     /// (`with_entities`), which is what the terrain reads.
@@ -497,6 +506,7 @@ impl SunShadow {
         Self {
             level: ShadowLevel::Off,
             strength: DEFAULT_STRENGTH,
+            softness: 0.0,
             policy: Policy::default(),
             terrain: None,
             with_entities: None,
@@ -548,6 +558,21 @@ impl SunShadow {
     }
     pub fn strength(&self) -> f32 {
         self.strength
+    }
+    /// The softening that applies at this level: none on Low.
+    pub fn softness(&self) -> f32 {
+        if self.level == ShadowLevel::Low {
+            0.0
+        } else {
+            self.softness
+        }
+    }
+    pub fn set_softness(&mut self, softness: f32) {
+        self.softness = if softness.is_finite() {
+            softness.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
     pub fn set_strength(&mut self, strength: f32) {
         self.strength = if strength.is_finite() {

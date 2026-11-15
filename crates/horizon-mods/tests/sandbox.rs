@@ -495,8 +495,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container", "
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest also exercises API 33 atmosphere.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 33);
+    // The UI guest also exercises API 34 atmosphere post keys.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 34);
     // canvas-test now draws items over its canvas screen (level 28).
     assert_eq!(level("canvas_test.hmod"), 28);
 }
@@ -3278,9 +3278,10 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
             .iter()
             .any(|f| f == "input.set-touch-button-context")
     );
+    // The UI guest's newest import is API 34's atmosphere post keys.
     assert_eq!(
         horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
-        33
+        34
     );
     let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
     assert!(
@@ -4308,4 +4309,100 @@ fn api33_atmosphere_demo_shows_and_clears_its_sky() {
     assert!(sky.iter().any(|s| s.space == Space::Stars));
     assert!(said(&mut mods, "atmo sky off").1.is_empty());
     assert!(mods.atmosphere_sky_sprites().next().is_none());
+}
+
+#[test]
+fn api34_atmosphere_post_keys_are_checked_capped_and_attach_to_profiles() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    assert_eq!(said(&mut mods, "atmo_profile ff0000 0 40").0, ["profile 0"]);
+    assert_eq!(
+        said(&mut mods, "atmo_post new 2 1.5 0.25 0.9 0.5 0.5").0,
+        ["post profile 1"]
+    );
+    let post = |mods: &Mods, id| {
+        mods.atmosphere_profile("test_ui_guest", id)
+            .unwrap()
+            .sample(6000.0, 128.0)
+            .post
+    };
+    let p = post(&mods, 1).unwrap();
+    assert_eq!(p.to_array(), [2.0, 1.5, 0.25, 0.9, 0.5, 0.5]);
+    assert!(
+        mods.atmosphere_profile("test_ui_guest", 1)
+            .unwrap()
+            .sample(0.0, 1.0)
+            .fog
+            .is_none()
+    );
+    // A fog profile gains post keys; its fog stays.
+    assert!(post(&mods, 0).is_none());
+    assert!(said(&mut mods, "atmo_post 0 0.5").1.is_empty());
+    assert_eq!(post(&mods, 0).unwrap().exposure, 0.5);
+    assert!(
+        mods.atmosphere_profile("test_ui_guest", 0)
+            .unwrap()
+            .sample(0.0, 1.0)
+            .fog
+            .is_some()
+    );
+    // Refused keys leave the previous ones, and errors are returned, never a trap.
+    for (bad, why) in [
+        ("atmo_post 0 0.1", "exposure"),
+        ("atmo_post 0 5", "exposure"),
+        ("atmo_post 0 1 2.5", "bloom-intensity"),
+        ("atmo_post 0 1 1 -0.5", "bloom-threshold"),
+        ("atmo_post 0 1 1 0 1.5", "shadow-strength"),
+        ("atmo_post 0 1 1 0 0.5 NaN", "finite"),
+        ("atmo_post 0 1 1 0 0.5 0 2.5", "saturation"),
+        ("atmo_post 0 many", "32"),
+        ("atmo_post 9 1", "no profile 9"),
+        ("atmo_post 1 clear", "at least one"),
+        ("atmo_post new clear", "at least one"),
+        ("atmo_post new 0", "exposure"),
+    ] {
+        let (chat, errors) = said(&mut mods, bad);
+        assert!(
+            chat.is_empty() && errors.len() == 1 && errors[0].contains(why),
+            "{bad}: {chat:?} {errors:?}"
+        );
+    }
+    assert_eq!(post(&mods, 0).unwrap().exposure, 0.5);
+    assert_eq!(post(&mods, 1).unwrap().exposure, 2.0);
+    assert!(mods.entries()[0].status == Status::Running);
+    // An empty list removes a fog profile's post keys.
+    assert!(said(&mut mods, "atmo_post 0 clear").1.is_empty());
+    assert!(post(&mods, 0).is_none());
+    // Post profiles count in the 64 profiles a mod may define, and mix like any other.
+    assert!(said(&mut mods, "atmo_mix 0 1:1").1.is_empty());
+    assert_eq!(mods.atmosphere_mix().unwrap().weights, [(1, 1.0)]);
+    for _ in 2..64 {
+        assert!(said(&mut mods, "atmo_post new").1.is_empty());
+    }
+    let (chat, errors) = said(&mut mods, "atmo_post new");
+    assert!(chat.is_empty() && errors[0].contains("64"), "{errors:?}");
+}
+
+#[test]
+fn api34_atmosphere_demo_sets_and_clears_post_keys() {
+    let mut mods = load("atmosphere_demo.hmod");
+    let (chat, errors) = said(&mut mods, "atmo post 0.5 2 0 1 1 0");
+    assert!(errors.is_empty(), "{chat:?} {errors:?}");
+    let mix = mods.atmosphere_mix().unwrap();
+    assert_eq!(mix.weights.len(), 1);
+    let (id, weight) = mix.weights[0];
+    assert_eq!(weight, 1.0);
+    let post = mods
+        .atmosphere_profile("atmosphere_demo", id)
+        .unwrap()
+        .sample(9000.0, 128.0)
+        .post
+        .unwrap();
+    assert_eq!(post.to_array(), [0.5, 2.0, 0.0, 1.0, 1.0, 0.0]);
+    let (_, errors) = said(&mut mods, "atmo post 9");
+    assert!(
+        errors.len() == 1 && errors[0].contains("exposure"),
+        "{errors:?}"
+    );
+    assert!(said(&mut mods, "atmo post off").1.is_empty());
+    assert!(mods.atmosphere_mix().unwrap().weights.is_empty());
 }

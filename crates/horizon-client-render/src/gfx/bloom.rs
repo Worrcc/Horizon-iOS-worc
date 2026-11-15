@@ -28,6 +28,37 @@ impl BloomLevel {
     }
 }
 
+/// An atmosphere's post keys that ride the bloom (API level 34): the luma threshold on the
+/// light sources (0: none) and the composite's exposure and saturation (1: unchanged).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grade {
+    pub threshold: f32,
+    pub exposure: f32,
+    pub saturation: f32,
+}
+impl Default for Grade {
+    fn default() -> Self {
+        Self {
+            threshold: 0.0,
+            exposure: 1.0,
+            saturation: 1.0,
+        }
+    }
+}
+impl Grade {
+    /// Within the API's ranges; what is not finite is unchanged.
+    pub fn checked(self) -> Self {
+        let fix = |v: f32, lo: f32, hi: f32, none: f32| {
+            if v.is_finite() { v.clamp(lo, hi) } else { none }
+        };
+        Self {
+            threshold: fix(self.threshold, 0.0, 1.0, 0.0),
+            exposure: fix(self.exposure, 0.25, 4.0, 1.0),
+            saturation: fix(self.saturation, 0.0, 2.0, 1.0),
+        }
+    }
+}
+
 struct Chain {
     size: [u32; 2],
     level: BloomLevel,
@@ -251,23 +282,25 @@ impl Bloom {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         scale: f32,
+        grade: Grade,
         mut timing: Option<&mut PassTiming>,
         mut timer: Option<&mut GpuTimer>,
     ) {
         let Some(c) = &self.chain else { return };
+        let grade = grade.checked();
         queue.write_buffer(
             &self.threshold,
             0,
-            // No luma threshold: the light sources' marks decide (M3's `bloom-threshold` sets one).
-            bytemuck::cast_slice(&[0.0_f32, 0.18, 0.0, 0.0]),
+            // 0: no luma threshold, the light sources' marks alone decide.
+            bytemuck::cast_slice(&[grade.threshold, 0.18, 0.0, 0.0]),
         );
         queue.write_buffer(
             &self.intensity,
             0,
             bytemuck::cast_slice(&[
                 c.level.intensity() * scale / c.views.len() as f32,
-                0.0,
-                0.0,
+                grade.exposure,
+                grade.saturation,
                 0.0,
             ]),
         );
@@ -478,5 +511,65 @@ mod tests {
         }
         post.set_bloom(BloomLevel::Off);
         assert!(post.bloom.composite().is_none());
+
+        // An atmosphere's grade (API level 34) rides the composite: exposure scales the frame,
+        // saturation 0 greys it, both only while bloom draws.
+        let flat = world(0, 0, [0, 0, 0, 0]);
+        let colour = world(16, 32, [200, 100, 40, 255]);
+        post.bloom_grade = Grade {
+            threshold: 0.0,
+            exposure: 0.5,
+            saturation: 1.0,
+        };
+        let dark = draw(&device, &queue, &mut post, &colour, BloomLevel::High, 1.0);
+        assert!(
+            dark[at(32, 32)].abs_diff(100) <= 1 && dark[at(32, 32) + 1].abs_diff(50) <= 1,
+            "exposure 0.5: {:?}",
+            &dark[at(32, 32)..at(32, 32) + 4]
+        );
+        assert_eq!(dark[at(32, 32) + 3], 255, "world alpha changed");
+        assert_eq!(
+            draw(&device, &queue, &mut post, &colour, BloomLevel::Off, 1.0),
+            colour,
+            "the grade applied with bloom off"
+        );
+        post.bloom_grade = Grade {
+            threshold: 0.0,
+            exposure: 1.0,
+            saturation: 0.0,
+        };
+        let grey = draw(&device, &queue, &mut post, &colour, BloomLevel::Low, 1.0);
+        let px = &grey[at(32, 32)..at(32, 32) + 3];
+        assert!(
+            px[0].abs_diff(px[1]) <= 1 && px[1].abs_diff(px[2]) <= 1,
+            "{px:?}"
+        );
+        assert_eq!(
+            draw(&device, &queue, &mut post, &flat, BloomLevel::Low, 1.0)[at(5, 5)],
+            20
+        );
+        // A threshold keeps a dim light source from blooming while a bright one still does.
+        let halo = |image: &[u8], post: &mut Post| {
+            let out = draw(&device, &queue, post, image, BloomLevel::High, 1.0);
+            out[at(37, 32)]
+        };
+        let dim = world(28, 8, [150, 150, 150, 128]);
+        let bright = world(28, 8, [255, 255, 255, 128]);
+        post.bloom_grade = Grade::default();
+        assert!(
+            halo(&dim, &mut post) > 20,
+            "the dim spot blooms with no threshold"
+        );
+        post.bloom_grade.threshold = 0.85;
+        assert_eq!(
+            halo(&dim, &mut post),
+            20,
+            "the dim spot bloomed past the threshold"
+        );
+        assert!(
+            halo(&bright, &mut post) > 20,
+            "the bright spot stopped blooming"
+        );
+        post.bloom_grade = Grade::default();
     }
 }

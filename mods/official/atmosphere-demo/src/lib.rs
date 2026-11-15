@@ -1,8 +1,9 @@
-//! Capability `atmosphere` (API level 33) in a few lines: three profiles
-//! keyed by time of day, mixed by the weather twice a second, and `/atmo`
-//! to pick one, define a plain fog colour, read the conditions or start a
-//! particle emitter of glowing motes around the camera (`/atmo emit`), or
-//! put an aurora, meteors and two far bodies on the sky (`/atmo sky`).
+//! Capability `atmosphere` (API levels 33 and 34) in a few lines: three
+//! profiles keyed by time of day, mixed by the weather twice a second, and
+//! `/atmo` to pick one, define a plain fog colour, read the conditions or
+//! start a particle emitter of glowing motes around the camera (`/atmo
+//! emit`), put an aurora, meteors and two far bodies on the sky (`/atmo
+//! sky`), or scale the built-in bloom and shadows (`/atmo post`).
 use horizon_mod_sdk::{
     Mod, Registration,
     atmosphere::{
@@ -11,6 +12,7 @@ use horizon_mod_sdk::{
     },
     atmosphere_fx::{constant, effect, emitter, fade, flat, particle, span, span3},
     atmosphere_mix::{clear, rgb, show},
+    atmosphere_post,
     atmosphere_sky::{DISC, STREAK, VEIL, emissive, sprite},
     chat,
 };
@@ -425,6 +427,46 @@ impl Mod for Demo {
                     "sky: {count} sprites, meteors every few seconds"
                 )));
             }
+            // `/atmo post [EXPOSURE BLOOM THRESHOLD STRENGTH SOFTNESS SATURATION]`: a constant
+            // post profile shown at once (no values: a vivid grade); `/atmo post off`.
+            "post" => {
+                let values: Vec<&str> = words.collect();
+                if values.first() == Some(&"off") {
+                    self.mode = Mode::Off;
+                    clear(0.0)?;
+                    return Ok(Some("post effects off".into()));
+                }
+                let mut k = atmosphere_post::key(0);
+                if values.is_empty() {
+                    (k.exposure, k.bloom_intensity, k.saturation) = (1.15, 2.0, 1.4);
+                    (k.shadow_strength, k.shadow_softness) = (0.8, 0.6);
+                }
+                let fields = [
+                    &mut k.exposure,
+                    &mut k.bloom_intensity,
+                    &mut k.bloom_threshold,
+                    &mut k.shadow_strength,
+                    &mut k.shadow_softness,
+                    &mut k.saturation,
+                ];
+                for (field, word) in fields.into_iter().zip(&values) {
+                    *field = word.parse().map_err(|_| {
+                        "usage: /atmo post [EXPOSURE BLOOM THRESHOLD STRENGTH SOFTNESS SATURATION]|off"
+                    })?;
+                }
+                let id = atmosphere_post::constant(k)?;
+                self.mode = Mode::Fixed(id);
+                show(id, 0.0)?;
+                return Ok(Some(format!(
+                    "post profile {id}: exposure {} bloom {} threshold {} shadows {} soft {} saturation {}",
+                    k.exposure,
+                    k.bloom_intensity,
+                    k.bloom_threshold,
+                    k.shadow_strength,
+                    k.shadow_softness,
+                    k.saturation
+                )));
+            }
             "conditions" => {
                 let text = match atmosphere::conditions() {
                     None => "no conditions".to_owned(),
@@ -445,7 +487,7 @@ impl Mod for Demo {
             }
             _ => {
                 return Err(
-                    "usage: /atmo auto|misty|storm|crimson|off|conditions|emit [DENSITY|stop]|sky [off]|fog RRGGBB START END"
+                    "usage: /atmo auto|misty|storm|crimson|off|conditions|emit [DENSITY|stop]|sky [off]|post [E B T S F SAT|off]|fog RRGGBB START END"
                         .into(),
                 );
             }

@@ -332,6 +332,16 @@ mod gpu {
         /// The floor's pixels with the shadows at `strength` (0: off), drawn by terrain.wgsl's
         /// `source` (`vs_terrain`, `fs_opaque`), the map's draw counted in `shadow.updates`.
         fn draw(&self, shadow: &mut SunShadow, strength: f32, source: &str) -> Vec<u8> {
+            self.draw_soft(shadow, strength, 0.0, source)
+        }
+        /// [`Self::draw`] with an atmosphere's `softness`.
+        fn draw_soft(
+            &self,
+            shadow: &mut SunShadow,
+            strength: f32,
+            softness: f32,
+            source: &str,
+        ) -> Vec<u8> {
             let device = &self.device;
             let view_proj = Mat4::orthographic_rh(-8.0, 8.0, -8.0, 8.0, 0.0, 64.0)
                 * Mat4::look_to_rh(Vec3::ZERO, -Vec3::Y, -Vec3::Z);
@@ -349,7 +359,8 @@ mod gpu {
             let light = light_view_proj(dir, half);
             let camera = camera_view_proj(light, CAMERA, centre);
             if strength > 0.0 {
-                let [inputs, toward] = shader_inputs(strength * fade, resolution, half, reach, dir);
+                let [inputs, toward] =
+                    shader_inputs(strength * fade, softness, resolution, half, reach, dir);
                 globals.shadow = inputs;
                 globals.shadow_light = toward;
                 globals.shadow_view_proj = camera.to_cols_array_2d();
@@ -605,6 +616,46 @@ mod gpu {
             }
             assert_eq!(at(&lit, -4.0, 4.0), 255);
         }
+    }
+
+    #[test]
+    fn softness_widens_the_shadow_edge_and_keeps_its_core() {
+        let Some(scene) = scene() else {
+            eprintln!("Skipping sun shadow GPU readback: no adapter");
+            return;
+        };
+        let production = include_str!("../terrain.wgsl");
+        let draw = |softness| {
+            let mut shadow = SunShadow::new(&scene.device);
+            scene.draw_soft(&mut shadow, 0.5, softness, production)
+        };
+        let (hard, soft) = (draw(0.0), draw(1.0));
+        // Partly shaded pixels over the floor: between the shadow's 128 and the light's 255.
+        let partial = |pixels: &[u8]| {
+            (0..SIZE)
+                .flat_map(|row| (0..SIZE).map(move |col| (row, col)))
+                .filter(|&(row, col)| {
+                    let v = pixels[((row * SIZE + col) * 4) as usize];
+                    (132..251).contains(&v)
+                })
+                .count()
+        };
+        assert!(
+            partial(&soft) > partial(&hard),
+            "softness 1 left {} partly shaded pixels, hard edges {}",
+            partial(&soft),
+            partial(&hard)
+        );
+        assert!(i32::from(at(&soft, -4.0, 4.0)).abs_diff(128) <= 2);
+        // Low ignores it.
+        let mut low = SunShadow::new(&scene.device);
+        low.set_softness(1.0);
+        low.set_level(ShadowLevel::Low);
+        assert_eq!(low.softness(), 0.0);
+        low.set_level(ShadowLevel::High);
+        assert_eq!(low.softness(), 1.0);
+        low.set_softness(f32::NAN);
+        assert_eq!(low.softness(), 0.0);
     }
 
     #[test]

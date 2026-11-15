@@ -1,9 +1,9 @@
-//! Capability `atmosphere` (API level 33): a client mod's fog and sky
-//! profiles and its mix of them, checked here and read by the game every
+//! Capability `atmosphere` (API levels 33 and 34): a client mod's fog, sky
+//! and post profiles and its mix of them, checked here and read by the game every
 //! frame ([`Mods::atmosphere_mix`]); the sampling and the cross-fade are
 //! [`crate::atmosphere`]'s.
 use super::{Mods, State, Status};
-use crate::atmosphere::{self as atmo, FogKeyIn, Profile, SkyKeyIn, WaterFogIn};
+use crate::atmosphere::{self as atmo, FogKeyIn, PostKeyIn, Profile, SkyKeyIn, WaterFogIn};
 use crate::atmosphere_fx as fx;
 use crate::atmosphere_sky as sky;
 use std::sync::Arc;
@@ -296,6 +296,50 @@ impl atmosphere::Host for State {
         let list = sky::check_list(sprites.into_iter().map(convert_sky).collect(), &own)?;
         self.atmosphere.sky = list;
         Ok(())
+    }
+
+    fn define_post_profile(&mut self, keys: Vec<atmosphere::PostKey>) -> Result<u32, String> {
+        if self.server {
+            return Err("atmosphere is client only".into());
+        }
+        if self.atmosphere.profiles.len() >= atmo::PROFILES_PER_MOD {
+            return Err(format!(
+                "at most {} profiles per mod",
+                atmo::PROFILES_PER_MOD
+            ));
+        }
+        let keys: Vec<PostKeyIn> = keys.into_iter().map(convert_post).collect();
+        let profile = Profile::post_only(&keys)?;
+        self.atmosphere.profiles.push(profile);
+        Ok(self.atmosphere.profiles.len() as u32 - 1)
+    }
+
+    fn set_post_keys(
+        &mut self,
+        profile: u32,
+        keys: Vec<atmosphere::PostKey>,
+    ) -> Result<(), String> {
+        if self.server {
+            return Err("atmosphere is client only".into());
+        }
+        let keys: Vec<PostKeyIn> = keys.into_iter().map(convert_post).collect();
+        self.atmosphere
+            .profiles
+            .get_mut(profile as usize)
+            .ok_or_else(|| format!("no profile {profile}"))?
+            .set_post(&keys)
+    }
+}
+
+fn convert_post(k: atmosphere::PostKey) -> PostKeyIn {
+    PostKeyIn {
+        day_time: k.day_time,
+        exposure: k.exposure,
+        bloom_intensity: k.bloom_intensity,
+        bloom_threshold: k.bloom_threshold,
+        shadow_strength: k.shadow_strength,
+        shadow_softness: k.shadow_softness,
+        saturation: k.saturation,
     }
 }
 

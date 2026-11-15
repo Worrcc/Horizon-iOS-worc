@@ -1,4 +1,4 @@
-# Phase D: API level 33 atmosphere (fog, sky, particle effects and sky sprites)
+# Phase D: API levels 33-34 atmosphere (fog, sky, particle effects, sky sprites, post keys)
 
 API level **33** adds interface `atmosphere`, granted by the new experimental capability
 `atmosphere` (client mods only; `experimental = ["atmosphere"]`). Eight imports, no export, no
@@ -163,6 +163,34 @@ pass does not draw the sky (the Nether, under water or lava, Horizon's sky optio
 blindness or darkness, or with a shader pack that draws its own sky. `horizon-ctl status` reports
 `mod_sky_sprites` (`drawn` last frame, `textures` on the page).
 
+## Post keys (API level 34)
+
+Level **34** adds two imports to `atmosphere`, nothing changed at level 33:
+`define-post-profile(keys) -> result<u32, string>` stores a profile of post keys alone (1..32 keys,
+counted in the 64 profiles), and `set-post-keys(profile, keys) -> result<_, string>` replaces the
+post keys of any of the mod's profiles (0..32; an empty list removes them, refused for a profile
+that would be left with no part; errors keep the previous keys). A `post-key` is day-time keyed as
+fog keys are, and `set-mix` blends and cross-fades it with the same weights:
+
+| Field | Range | Neutral | Renderer |
+|---|---|---|---|
+| `exposure` | 0.25..4 | 1 | multiply in the bloom composite, clipped at white |
+| `bloom-intensity` | 0..2 | 1 | multiplies the Bloom setting's intensity (`set_bloom_scale`) |
+| `bloom-threshold` | 0..1 | 0 | soft-knee luma threshold on the marked light sources (first downsample) |
+| `shadow-strength` | 0..1 | 0.5 | share of the sky light a sun/moon shadow takes away (`set_shadow_strength`) |
+| `shadow-softness` | 0..1 | 0 | four more diagonal map lookups, radius up to 2 texels; ignored on Low |
+| `saturation` | 0..2 | 1 | mix toward the luma in the bloom composite |
+
+Every value must be finite and in range, or the call fails (no trap). The game blends each part's
+values in their own units, a part without post keys and the weights' rest counting as neutral, and
+hands the result to the renderer once per frame; a vanilla frame sets the neutral values back.
+
+The player's settings stay in charge: Bloom Off or Shadows Off (or the phone's heat governor turning
+them off) leaves the effect off whatever a mod asks, and a mod never changes quality, resolution or
+reach. Exposure, saturation and the threshold ride the bloom composite and its first downsample, so
+they apply only while Bloom draws; at exposure 1 and saturation 1 the composite is bit-identical to
+level 33's. Softness costs nothing at 0 and four comparisons per lit shadowed pixel above it.
+
 ## Cost
 
 Host only: sampling at most 4 profiles is a few dozen multiplies per frame; when no mod has a mix the
@@ -181,7 +209,12 @@ empty check. The guest pays only for its `define-effect`, emitter and `set-sky-s
   determinism, motion (gravity, drag, expiry) and looks (curves, colour keys, camera fades, frames).
 - `crates/horizon-client-render/src/particles/native.rs`: curve particles reach 64 blocks and name
   vanilla sets; `crates/horizon-client/src/game/mod_particles.rs` is the controller and emitter glue.
-- `crates/horizon-client/src/game/mod_atmosphere.rs`: fog/water/sky application and the skip rules.
+- `crates/horizon-client/src/game/mod_atmosphere.rs`: fog/water/sky application and the skip rules,
+  post keys blended over the game's own values.
+- Post keys: `atmosphere.rs` (interpolation, wrap, attach/remove, ranges and NaN per field, caps);
+  `gfx/bloom.rs` GPU readback (exposure scales, saturation 0 greys, both only with bloom on, a
+  threshold stops a dim light source blooming but not a bright one); `gfx/sun_shadow_tests.rs`
+  (softness widens the shadow edge, keeps its core, Low ignores it).
 - `crates/horizon-mods/src/atmosphere_sky.rs`: directions on the compass and at the zenith, corners
   and roll, drift over the zenith, lifetime and fades, checks per field and texture rule, list caps,
   culling. `crates/horizon-client-render/src/gfx/sky_sprites.rs`: the page packer, the built-in
@@ -190,9 +223,12 @@ empty check. The guest pays only for its `define-effect`, emitter and `set-sky-s
 - `crates/horizon-mods/tests/sandbox.rs` `api33_*`: profiles, caps, mix rate limit, conditions, effects
   (sprite sets loaded and owned, field checks, 256 cap), emitters (start, move, stop, fades, id
   reuse, 48 cap), sky sprites (texture namespaces, keys, 256 cap, refused lists kept, 20 calls a
-  second) and the demo mod across the sandbox.
-- Demo: `mods/official/atmosphere-demo` (`/atmo auto|misty|storm|crimson|off|fog RRGGBB S E|conditions|emit [DENSITY|stop]|sky [off]`).
+  second) and the demo mod across the sandbox; `api34_*`: post profiles, post keys on a fog
+  profile, refused keys kept, the 64-profile cap shared, and the demo's `/atmo post`.
+- Demo: `mods/official/atmosphere-demo` (`/atmo auto|misty|storm|crimson|off|fog RRGGBB S E|conditions|emit [DENSITY|stop]|sky [off]|post [E B T S F SAT|off]`).
 - Live: `tools/live_atmosphere.py` loads the demo in a scratch game, sets a distinctive fog colour and
   checks it in a screenshot, then starts the motes and reads their live count from `horizon-ctl
   status` (`mod_particles`); then `/atmo sky` at night facing the aurora: `mod_sky_sprites` must
-  report drawn sprites and the upper screen must gain green aurora light over the night sky.
+  report drawn sprites and the upper screen must gain green aurora light over the night sky; then,
+  with Bloom High, `/atmo post 0.5 ...` must darken the screen against `/atmo post 1 ...` and
+  `/atmo post 1 2 ...` must brighten the pixels around a glowstone against bloom intensity 0.

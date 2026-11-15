@@ -133,6 +133,7 @@ impl Mod for Guest {
             "atmo_move",
             "atmo_stop",
             "atmo_sky",
+            "atmo_post",
             "zoom",
             "minimap",
             "far_terrain",
@@ -431,7 +432,10 @@ impl Mod for Guest {
             // `/atmo_emit EFFECT camera|X Y Z [DENSITY] [TINT]`: says the emitter id.
             "atmo_emit" => {
                 let words: Vec<&str> = args.split_whitespace().collect();
-                let effect = words.first().and_then(|w| w.parse().ok()).unwrap_or(u32::MAX);
+                let effect = words
+                    .first()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(u32::MAX);
                 let number = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok());
                 let (anchor, rest) = if words.get(1) == Some(&"camera") {
                     (atmosphere::Anchor::Camera, 2)
@@ -464,7 +468,10 @@ impl Mod for Guest {
             // `/atmo_stop ID [fade]`.
             "atmo_stop" => {
                 let mut words = args.split_whitespace();
-                let id = words.next().and_then(|w| w.parse().ok()).unwrap_or(u32::MAX);
+                let id = words
+                    .next()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(u32::MAX);
                 atmosphere::stop_emitter(id, words.next() == Some("fade"))?;
             }
             // `/atmo_sky COUNT TEXTURE [ALPHA] [dup]`: COUNT sprites, keys 0.., all of TEXTURE.
@@ -486,6 +493,40 @@ impl Mod for Guest {
                     list[1].key = 0;
                 }
                 atmosphere::set_sky_sprites(&list)?;
+            }
+            // `/atmo_post new|ID [clear|many|EXPOSURE BLOOM THRESHOLD STRENGTH SOFTNESS SATURATION]`:
+            // a post-only profile (says its id), or replaces profile ID's post keys.
+            "atmo_post" => {
+                use horizon_mod_sdk::atmosphere_post::key;
+                let mut words = args.split_whitespace();
+                let target = words.next().unwrap_or("new");
+                let rest: Vec<&str> = words.collect();
+                let keys = match rest.first().copied() {
+                    Some("clear") => vec![],
+                    Some("many") => (0..33).map(|i| key(i * 100)).collect(),
+                    _ => {
+                        let v = |i: usize, d: f32| {
+                            rest.get(i).map_or(d, |w| w.parse().unwrap_or(f32::NAN))
+                        };
+                        let mut k = key(0);
+                        k.exposure = v(0, 1.0);
+                        k.bloom_intensity = v(1, 1.0);
+                        k.bloom_threshold = v(2, 0.0);
+                        k.shadow_strength = v(3, 0.5);
+                        k.shadow_softness = v(4, 0.0);
+                        k.saturation = v(5, 1.0);
+                        let mut night = k;
+                        night.day_time = 12000;
+                        vec![k, night]
+                    }
+                };
+                if target == "new" {
+                    let id = atmosphere::define_post_profile(&keys)?;
+                    chat::show(&format!("post profile {id}"));
+                } else {
+                    let id = target.parse().unwrap_or(u32::MAX);
+                    atmosphere::set_post_keys(id, &keys)?;
+                }
             }
             "atmo_conditions" => chat::show(&match atmosphere::conditions() {
                 None => "none".to_owned(),

@@ -60,6 +60,10 @@
 //! particle effects the game simulates ([`atmosphere::define_effect`], emitters started, moved and
 //! stopped by id, builders in [`atmosphere_fx`]); and up to 256 sky sprites the game moves and
 //! fades on the sky dome ([`atmosphere::set_sky_sprites`], builders in [`atmosphere_sky`]).
+//! Level 34 adds post keys to atmosphere profiles: exposure, bloom intensity and threshold,
+//! shadow strength and softness and saturation keyed by time of day, scaled within the player's
+//! Bloom and Shadows settings ([`atmosphere::define_post_profile`],
+//! [`atmosphere::set_post_keys`], builders in [`atmosphere_post`]).
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
@@ -243,6 +247,29 @@ pub mod atmosphere_sky {
     pub fn emissive(mut s: SkySprite) -> SkySprite {
         s.blend = SkyBlend::Emissive;
         s
+    }
+}
+
+/// Builders for [`atmosphere::define_post_profile`]'s and [`atmosphere::set_post_keys`]' keys
+/// (capability `atmosphere`, API level 34): start from [`atmosphere_post::key`] and change fields.
+pub mod atmosphere_post {
+    use super::atmosphere::PostKey;
+    /// A key at `day_time` that changes nothing: exposure, bloom and saturation 1, no bloom
+    /// threshold, shadow strength 0.5 (the game's own) and no softening.
+    pub fn key(day_time: u32) -> PostKey {
+        PostKey {
+            day_time,
+            exposure: 1.0,
+            bloom_intensity: 1.0,
+            bloom_threshold: 0.0,
+            shadow_strength: 0.5,
+            shadow_softness: 0.0,
+            saturation: 1.0,
+        }
+    }
+    /// Stores a profile of one constant key (the same at every time of day).
+    pub fn constant(k: PostKey) -> Result<u32, String> {
+        super::atmosphere::define_post_profile(&[k])
     }
 }
 

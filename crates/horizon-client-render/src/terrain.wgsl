@@ -48,7 +48,7 @@ struct Globals {
     // x the strength now (0: off), y the normal offset in blocks, z how far the shadows
     // reach, w the depth bias.
     shadow: vec4<f32>,
-    // xyz toward the light.
+    // xyz toward the light, w the softening's radius in map coordinates (0: off).
     shadow_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -323,8 +323,17 @@ fn sun_shadow_scale(at: vec3<f32>, facing: f32, distance: f32) -> f32 {
     let reach = globals.shadow.z;
     let fade = 1.0 - smoothstep(0.75 * reach, reach, distance);
     let uv = at.xy * vec2(0.5, -0.5) + 0.5;
-    let lit = textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv,
-        at.z - globals.shadow.w);
+    let depth = at.z - globals.shadow.w;
+    var lit = textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv, depth);
+    // An atmosphere's softening (uniform; 0 on Low): four more diagonal lookups.
+    let soft = globals.shadow_light.w;
+    if soft > 0.0 {
+        lit = (2.0 * lit
+            + textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv + vec2(soft, soft), depth)
+            + textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv + vec2(-soft, soft), depth)
+            + textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv + vec2(soft, -soft), depth)
+            + textureSampleCompareLevel(sun_shadow_map, sun_shadow_sampler, uv - vec2(soft, soft), depth)) / 6.0;
+    }
     let shade = (1.0 - lit) * smoothstep(0.0, 0.1, facing);
     return 1.0 - globals.shadow.x * fade * shade;
 }

@@ -1947,7 +1947,7 @@ API 29: all flags default false. Each family has 32 calls/mod/server tick.
 
 Access: capability `atmosphere`.
 
-API level 33: experimental capability `atmosphere` (client mods). The mod defines fog and sky profiles keyed by time of day once, then picks a weighted mix of them a few times a second; the game samples, blends and cross-fades them every frame, after vanilla fog and weather and before native mods' fog hooks. Nothing changes in lava, powder snow, blindness, darkness or on the title.
+API level 33: experimental capability `atmosphere` (client mods). The mod defines fog and sky (and from level 34 post effect) profiles keyed by time of day once, then picks a weighted mix of them a few times a second; the game samples, blends and cross-fades them every frame, after vanilla fog and weather and before native mods' fog hooks. Nothing changes in lava, powder snow, blindness, darkness or on the title.
 
 ### record `fog-key`
 
@@ -2237,6 +2237,20 @@ A textured quad on the sky dome, drawn after the sky and stars, before clouds an
 | `fade-in` | `f32` |  |
 | `fade-out` | `f32` |  |
 
+### record `post-key`
+
+API level 34: the built-in post effects at one time of day; keys wrap from the last back to the first. They only scale within the player's Bloom and Shadows settings: an effect the player has off stays off, whatever a mod asks.
+
+| Field | Type | |
+| --- | --- | --- |
+| `day-time` | `u32` | 0..24000 ticks; two keys of a list may not share a time. |
+| `exposure` | `f32` | The world's brightness multiplier, 0.25..4 (1 unchanged). Applied with the bloom composite, so only while Bloom is on. |
+| `bloom-intensity` | `f32` | Multiplies the Bloom setting's intensity, 0..2 (1 unchanged, 0 no bloom). |
+| `bloom-threshold` | `f32` | Soft luma threshold on the light sources that bloom, 0..1 (0: all of them). |
+| `shadow-strength` | `f32` | The share of the sky light a sun or moon shadow takes away, 0..1 (0.5 unchanged). |
+| `shadow-softness` | `f32` | Shadow edge softening, 0..1 (0 unchanged): a few more map lookups on Medium and High, ignored on Low. |
+| `saturation` | `f32` | Colour saturation, 0..2 (1 unchanged, 0 grey). With the bloom composite, as exposure. |
+
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `define-profile` | `func(profile: profile) -> result<u32, string>` | Stores a profile (at most 64 per mod) and returns its id. Profiles are never removed. |
@@ -2247,6 +2261,8 @@ A textured quad on the sky dome, drawn after the sky and stars, before clouds an
 | `move-emitter` | `func(emitter: u32, anchor: anchor) -> result<_, string>` | Moves a live emitter. |
 | `stop-emitter` | `func(emitter: u32, fade: bool) -> result<_, string>` | Stops a live emitter; with `fade` its particles live out their lives, without they go at once. Its id may be reused. |
 | `set-sky-sprites` | `func(sprites: list<sky-sprite>) -> result<_, string>` | Replaces this mod's sky sprites (at most 256; an empty list removes them). The game moves and fades them each frame, so a mod sets them only when they change; at most 20 calls in 20 ticks are taken, later ones fail. Not drawn on the title screen, where the sky is not (the Nether, Horizon's sky option off), under blindness or darkness, or with a shader pack that draws its own sky. |
+| `define-post-profile` | `func(keys: list<post-key>) -> result<u32, string>` | Stores a profile (counted in define-profile's 64) holding only post keys (1..32) and returns its id, mixed by set-mix like any other profile. |
+| `set-post-keys` | `func(profile: u32, keys: list<post-key>) -> result<_, string>` | Replaces the post keys (0..32; an empty list removes them) of one of this mod's profiles, so a fog or sky profile also carries post effects. A mix showing the profile picks them up at once. Errors keep the previous keys. |
 
 ## `channel`
 

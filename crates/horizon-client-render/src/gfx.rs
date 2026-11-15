@@ -215,8 +215,8 @@ mod view;
 mod visbuffer;
 mod wgsl_prefix;
 mod world_post;
-pub use bloom::BloomLevel;
-pub use sun_shadow::ShadowLevel;
+pub use bloom::{BloomLevel, Grade as PostGrade};
+pub use sun_shadow::{DEFAULT_STRENGTH as DEFAULT_SHADOW_STRENGTH, ShadowLevel};
 pub mod world_primitives;
 
 /// A section's instance: its camera-relative origin and, in `w`, the step of
@@ -6484,6 +6484,16 @@ impl Renderer {
     pub fn set_shadow_strength(&mut self, strength: f32) {
         self.sun_shadow.set_strength(strength);
     }
+    /// `post-keys` `shadow-softness`, 0 to 1: four more map lookups at the shadows' edges on
+    /// Medium and High (Low ignores it).
+    pub fn set_shadow_softness(&mut self, softness: f32) {
+        self.sun_shadow.set_softness(softness);
+    }
+    /// `post-keys`' threshold, exposure and saturation, which ride the bloom composite: they
+    /// apply only while Bloom is on.
+    pub fn set_post_grade(&mut self, grade: PostGrade) {
+        self.world_post.bloom_grade = grade.checked();
+    }
     /// This frame's built-in shadows (`sun_shadow`), when they draw: makes or releases the maps
     /// and the pipelines as the setting and the frame need, and decides whether the map is
     /// drawn again. Off on the title screen, without a sky (the Nether, the End), under a shader
@@ -6543,6 +6553,7 @@ impl Renderer {
             camera_view_proj,
             inputs: sun_shadow::shader_inputs(
                 self.sun_shadow.strength() * fade,
+                self.sun_shadow.softness(),
                 resolution,
                 half,
                 reach,
