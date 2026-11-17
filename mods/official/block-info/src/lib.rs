@@ -193,23 +193,90 @@ impl BlockInfo {
         } else {
             hit.name.clone()
         };
-        let mut lines = vec![(name, NAME)];
-        if self.source {
-            lines.push((source_name(namespace), SOURCE));
+        let health = format!("{} / {} HP", hit.health, hit.max_health);
+        // Health is always shown; the game or mod it comes from rides on the same line.
+        let detail = if self.source {
+            format!("{health}  ·  {}", source_name(namespace))
         } else {
-            lines.push((
-                format!("Health: {} / {}", hit.health, hit.max_health),
-                DETAIL,
-            ));
+            health
+        };
+        vec![(name, NAME), (detail, DETAIL)]
+    }
+
+    /// The first water or lava along the view, before `limit` blocks: the block ray passes
+    /// through fluids, so the view is walked here in small steps over the loaded blocks.
+    fn fluid_target(&self, limit: f32) -> Option<(Option<String>, Vec<(String, u32)>, Option<HarvestRow>)> {
+        let p = game::get_player()?;
+        let (yaw, pitch) = ((p.yaw as f64).to_radians(), (p.pitch as f64).to_radians());
+        let dir = (
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        );
+        let eye = (p.x, p.y + 1.62, p.z);
+        let mut t = 0.0_f64;
+        while t < limit as f64 {
+            let (x, y, z) = (
+                (eye.0 + dir.0 * t).floor() as i32,
+                (eye.1 + dir.1 * t).floor() as i32,
+                (eye.2 + dir.2 * t).floor() as i32,
+            );
+            if let Some(state) = client_world::block_at(x, y, z) {
+                let id = state.split('[').next().unwrap_or(&state);
+                let fluid = match id {
+                    "minecraft:water" => Some(("Water", "minecraft:water_bucket")),
+                    "minecraft:lava" => Some(("Lava", "minecraft:lava_bucket")),
+                    _ => None,
+                };
+                if let Some((name, bucket)) = fluid {
+                    let level = state
+                        .split("level=")
+                        .nth(1)
+                        .and_then(|l| l.split([',', ']']).next())
+                        .and_then(|l| l.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    let mut lines = vec![(name.to_owned(), NAME)];
+                    if self.source {
+                        lines.push((source_name("minecraft"), SOURCE));
+                    } else if self.coords {
+                        lines.push((format!("{x}, {y}, {z}"), DETAIL));
+                    } else {
+                        let kind = if level == 0 {
+                            "Source".to_owned()
+                        } else if level >= 8 {
+                            "Falling".to_owned()
+                        } else {
+                            format!("Flowing {level}")
+                        };
+                        lines.push((kind, DETAIL));
+                    }
+                    return Some((Some(bucket.to_owned()), lines, None));
+                }
+            }
+            t += 0.12;
         }
-        lines
+        None
     }
 
     fn draw(&mut self) {
         let distance = REACHES[self.reach].0;
         let target = game::raycast_entity(distance)
             .map(|hit| (None, self.entity_lines(&hit), None))
-            .or_else(|| game::raycast(distance).map(|hit| self.lines(&hit)));
+            .or_else(|| {
+                // A fluid in front of the block (or with no block behind it) wins.
+                let block = game::raycast(distance);
+                let limit = block
+                    .as_ref()
+                    .and_then(|h| {
+                        game::get_player().map(|p| {
+                            let (dx, dy, dz) = (h.x - p.x, h.y - (p.y + 1.62), h.z - p.z);
+                            ((dx * dx + dy * dy + dz * dz).sqrt() as f32).min(distance)
+                        })
+                    })
+                    .unwrap_or(distance);
+                self.fluid_target(limit)
+                    .or_else(|| block.map(|hit| self.lines(&hit)))
+            });
         let Some((item, lines, harvest)) = target else {
             self.clear();
             return;
@@ -626,7 +693,10 @@ mod tests {
         };
         assert_eq!(
             info.entity_lines(&hit),
-            vec![("Ruby Guardian".into(), NAME), ("Ruby".into(), SOURCE)]
+            vec![
+                ("Ruby Guardian".into(), NAME),
+                ("37.5 / 80 HP  ·  Ruby".into(), DETAIL),
+            ]
         );
         hit.health = 12.0;
         hit.name = "entity.ruby.ruby_golem".into();
@@ -636,7 +706,7 @@ mod tests {
             info.entity_lines(&hit),
             vec![
                 ("Ruby Golem".into(), NAME),
-                ("Health: 12 / 80".into(), DETAIL),
+                ("12 / 80 HP".into(), DETAIL),
             ]
         );
         for source in [false, true] {
@@ -648,9 +718,9 @@ mod tests {
                 assert_eq!(
                     lines[1],
                     if source {
-                        ("Ruby".into(), SOURCE)
+                        ("12 / 80 HP  ·  Ruby".into(), DETAIL)
                     } else {
-                        ("Health: 12 / 80".into(), DETAIL)
+                        ("12 / 80 HP".into(), DETAIL)
                     }
                 );
             }
