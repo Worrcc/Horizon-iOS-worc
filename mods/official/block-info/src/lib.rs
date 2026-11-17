@@ -18,6 +18,8 @@ const NAME: u32 = 0xFF_FFFF;
 /// The source line: blue, as tooltips name a mod.
 const SOURCE: u32 = 0x55_55FF;
 const DETAIL: u32 = 0xAA_AAAA;
+/// A living entity's health line: heart red.
+const HEALTH: u32 = 0xFF_5555;
 /// The harvest mark: the held item drops the block, or it does not.
 const CAN_HARVEST: u32 = 0x55_FF55;
 const CANNOT_HARVEST: u32 = 0xFF_5555;
@@ -193,14 +195,14 @@ impl BlockInfo {
         } else {
             hit.name.clone()
         };
-        let health = format!("{} / {} HP", hit.health, hit.max_health);
+        let health = format!("{} / {} ♥", hit.health, hit.max_health);
         // Health is always shown; the game or mod it comes from rides on the same line.
         let detail = if self.source {
             format!("{health}  ·  {}", source_name(namespace))
         } else {
             health
         };
-        vec![(name, NAME), (detail, DETAIL)]
+        vec![(name, NAME), (detail, HEALTH)]
     }
 
     /// The first water or lava along the view, before `limit` blocks: the block ray passes
@@ -695,7 +697,7 @@ mod tests {
             info.entity_lines(&hit),
             vec![
                 ("Ruby Guardian".into(), NAME),
-                ("37.5 / 80 HP  ·  Ruby".into(), DETAIL),
+                ("37.5 / 80 ♥  ·  Ruby".into(), HEALTH),
             ]
         );
         hit.health = 12.0;
@@ -706,7 +708,7 @@ mod tests {
             info.entity_lines(&hit),
             vec![
                 ("Ruby Golem".into(), NAME),
-                ("12 / 80 HP".into(), DETAIL),
+                ("12 / 80 ♥".into(), HEALTH),
             ]
         );
         for source in [false, true] {
@@ -718,9 +720,9 @@ mod tests {
                 assert_eq!(
                     lines[1],
                     if source {
-                        ("12 / 80 HP  ·  Ruby".into(), DETAIL)
+                        ("12 / 80 ♥  ·  Ruby".into(), HEALTH)
                     } else {
-                        ("12 / 80 HP".into(), DETAIL)
+                        ("12 / 80 ♥".into(), HEALTH)
                     }
                 );
             }
