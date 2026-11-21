@@ -46,8 +46,8 @@ Upstream is Horizon `launcher@0.2.20` (`b6c936f82`) with its full history.
 |---|---|
 | `0deb09fc` | **Instances**: `src/instance_list.rs` (Documents is the default, others in `instances/<id>/`, the pick in `instances/instances.json`), `game/instances.rs`; `main.rs` starts in the picked folder; `resources/` is shared from Documents |
 | `d859ac76` | Touch controls hide while a controller is used, and come back at the next touch (`game/touch.rs` `touch_hide`) |
-| `6409bfd3` | Controller **vibration** through Core Haptics (`horizon-ios/src/controllers.rs` `vibrate`: a `CHHapticEngine` per pad through raw `msg_send`) |
-| `ac0c8a68` | DualSense **lightbar and adaptive triggers** (`GCDeviceLight`, `GCDualSenseAdaptiveTrigger`). The desktop effects are read back with `horizon_dualsense::trigger::decode`, and the trigger feel logic moved to `pad.rs` so both backends share it |
+| `6409bfd3` | Controller **vibration** through Core Haptics (`horizon-ios/src/controllers.rs` `vibrate`: a `CHHapticEngine` per pad through raw `msg_send`). **Reverted**, see below |
+| `ac0c8a68` | **Reverted**, see below. DualSense **lightbar and adaptive triggers** (`GCDeviceLight`, `GCDualSenseAdaptiveTrigger`). The desktop effects are read back with `horizon_dualsense::trigger::decode`, and the trigger feel logic moved to `pad.rs` so both backends share it |
 | `89b6e862` | Controllers on the **startup title** while resources load (`pad.rs` `StartupPad`: the stick or D-pad moves a pointer, A clicks, B goes back). Its pads go on in the game |
 | `7af8507e` | The **launcher page** the app opens on (`Page::Launcher` in `options_ui.rs`, opened by `Loading::open_launcher`): instances, Mods, Shader Packs, Controller Settings, Options, New Instance. Switching instances rebuilds the title's world list, and switches at once on `Game`'s title with no world open too |
 | `fdd6591c` | **Block Info** (`mods/official/block-info`, id `block_info`): a Jade-style box showing the block under the crosshair, written for Horizon's API with no code or art from Jade. Listed in `docs/mods.md` |
@@ -82,11 +82,16 @@ Each item is in a build, but nobody has reported on it yet.
    (before and after the ~12 s load) should give that instance's own worlds and settings.
    Mid-session switches reload settings and packs. Keybinds and language may need the next
    start: check.
-2. **Controllers:** the arrow on the first title screen; touch controls hiding; vibration on
-   damage and block breaking. On a DualSense: lightbar colour, bow-draw resistance, crossbow
-   click. Apple's trigger vibration frequency is 0..1; the desktop's Hz are divided by 255, which
-   may feel weak.
-3. **From the port's first build:** whether the picture fills the screen, title-screen touch,
+2. **Controllers:** the arrow on the first title screen; touch controls hiding.
+3. **Heat:** the player reported the phone running much hotter with a controller connected,
+   still with Block Info off, not sure since which build. Controller vibration (`6409bfd3`) and
+   the DualSense lightbar and adaptive triggers (`ac0c8a68`) were reverted for it. The likely
+   cause: the `CHHapticEngine` started per pad was never stopped, and a DualSense's haptics run
+   over a Bluetooth audio stream. Not confirmed: if the next build still runs hot, look at the
+   commits since `7af8507e` next, the other session's entity work included. Before bringing
+   vibration back, start the engine per rumble and stop it after (`stopWithCompletionHandler`),
+   or use `GCDeviceHaptics` only for short events.
+4. **From the port's first build:** whether the picture fills the screen, title-screen touch,
    120 Hz (under LiveContainer it's LiveContainer's Info.plist that counts) and orientation.
    `latest.log` logs `view bounds / frame / window / screen / scene orientation` at startup and at
    every resize. Read it before changing anything.
@@ -154,6 +159,8 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
 
 ## Not done yet
 
+- Controller vibration, DualSense lightbar and adaptive triggers: reverted for heat (see
+  "Waiting on the player's test").
 - Mouse look with an iPad trackpad or mouse (they arrive as touches).
 - LAN discovery by multicast needs Apple's multicast entitlement. Joining by address works.
 - Discord presence, `horizon-ctl` (no meaning on iOS).
@@ -190,7 +197,7 @@ for now), controllers as a full input path, Jade (done as Block Info), and Ice a
 | `crates/horizon-client/src/touch_controls.rs` | Touch logic, unit tested |
 | `crates/horizon-client/src/game/touch.rs` | Applying and drawing touch controls; `MenuTouch` for the startup menu |
 | `crates/horizon-client/src/game/account.rs`, `src/msa.rs` | Microsoft sign-in |
-| `crates/horizon-client/src/game/pad/hardware_ios.rs` | Controllers: input, vibration, lightbar, adaptive triggers |
+| `crates/horizon-client/src/game/pad/hardware_ios.rs` | Controllers: input only (vibration and DualSense output reverted for heat) |
 | `crates/horizon-client/src/instance_list.rs`, `game/instances.rs` | Instances |
 | `crates/horizon-client/src/options_ui.rs` (`Page::Launcher`, `Page::Instances`), `game/startup_menu.rs` (`open_launcher`, `switch_instance`) | The launcher page |
 | `crates/horizon-client/src/game/pad.rs` (`StartupPad`, `trigger_feels`) | Controllers on the startup title; trigger feel shared by both backends |
