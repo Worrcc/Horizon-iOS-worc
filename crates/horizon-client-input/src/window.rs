@@ -246,9 +246,9 @@ fn park_in_steps(end: i64, mut now: impl FnMut() -> i64, mut sleep: impl FnMut(i
 }
 
 /// The real clock without busy waiting: it sleeps to the deadline in one
-/// absolute-deadline wait, and only the short tail before it (see
-/// [`FramerateLimiter::limit_on_grid`]) spins, so a capped frame rate leaves the
-/// core idle.
+/// absolute-deadline wait, and the short tail before it (see
+/// [`FramerateLimiter::limit_on_grid`]) in 50 us sleeps, so a capped frame rate
+/// leaves the core idle.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SleepingClock(pub SystemClock);
 impl LimiterClock for SleepingClock {
@@ -261,8 +261,11 @@ impl LimiterClock for SleepingClock {
     fn park_until(&mut self, deadline_ns: i64) {
         self.0.park_until(deadline_ns);
     }
+    /// A short sleep, not a busy wait: spinning out the tail (up to the learned overshoot
+    /// plus half a millisecond, 2.5 ms a frame) kept a core busy every frame and ran the
+    /// phone hot from source build 0.2.0.76.
     fn spin(&mut self) {
-        std::hint::spin_loop();
+        std::thread::sleep(std::time::Duration::from_micros(50));
     }
 }
 
