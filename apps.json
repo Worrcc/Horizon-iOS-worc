@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.81",
+          "buildVersion": "0.2.0.81",
+          "date": "2026-11-23T02:10:59Z",
+          "localizedDescription": "Branch claude/launcher-mods-shaders-controller-xfv3kk, commit f876c6df8.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-81/Horizon.ipa",
+          "size": 34065142,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.79",
           "buildVersion": "0.2.0.79",
           "date": "2026-11-15T00:50:13Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-70/Horizon.ipa",
           "size": 34517787,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.69",
-          "buildVersion": "0.2.0.69",
-          "date": "2026-11-12T23:12:14Z",
-          "localizedDescription": "Branch claude/essentials-aim-api, commit 89ced2d2f.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-69/Horizon.ipa",
-          "size": 34462260,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.79",
-      "versionDate": "2026-11-15T00:50:13Z",
-      "versionDescription": "Branch claude/post-effects, commit e2842baf3.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-79/Horizon.ipa",
-      "size": 34063516
+      "version": "0.2.0.81",
+      "versionDate": "2026-11-23T02:10:59Z",
+      "versionDescription": "Branch claude/launcher-mods-shaders-controller-xfv3kk, commit f876c6df8.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-81/Horizon.ipa",
+      "size": 34065142
     }
   ],
   "news": []
