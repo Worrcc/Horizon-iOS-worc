@@ -174,6 +174,9 @@ through Apple's GameController framework, with the same bindings as Horizon on d
 ([docs/controllers.md](../docs/controllers.md)). Pair them in iOS's Bluetooth settings.
 Every menu works with a controller alone: on the first title screen the left stick or D-pad
 moves a pointer, A clicks and B goes back. The touch controls hide while you play with a controller and come back at your next touch.
+Vibration plays through Core Haptics. A DualSense's adaptive triggers resist as a bow draws,
+click for a loaded crossbow and buzz while mining, and its lightbar (a DualShock 4's too)
+follows your health or dimension. Each can be turned off in Controller Settings.
 
 **Keyboards**: an iPad's Magic Keyboard or a Bluetooth keyboard works as on desktop (WASD,
 E, Esc, F3 and so on).
@@ -183,8 +186,6 @@ E, Esc, F3 and so on).
 - **Online-mode servers** need Microsoft sign-in, which needs a one-time setup (below). Until
   then you can play single player, Open to LAN, and offline-mode servers under an offline name.
 - **Mouse look** with an iPad trackpad or mouse: they act as touches for now.
-- **Controller vibration**, and a DualSense's lightbar and adaptive triggers. They were tried
-  and taken out again: the phone ran much hotter with a controller connected.
 - **Discord presence** and **`horizon-ctl`** (there's no terminal on iOS).
 - **Open to LAN discovery**: finding LAN worlds by multicast needs Apple's multicast entitlement.
   Joining by address works.
