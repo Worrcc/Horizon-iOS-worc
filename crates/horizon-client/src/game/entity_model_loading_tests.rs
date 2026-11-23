@@ -17,13 +17,14 @@ const WOODS: [&str; 11] = [
     "pale_oak",
     "test_wood",
 ];
-const CARTS: [&str; 6] = [
+const CARTS: [&str; 7] = [
     "minecart",
     "chest_minecart",
     "hopper_minecart",
     "furnace_minecart",
     "tnt_minecart",
     "command_block_minecart",
+    "spawner_minecart",
 ];
 
 fn fixture() -> Value {
@@ -142,7 +143,10 @@ fn optimized(root: &Path) -> BTreeMap<String, Part> {
         } else {
             "armor_stand"
         };
-        models.insert(format!("{model}/{slot}"), part);
+        models.insert(
+            format!("{model}/{slot}"),
+            std::sync::Arc::unwrap_or_clone(part),
+        );
     }
     for (slot, part) in armor.player {
         models.insert(format!("player/{slot}"), part);
@@ -152,7 +156,10 @@ fn optimized(root: &Path) -> BTreeMap<String, Part> {
         ("armor_stand_small", armor.small),
     ] {
         if let Some(part) = part {
-            models.insert(format!("{model}/main"), part);
+            models.insert(
+                format!("{model}/main"),
+                std::sync::Arc::unwrap_or_clone(part),
+            );
         }
     }
     models
@@ -178,7 +185,7 @@ fn entity_model_batches_preserve_parts_missing_layers_and_load_failures() {
     let mut all = fixture();
     fs::write(&file, serde_json::to_vec(&all).unwrap()).unwrap();
     assert_equivalent(&root.0);
-    assert_eq!(optimized(&root.0).len(), 42);
+    assert_eq!(optimized(&root.0).len(), 43);
     all.as_object_mut()
         .unwrap()
         .remove("minecraft:armor_stand_small#main");
@@ -187,7 +194,7 @@ fn entity_model_batches_preserve_parts_missing_layers_and_load_failures() {
         .remove("minecraft:boat/oak#main");
     fs::write(&file, serde_json::to_vec(&all).unwrap()).unwrap();
     assert_equivalent(&root.0);
-    assert_eq!(optimized(&root.0).len(), 40);
+    assert_eq!(optimized(&root.0).len(), 41);
     let document = EntityModelDocument::load(&root.0).unwrap();
     let mut first = document.model("minecraft:armor_stand#main").unwrap();
     first.children.clear();
@@ -207,21 +214,88 @@ fn armor_equipment_loads_without_an_entity_model_document() {
     fs::create_dir_all(&equipment).unwrap();
     fs::write(
         equipment.join("leather.json"),
-        serde_json::to_vec(&json!({"layers": {"humanoid": [{
-            "texture": "minecraft:leather", "dyeable": {"color_when_undyed": 0x123456}
-        }]}}))
+        serde_json::to_vec(&json!({"layers": {"humanoid": [
+            {"texture": "minecraft:leather", "dyeable": {"color_when_undyed": 0x123456}},
+            {"texture": "minecraft:leather_overlay"}
+        ]}}))
         .unwrap(),
     )
     .unwrap();
     fs::write(equipment.join("invalid.json"), b"{").unwrap();
+    // A content root: content mods' namespaces' equipment loads (`gear` is one).
+    fs::write(
+        root.0.join(horizon_items::content_namespaces::MARKER),
+        br#"["gear"]"#,
+    )
+    .unwrap();
+    let custom = root.0.join("assets/gear/equipment/metal");
+    fs::create_dir_all(&custom).unwrap();
+    fs::write(
+        custom.join("fire.json"),
+        serde_json::to_vec(&json!({"layers": {
+            "humanoid": [{"texture":"gear:metal/fire"}],
+            "humanoid_leggings": [{"texture":"gear:metal/fire_legs"}]
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
     let assets = ArmorStandAssets::load(&root.0, None);
     assert!(assets.main.is_none());
     assert!(assets.layers.is_empty());
     assert_eq!(
-        assets.equipment["minecraft:leather"]["humanoid"],
-        ("entity/equipment/humanoid/leather".into(), Some(0x123456))
+        assets.equipment["minecraft:leather"]["humanoid"][0].texture,
+        "entity/equipment/humanoid/leather"
+    );
+    assert_eq!(
+        assets.equipment["minecraft:leather"]["humanoid"][0].undyed,
+        Some(0x123456)
+    );
+    assert!(
+        assets.equipment["minecraft:leather"]["humanoid"][0]
+            .model
+            .is_none()
     );
     assert!(!assets.equipment.contains_key("minecraft:invalid"));
+    assert_eq!(
+        assets.equipment["gear:metal/fire"]["humanoid"][0].texture,
+        "gear:entity/equipment/humanoid/metal/fire"
+    );
+    assert_eq!(
+        assets.equipment["gear:metal/fire"]["humanoid_leggings"][0].texture,
+        "gear:entity/equipment/humanoid_leggings/metal/fire_legs"
+    );
+}
+
+#[test]
+fn content_mods_equipment_loads_under_its_namespace() {
+    let root = FixtureRoot::new();
+    let equipment = root.0.join("assets/gems/equipment");
+    fs::create_dir_all(&equipment).unwrap();
+    fs::write(
+        equipment.join("ruby.json"),
+        serde_json::to_vec(&json!({"layers": {
+            "humanoid": [{"texture": "gems:ruby"}],
+            "humanoid_leggings": [{"texture": "gems:ruby"}]
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
+    // Not a content root: other namespaces stay unread, as before.
+    assert!(ArmorStandAssets::load(&root.0, None).equipment.is_empty());
+    fs::write(
+        root.0.join(horizon_items::content_namespaces::MARKER),
+        br#"["gems"]"#,
+    )
+    .unwrap();
+    let assets = ArmorStandAssets::load(&root.0, None);
+    assert_eq!(
+        assets.equipment["gems:ruby"]["humanoid_leggings"],
+        vec![super::armor_stands::EquipmentLayer {
+            texture: "gems:entity/equipment/humanoid_leggings/ruby".into(),
+            undyed: None,
+            model: None
+        }]
+    );
 }
 
 #[test]
@@ -269,4 +343,40 @@ fn entity_model_document_benchmark() {
             "baseline_median_ms": old, "optimized_median_ms": new, "speedup": old / new
         })
     );
+}
+
+#[test]
+fn armor_geo_equipment_caches_geometry_and_reloads_layers() {
+    let root = FixtureRoot::new();
+    let geo = root.0.join("assets/armor_fixture/geo/armor");
+    fs::create_dir_all(&geo).unwrap();
+    fs::write(
+        geo.join("horn.geo.json"),
+        include_str!("../../tests/fixtures/armor-geo/assets/armor_fixture/geo/armor/horn.geo.json"),
+    )
+    .unwrap();
+    fs::write(
+        root.0.join(horizon_items::content_namespaces::MARKER),
+        br#"["armor_fixture"]"#,
+    )
+    .unwrap();
+    let dir = root.0.join("assets/armor_fixture/equipment");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("horn.json");
+    let equipment = json!({"layers":{"humanoid":[
+        {"texture":"armor_fixture:horn","model":"armor_fixture:armor/horn"},
+        {"texture":"armor_fixture:overlay","model":"armor_fixture:armor/horn"}
+    ]}});
+    fs::write(&file, equipment.to_string()).unwrap();
+    let mut assets = ArmorStandAssets::load(&root.0, None);
+    assert_eq!(assets.models.len(), 1);
+    assert_eq!(assets.equipment["armor_fixture:horn"]["humanoid"].len(), 2);
+    let helmet = &assets.models["armor_fixture:armor/horn"]["helmet"];
+    assert_eq!(helmet.children[0].children[0].name, "horn");
+    // Geometry works even without vanilla equipment models, and is refreshed on reload.
+    assert!(assets.player.is_empty());
+    fs::remove_file(&file).unwrap();
+    assets.reload_trims(&root.0);
+    assert!(assets.models.is_empty());
+    assert!(assets.equipment.is_empty());
 }

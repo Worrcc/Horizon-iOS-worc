@@ -24,6 +24,8 @@ pub struct Report {
     pub signed: bool,
     /// A mod has code to run (a content mod may have none).
     pub code: bool,
+    /// The data packs a mod lists.
+    pub datapacks: Vec<String>,
     /// A mod's component imports.
     pub imports: Vec<String>,
     /// A mod's commands, each run once.
@@ -47,6 +49,7 @@ impl Report {
             "api": self.facts.api,
             "side": self.facts.side,
             "capabilities": self.facts.capabilities,
+            "storage_mb": self.facts.storage_mb,
             "api_level": self.facts.api_level,
             "game": self.facts.game,
             "requires": requires,
@@ -54,6 +57,7 @@ impl Report {
             "size": self.size,
             "signed": self.signed,
             "code": self.code,
+            "datapacks": self.datapacks,
             "imports": self.imports,
             "commands": self.commands,
             "output": self.output,
@@ -92,13 +96,26 @@ impl Report {
             out += &format!("  needs mod API level {level} or newer\n");
         }
         for c in &f.capabilities {
-            out += &format!("  may {}\n", c.describe());
+            out += &format!("  may {}\n", c.describe_with_storage(f.storage_mb));
         }
         for r in &f.requires {
             out += &format!("  needs {} {} ({})\n", r.id, r.version, &r.sha256[..12]);
         }
+        if !self.datapacks.is_empty() {
+            out += &format!("  data packs: {}\n", self.datapacks.join(", "));
+        }
+        if self.kind == Kind::NativeMod {
+            out += "  native source: unsandboxed; not executed by the registry check. Compile and test against the exact pinned Horizon and Mixins revisions before review.\n";
+        }
         if self.kind == Kind::Mod && !self.code {
-            out += "  no code: content only, nothing to run\n";
+            let content = f
+                .capabilities
+                .contains(&horizon_mods::Capability::Registries);
+            out += match (content, self.datapacks.is_empty()) {
+                (_, true) => "  no code: content only, nothing to run\n",
+                (true, false) => "  no code: content and data packs, nothing to run\n",
+                (false, false) => "  no code: data packs only, nothing to run\n",
+            };
         } else if self.kind == Kind::Mod {
             let commands = if self.commands.is_empty() {
                 String::new()
@@ -118,8 +135,9 @@ impl Report {
 pub fn kind_of(path: &Path) -> Option<Kind> {
     match path.extension()?.to_str()? {
         "hmod" => Some(Kind::Mod),
+        "hnmod" => Some(Kind::NativeMod),
         "hpack" => Some(Kind::Modpack),
-        "zip" => Some(Kind::ResourcePack),
+        "zip" => Some(horizon_mods::index::zip_kind(path)),
         "hshader" => Some(Kind::Shader),
         _ => None,
     }
@@ -156,10 +174,17 @@ pub fn check(
         size,
         signed,
         code: false,
+        datapacks: Vec::new(),
         imports: Vec::new(),
         commands: Vec::new(),
         output: Vec::new(),
     };
+    if matches!(report.kind, Kind::Mod | Kind::NativeMod)
+        && Package::has_manifest(path)
+        && let Ok(package) = Package::read(path)
+    {
+        report.datapacks = package.manifest.datapacks;
+    }
     if report.kind == Kind::Mod {
         trial_run(path, &mut report)?;
     }
@@ -176,9 +201,10 @@ fn trial_run(path: &Path, report: &mut Report) -> Result<(), String> {
     };
     report.code = true;
     report.imports = component_imports(wasm)?;
-    package
-        .manifest
-        .check_imports(report.imports.iter().map(String::as_str))?;
+    package.manifest.check_code_imports(
+        report.imports.iter().map(String::as_str),
+        &horizon_mods::api_level::imports(wasm)?,
+    )?;
     let dir = std::env::temp_dir().join(format!("horizon-mod-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -213,6 +239,12 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
         game_mode: GameMode::Survival,
         health: 20.0,
     };
+    // Shared authoritative counts for inventory calls during the resource-free trial.
+    let inventories = horizon_mods::testing::InventoryFixture {
+        players: [(steve.id.clone(), false)].into(),
+        ..Default::default()
+    };
+    mods.lend_inventories(Box::new(inventories));
     let snapshot = |t: u64| Snapshot {
         player: Some(Player {
             x: 0.5 + t as f64 * 0.1,
@@ -229,6 +261,27 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             day_time: 1000 + t,
         }),
         players: vec![steve.clone()],
+        game_rules: [("mob_griefing".into(), "true".into())].into(),
+        difficulty: "normal".into(),
+        world_times: [
+            "minecraft:overworld",
+            "minecraft:the_nether",
+            "minecraft:the_end",
+        ]
+        .into_iter()
+        .map(|dimension| {
+            (
+                dimension.into(),
+                horizon_mods::WorldTime {
+                    day_time: 1000 + t,
+                    game_time: t,
+                    is_day: dimension == "minecraft:overworld",
+                    raining: false,
+                    thundering: false,
+                },
+            )
+        })
+        .collect(),
         // The GUI of a 1280 x 720 window at scale 3.
         gui_size: (427.0, 240.0),
         ..Snapshot::default()
@@ -255,6 +308,46 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
     mods.player_left(&steve);
     for out in mods.drain() {
         report.output.push(match out {
+            Output::PlayerSetHealth { player, health } => {
+                format!("queued health {health} for {player}")
+            }
+            Output::PlayerHurt { player, amount, .. } => {
+                format!("queued {amount} damage for {player}")
+            }
+            Output::PlayerSetFood { player, food, .. } => {
+                format!("queued food {food} for {player}")
+            }
+            Output::PlayerGiveExperience { player, points } => {
+                format!("queued {points} experience for {player}")
+            }
+            Output::PlayerGiveLevels { player, levels } => {
+                format!("queued {levels} levels for {player}")
+            }
+            Output::PlayerClearEffects { player, ids } => {
+                format!("queued clearing {} effects for {player}", ids.len())
+            }
+            Output::PlaySoundTo { player, sound } => {
+                format!("queued sound {} for {player}", sound.name)
+            }
+            Output::SpawnParticles { particles, .. } => {
+                format!("queued particles {}", particles.name)
+            }
+            Output::Explode { radius, .. } => format!("queued explosion r{radius}"),
+            Output::MakeBlockFall { pos, .. } => format!("queued falling block at {pos:?}"),
+            Output::Menu(operation) => format!("queued menu: {operation:?}"),
+            Output::BlockDataWrite(plan) => format!("queued block data for {}", plan.mod_id),
+            Output::BreakProgress { pos, stage, .. } => {
+                format!("queued break progress {pos:?}: {stage}")
+            }
+            Output::StorageMove(plan) => format!("reserved {} items for transfer", plan.count),
+            Output::StorageDataWrite(plan) => format!("queued stack data for {}", plan.mod_id),
+            Output::GiveItemWithData { item, count, .. } => {
+                format!("queued giving {count} {item} with data")
+            }
+            Output::SpawnItemWithData { item, count, .. } => {
+                format!("queued dropping {count} {item} with data")
+            }
+            Output::Channel { name, data, .. } => format!("channel {name}: {} bytes", data.len()),
             Output::Chat { text, .. } => format!("chat: {text}"),
             Output::Tell { text, .. } => format!("tell: {text}"),
             Output::Broadcast { text, .. } => format!("broadcast: {text}"),
@@ -262,6 +355,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("{}: {text}", if error { "error" } else { "feedback" })
             }
             Output::Command { line } => format!("command: /{line}"),
+            Output::ModQuietCommands { lines, .. } => {
+                format!("{} quiet server-mod command(s)", lines.len())
+            }
             Output::QuietCommands { lines, .. } => {
                 format!("{} quiet command(s)", lines.len())
             }
@@ -270,6 +366,57 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 dimension, blocks, ..
             } => {
                 format!("set {} block(s) in {dimension}", blocks.len())
+            }
+            Output::OpenChat { text, .. } => format!("opened chat with: {text}"),
+            Output::BreakBlocksAs { player, blocks, .. } => {
+                format!("broke {} block(s) as {player}", blocks.len())
+            }
+            Output::SetLootTable { table, pos, .. } => {
+                format!(
+                    "gave the container at {} {} {} loot table {table}",
+                    pos.0, pos.1, pos.2
+                )
+            }
+            Output::PlayerEffect { player, effect } => {
+                format!(
+                    "effect {} on {player}: {} s, amplifier {}",
+                    effect.id, effect.seconds, effect.amplifier
+                )
+            }
+            Output::SetContainer { pos, slots, .. } => {
+                format!(
+                    "set {} container slots at {} {} {}",
+                    slots.len(),
+                    pos.0,
+                    pos.1,
+                    pos.2
+                )
+            }
+            Output::MobEffect { mob, change } => format!("effect {} on mob {mob}", change.id),
+            Output::MobPush { mob, .. } => format!("pushed mob {mob}"),
+            Output::PlayerHeal { player, amount } => format!("healed {player} by {amount}"),
+            Output::SpawnItem { item, count, .. } => format!("dropped {count} {item}"),
+            Output::Tame { mob, .. } => format!("tamed mob {mob}"),
+            Output::DamageItem { player, amount, .. } => {
+                format!("damaged {player}'s held item by {amount}")
+            }
+            Output::Strike { mob, .. } => format!("strike from mob {mob}"),
+            Output::PlayerKnockback { player, .. } => format!("knockback on {player}"),
+            Output::PlayerPush { player, .. } => format!("pushed {player}"),
+            Output::PlayerTeleport { player, .. } => format!("teleported {player}"),
+            Output::PlaySound { sound, .. } => format!("played {}", sound.name),
+            Output::Ride { rider, vehicle } => match vehicle {
+                Some(v) => format!("seated mob {rider} on mob {v}"),
+                None => format!("let mob {rider} off its vehicle"),
+            },
+            Output::SetSpawner { entity, pos, .. } => {
+                format!(
+                    "set the spawner at {} {} {} to {entity}",
+                    pos.0, pos.1, pos.2
+                )
+            }
+            Output::PlaceStructure { id, pos, .. } => {
+                format!("placed structure {id} at {} {} {}", pos.0, pos.1, pos.2)
             }
             Output::Orders { orders, .. } => format!("gave {} mob order(s)", orders.len()),
             Output::Spawn { kind, .. } => format!("spawned {kind}"),
@@ -335,5 +482,14 @@ mod tests {
         let e = check(&pack, Kind::Shader, None, None).err().unwrap();
         assert!(e.contains("horizon-shaders.toml"), "{e}");
         assert!(check(&pack, Kind::Mod, None, None).is_err());
+    }
+
+    #[test]
+    fn reports_the_declared_disk_permission() {
+        let mut report = check(&fixture("cozy-1.0.0.hpack"), Kind::Modpack, None, None).unwrap();
+        report.facts.capabilities = vec![horizon_mods::Capability::Storage];
+        report.facts.storage_mb = Some(1024);
+        assert!(report.text().contains("may save up to 1024 MB to disk"));
+        assert_eq!(report.json()["storage_mb"], 1024);
     }
 }

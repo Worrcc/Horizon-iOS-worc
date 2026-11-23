@@ -5,12 +5,16 @@
 // Unsafe only for the iOS clipboard (UIPasteboard through objc2).
 #![cfg_attr(not(target_os = "ios"), forbid(unsafe_code))]
 #![cfg_attr(target_os = "ios", deny(unsafe_code))]
+pub mod aim_assist;
 pub mod clipboard;
 pub mod gamepad;
+pub mod held;
 pub mod input;
 pub mod interaction_input;
 pub mod key_names;
 pub mod keybinds;
 pub mod keymapping;
+pub mod modifiers;
 pub mod mouse;
+pub mod snap;
 pub mod window;

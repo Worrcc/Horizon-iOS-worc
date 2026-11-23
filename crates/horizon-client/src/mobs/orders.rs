@@ -12,6 +12,18 @@ pub const DATA_ENTRIES: usize = 32;
 /// The save's keys: Horizon's own, beside vanilla's.
 const DATA: &str = "horizon:data";
 const ANIMATION: &str = "horizon:animation";
+const TEXTURE: &str = "horizon:texture";
+
+/// A living entity's box touches the hurt-area/strike ball. Looking only at
+/// its feet would miss a tall or wide mob whose body is inside the ball.
+pub fn area_reaches(center: [f64; 3], radius: f64, feet: [f64; 3], half: f64, height: f64) -> bool {
+    let lo = [feet[0] - half, feet[1], feet[2] - half];
+    let hi = [feet[0] + half, feet[1] + height, feet[2] + half];
+    (0..3)
+        .map(|i| (center[i].clamp(lo[i], hi[i]) - center[i]).powi(2))
+        .sum::<f64>()
+        <= radius * radius
+}
 
 /// A mob's standing orders.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -20,10 +32,17 @@ pub struct Orders {
     pub walk: Option<([f64; 3], f64)>,
     /// Keep its head turned to this point.
     pub look: Option<[f64; 3]>,
+    /// Explicit player target, by UUID; a transient AI order, not saved.
+    pub target_player: Option<[i32; 4]>,
     /// The animation an order plays (mobs/geo.rs `animate`), and the age (ticks) it started at:
     /// elapsed ticks are `age.wrapping_sub(start)`, so a start before the age a loaded mob
     /// begins at (0) still counts right.
     pub animation: Option<(Arc<str>, u32)>,
+    /// A loaded mod's texture override, saved and sent to players.
+    pub texture: Option<Arc<str>>,
+    /// Where a server mod seats its rider (`mount`): height above the feet and distance
+    /// ahead of the middle along the body's yaw. Not saved: riders get off at a save.
+    pub seat: Option<(f32, f32)>,
     /// What server mods stored on the mob (`set-data`, `spawn`): kept in its save.
     pub data: BTreeMap<String, String>,
 }
@@ -32,6 +51,10 @@ pub struct Orders {
 pub fn write_nbt(m: &Mob, map: &mut Compound) {
     map.remove(&DATA.into());
     map.remove(&ANIMATION.into());
+    map.remove(&TEXTURE.into());
+    if let Some(texture) = &m.orders.texture {
+        map.insert(TEXTURE.into(), Tag::String((&**texture).into()));
+    }
     if !m.orders.data.is_empty() {
         let data = m.orders.data.iter();
         let data = data.map(|(k, v)| (k.as_str(), Tag::String(v.as_str().into())));
@@ -49,6 +72,9 @@ pub fn write_nbt(m: &Mob, map: &mut Compound) {
 
 /// Reads what [`write_nbt`] saved: the animation goes on where it was.
 pub fn read_nbt(m: &mut Mob, tag: &Tag) {
+    if let Some(Tag::String(texture)) = tag.get(TEXTURE) {
+        m.orders.texture = Some(Arc::from(texture.to_string_lossy()));
+    }
     if let Some(Tag::Compound(data)) = tag.get(DATA) {
         let strings = data.iter().filter_map(|(k, v)| match v {
             Tag::String(s) => Some((k.to_string_lossy(), s.to_string_lossy())),
@@ -65,6 +91,18 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
         };
         let start = m.age.wrapping_sub(ticks);
         m.orders.animation = Some((Arc::from(name.to_string_lossy()), start));
+    }
+}
+
+/// A checked server-mod attribute order, through the mob's normal attribute instances.
+pub fn attribute(m: &mut Mob, name: &str, value: f64) {
+    use super::finalize::{self, Attr};
+    let Some(a) = Attr::from_name(name) else {
+        return;
+    };
+    finalize::set_base(m, a, value);
+    if a == Attr::MaxHealth {
+        m.health = m.health.min(finalize::max_health(m));
     }
 }
 
@@ -122,5 +160,48 @@ impl Goal for Obey {
     }
     fn box_clone(&self) -> Box<dyn Goal> {
         Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn strike_ball_reaches_living_boxes_at_edges_and_above_feet() {
+        assert!(area_reaches(
+            [0.0, 65.0, 0.0],
+            1.0,
+            [1.3, 64.0, 0.0],
+            0.3,
+            1.8
+        ));
+        assert!(!area_reaches(
+            [0.0, 65.0, 0.0],
+            1.0,
+            [1.301, 64.0, 0.0],
+            0.3,
+            1.8
+        ));
+        assert!(area_reaches(
+            [0.0, 66.8, 0.0],
+            1.0,
+            [0.0, 64.0, 0.0],
+            0.3,
+            1.8
+        ));
+        assert!(!area_reaches(
+            [0.0, 66.801, 0.0],
+            1.0,
+            [0.0, 64.0, 0.0],
+            0.3,
+            1.8
+        ));
+        assert!(area_reaches(
+            [0.0, 65.0, 0.0],
+            0.0,
+            [0.0, 64.0, 0.0],
+            0.3,
+            1.8
+        ));
     }
 }

@@ -97,6 +97,10 @@ impl<T: 'static> EventLoopExtIOS for EventLoop<T> {
 
 /// Additional methods on [`Window`] that are specific to iOS.
 pub trait WindowExtIOS {
+    /// Horizon: bottom portion obscured by the software keyboard, in view-local UIKit points.
+    /// A floating keyboard reserves everything below its top. Does not resize the window.
+    fn keyboard_bottom_inset(&self) -> f64;
+
     /// Sets the [`contentScaleFactor`] of the underlying [`UIWindow`] to `scale_factor`.
     ///
     /// The default value is device dependent, and it's recommended GLES or Metal applications set
@@ -195,6 +199,10 @@ pub trait WindowExtIOS {
 }
 
 impl WindowExtIOS for Window {
+    fn keyboard_bottom_inset(&self) -> f64 {
+        self.window.maybe_wait_on_main(|w| w.keyboard_bottom_inset())
+    }
+
     #[inline]
     fn set_scale_factor(&self, scale_factor: f64) {
         self.window.maybe_queue_on_main(move |w| w.set_scale_factor(scale_factor))

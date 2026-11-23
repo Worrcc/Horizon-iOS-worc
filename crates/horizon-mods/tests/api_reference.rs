@@ -19,6 +19,10 @@ fn cell(docs: &Docs) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .replace('|', "\\|")
+        // Runtime terminology can evolve without changing the WIT contract.
+        .replace("hard fuel cap", "hard call limit")
+        .replace("hook's own fuel", "hook's own work limit")
+        .replace("hook's fuel", "hook's hard limit")
 }
 
 /// A type as WIT spells it.
@@ -96,12 +100,17 @@ fn access(interface: &str, exported: bool) -> String {
     if exported {
         return "exported by the mod: the game calls it".into();
     }
+    if interface == "browser-ext" {
+        return "capability `recipes` for data queries, `ui` for panel functions".into();
+    }
     if interface == "log" {
         return "always granted".into();
     }
-    match Capability::ALL.iter().find(|c| c.interface() == interface) {
-        Some(c) => format!("capability `{c}`"),
-        None => "not granted by any capability".into(),
+    // As the game checks a component's imports: `canvas` is `render`'s,
+    // `browser` `ui`'s.
+    match Capability::of_import(&format!("horizon:mods/{interface}@0.1.0")) {
+        Ok(Some(c)) => format!("capability `{c}`"),
+        _ => "not granted by any capability".into(),
     }
 }
 
@@ -188,6 +197,9 @@ fn markdown() -> String {
         .unwrap();
         if interface.docs.contents.is_some() {
             writeln!(w, "{}\n", cell(&interface.docs)).unwrap();
+        }
+        if interface_name == "canvas" {
+            writeln!(w, "The default epoch mode uses elapsed wall time (host calls included); `HORIZON_MODS_LIMIT=fuel` retains instruction accounting. Internally 1,000,000 epoch work units represent 1 ms, while `work-left` stays normalized to about 1,000,000 at call start in both modes. Frame grants retain microsecond precision; requests affect subsequent frame calls and never extend the current hard limit. See [the budget guide](../mods.md).\n").unwrap();
         }
         for (type_name, &type_id) in &interface.types {
             let def = &resolve.types[type_id];

@@ -6,10 +6,16 @@
 //! lets gravity back. `/raise <kind>` spawns one beside the player, `/grow <scale>` sizes the
 //! nearest, `/attack` sets it on the nearest player, `/label <key> <value>` stores a string on it
 //! (kept in its save) and `/info` says what it is. Right clicks tell the player what they
-//! held; a bone stores their UUID as the mob's `owner`.
+//! held; a sneak-click with a bone labels its owner, a click with beef feeds it.
+//! `/feed` consumes one beef for the nearest mob, `/gift <item> <count>` gives items,
+//! `/attackme` chooses the caller by UUID. `/paint <texture|none>` changes
+//! its texture, `/roar` sends sound and flame particles, `/attr <name> <value>` changes
+//! base attributes, `/heal <n>` heals, and `/info` reports mobGriefing, time and sky visibility.
+//! `/uses` reports last tick's item uses, `/burn` gives the nearest mob wither,
+//! and `/peek x y z` lists a block container's plain stacks.
 use horizon_mod_sdk::server::{
-    Area, Args, Argument, Entity, Order, Player, Point, Registration, ServerMod, Target, Walk,
-    entities, players,
+    Area, Args, Argument, AttributeChange, EffectChange, Entity, Order, Particles, Player, Point,
+    Registration, ServerMod, Sound, Target, Walk, entities, players, world,
 };
 
 /// How far the orders reach, in blocks.
@@ -31,6 +37,15 @@ fn near(player: &Player) -> Vec<Entity> {
     let mut near = entities::near(&player.dimension, at(player), REACH);
     near.retain(own);
     near
+}
+
+fn feed(player: &str, mob: u32) -> Result<bool, String> {
+    let taken = players::take_item(player, "minecraft:beef", 1)?;
+    if taken == 0 {
+        return Ok(false);
+    }
+    entities::give_orders(&[(mob, Order::Heal(4.0))])?;
+    Ok(true)
 }
 
 fn nearest(player: &Player) -> Result<Entity, String> {
@@ -59,6 +74,23 @@ impl ServerMod for MobOrders {
                 .command_with("grow", [Argument::number("scale")])
                 .command("attack")
                 .command_with("label", [Argument::word("key"), Argument::word("value")])
+                .command_with("paint", [Argument::text("texture")])
+                .command("roar")
+                .command_with("attr", [Argument::word("name"), Argument::number("value")])
+                .command_with("heal", [Argument::number("amount")])
+                .command("feed")
+                .command("gift")
+                .command("attackme")
+                .command("uses")
+                .command("burn")
+                .command_with(
+                    "peek",
+                    [
+                        Argument::integer("x", None, None),
+                        Argument::integer("y", None, None),
+                        Argument::integer("z", None, None),
+                    ],
+                )
                 .command("info"),
         ))
     }
@@ -70,11 +102,24 @@ impl ServerMod for MobOrders {
                 &click.player,
                 &format!("{} #{} noticed you (holding {item})", click.kind, click.mob),
             );
-            if item == "minecraft:bone" {
+            if item == "minecraft:bone" && click.sneaking {
                 let _ = entities::give_orders(&[(
                     click.mob,
-                    Order::SetData(vec![("owner".into(), Some(click.player))]),
+                    Order::SetData(vec![
+                        ("owner".into(), Some(click.player.clone())),
+                        ("tamed".into(), Some("true".into())),
+                    ]),
                 )]);
+            } else if item == "minecraft:beef" {
+                match feed(&click.player, click.mob) {
+                    Ok(true) => {
+                        players::tell(&click.player, "Fed one beef");
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        players::tell(&click.player, &error);
+                    }
+                }
             }
         }
     }
@@ -168,17 +213,177 @@ impl ServerMod for MobOrders {
                 entities::give_orders(&[(mob.id, Order::SetData(vec![(key, value)]))])?;
                 Ok(None)
             }
+            "roar" => {
+                let mob = nearest(player)?;
+                let at = Point {
+                    x: mob.x,
+                    y: mob.y + 1.0,
+                    z: mob.z,
+                };
+                entities::give_orders(&[
+                    (
+                        mob.id,
+                        Order::Sound(Sound {
+                            name: "minecraft:entity.ender_dragon.growl".into(),
+                            volume: 1.0,
+                            pitch: 1.0,
+                        }),
+                    ),
+                    (
+                        mob.id,
+                        Order::Particles(Particles {
+                            name: "minecraft:flame".into(),
+                            at,
+                            delta: Point {
+                                x: 0.5,
+                                y: 0.5,
+                                z: 0.5,
+                            },
+                            speed: 0.05,
+                            count: 32,
+                        }),
+                    ),
+                ])?;
+                Ok(Some(format!("{} roars", mob.kind)))
+            }
+            "paint" => {
+                let mob = nearest(player)?;
+                let texture = args.string("texture").unwrap_or_default();
+                let texture = (texture != "none").then(|| texture.to_string());
+                entities::give_orders(&[(mob.id, Order::Texture(texture))])?;
+                Ok(Some(format!("{} painted", mob.kind)))
+            }
+            "attr" => {
+                let mob = nearest(player)?;
+                let name = args.string("name").unwrap_or_default().to_owned();
+                let value = args.number("value").unwrap_or_default();
+                entities::give_orders(&[(
+                    mob.id,
+                    Order::Attribute(AttributeChange { name, value }),
+                )])?;
+                Ok(None)
+            }
+            "heal" => {
+                let mob = nearest(player)?;
+                let amount = args.number("amount").unwrap_or_default() as f32;
+                entities::give_orders(&[(mob.id, Order::Heal(amount))])?;
+                Ok(None)
+            }
+            "feed" => {
+                let mob = nearest(player)?;
+                Ok(Some(
+                    if feed(&player.id, mob.id)? {
+                        "Fed one beef"
+                    } else {
+                        "No beef to feed"
+                    }
+                    .into(),
+                ))
+            }
+            "gift" => {
+                // Registry ids contain ':' and '/', so use the command's free text.
+                let mut words = args.text().split_whitespace();
+                let item = words.next().ok_or("Usage: /gift <item> <count>")?;
+                let count = words
+                    .next()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .ok_or("Usage: /gift <item> <count>")?;
+                if words.next().is_some() {
+                    return Err("Usage: /gift <item> <count>".into());
+                }
+                players::give_item(&player.id, item, count)?;
+                Ok(Some(format!("Gave {count} {item}")))
+            }
+            "attackme" => {
+                let mob = nearest(player)?;
+                entities::give_orders(&[(
+                    mob.id,
+                    Order::Target(Target::Player(player.id.clone())),
+                )])?;
+                Ok(Some(format!("{} attacks {}", mob.kind, player.name)))
+            }
+            "uses" => {
+                let uses: Vec<String> = players::item_uses()
+                    .iter()
+                    .map(|click| {
+                        let target = click.target.as_ref().map_or_else(
+                            || "air".into(),
+                            |hit| format!("{} {} {} {}", hit.x, hit.y, hit.z, hit.face),
+                        );
+                        format!(
+                            "{}: {} ({}, sneaking {}) at {target}",
+                            click.player, click.item, click.hand, click.sneaking
+                        )
+                    })
+                    .collect();
+                Ok(Some(if uses.is_empty() {
+                    "No item uses last tick".into()
+                } else {
+                    uses.join("; ")
+                }))
+            }
+            "burn" => {
+                let mob = nearest(player)?;
+                entities::give_orders(&[(
+                    mob.id,
+                    Order::Effect(EffectChange {
+                        id: "minecraft:wither".into(),
+                        seconds: 10,
+                        amplifier: 0,
+                    }),
+                )])?;
+                Ok(Some(format!("{} withers for 10 seconds", mob.kind)))
+            }
+            "peek" => {
+                let x = args.integer("x").ok_or("Usage: /peek x y z")?;
+                let y = args.integer("y").ok_or("Usage: /peek x y z")?;
+                let z = args.integer("z").ok_or("Usage: /peek x y z")?;
+                let slots = world::container(&player.dimension, x, y, z)
+                    .ok_or("No container at that position")?;
+                let contents: Vec<String> = slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, stack)| {
+                        stack
+                            .as_ref()
+                            .map(|stack| format!("{index}: {} x{}", stack.item, stack.count))
+                    })
+                    .collect();
+                Ok(Some(format!(
+                    "{} slots: {}",
+                    slots.len(),
+                    if contents.is_empty() {
+                        "empty".into()
+                    } else {
+                        contents.join(", ")
+                    }
+                )))
+            }
             "info" => {
                 let mob = nearest(player)?;
+                let time = world::time(&mob.dimension);
+                let sky = world::can_see_sky(
+                    &mob.dimension,
+                    mob.x.floor() as i32,
+                    mob.y.floor() as i32,
+                    mob.z.floor() as i32,
+                );
                 let data: Vec<String> = mob.data.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 Ok(Some(format!(
-                    "{} #{}: scale {}, health {}/{}, data [{}]",
+                    "{} #{}: scale {}, health {}/{}, data [{}], mobGriefing {}, time {}/{}, day {}, rain {}, thunder {}, sky {}",
                     mob.kind,
                     mob.id,
                     mob.scale,
                     mob.health,
                     mob.max_health,
-                    data.join(", ")
+                    data.join(", "),
+                    world::game_rule("mobGriefing").unwrap_or_else(|| "unknown".into()),
+                    time.day_time,
+                    time.game_time,
+                    time.is_day,
+                    time.raining,
+                    time.thundering,
+                    sky
                 )))
             }
             _ => Err("Unknown command".into()),

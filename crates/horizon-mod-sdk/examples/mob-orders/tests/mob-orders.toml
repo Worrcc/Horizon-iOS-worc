@@ -13,3 +13,49 @@ expect.feedback = "0 mobs ordered"
 [[step]]
 command = "raise minecraft:zombie"
 expect.error = "minecraft:zombie is not a content mod's mob"
+
+
+[[step]]
+command = "paint none"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "roar"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "attr max_health 500"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "heal 20"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "feed"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "attackme"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "gift minecraft:beef 2"
+expect.feedback = "Gave 2 minecraft:beef"
+
+[[step]]
+command = "gift invalid 1"
+expect.error = "invalid item id invalid"
+
+# API level 12 polling and container reads need no game window.
+[[step]]
+command = "uses"
+expect.feedback = "No item uses last tick"
+
+[[step]]
+command = "burn"
+expect.error = "No content mod's mob within 32 blocks"
+
+[[step]]
+command = "peek 0 64 0"
+expect.error = "No container at that position"

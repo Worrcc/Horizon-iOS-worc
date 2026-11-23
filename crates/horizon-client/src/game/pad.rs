@@ -3,28 +3,36 @@
 //! the vanilla key mappings they are bound to, the left stick as an analog
 //! move vector and the right stick turning the view. `horizon-ctl pad`
 //! injects a virtual pad on top of the real one.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
+use horizon_client::held::Source;
 use horizon_client::{
     Result,
-    gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Rumble},
-    keybinds::{KeyBinds, key_code, mouse_button},
-    mouse::Rotation,
+    controller_notice::{Glyph, Notice, NoticeId, Priority},
+    controller_ui::Device,
+    gamepad::{self, Button, Edges, GlyphStyle, HealthWatch, PadState, Route, Rumble},
+    keymapping::SNEAK,
 };
 use serde_json::{Value, json};
 use std::time::Instant;
-use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode};
+use winit::keyboard::KeyCode;
 
 pub(super) const HELP: &[&str] = &[
-    "pad BUTTON down|up|tap         a virtual controller button (south east west north lb rb lt rt select start ls rs up down left right)",
+    "pad BUTTON[+BUTTON] down|up|tap   a virtual controller button or atomic chord (south east west north lb rb lt rt select start ls rs up down left right)",
     "pad stick left|right X Y       tilt a virtual stick (-1..1, up positive); 0 0 centres it",
     "pad trigger left|right VALUE   pull a virtual trigger (0..1)",
     "pad release                    centre and release the virtual controller",
     "pad status                     connected controllers, the active one and its state",
+    "pad connection connected|disconnected   as if a controller came or went at this game's own reader",
 ];
 
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
+    /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
+    pub(super) feed: Option<PadState>,
+    /// The pad behind `feed`.
+    feed_source: Option<PadId>,
     /// The real controllers and the DualSense's output.
     #[cfg(any(feature = "controllers", target_os = "ios"))]
     devices: hardware::Devices,
@@ -35,22 +43,42 @@ pub(super) struct Pads {
     /// Buttons a `pad ... tap` releases at the next poll.
     taps: Vec<Button>,
     edges: Edges,
-    /// The game tick each button went down in, and releases held back until
-    /// a tick has passed: vanilla samples keys once per tick, so a click
-    /// shorter than that (a quick stick click for sprint) would be lost.
-    pressed_at: [Option<u64>; 16],
-    late_releases: Vec<Button>,
+    activity: gamepad::Activity,
+    context: Option<Context>,
+    blocked_sticks: [bool; 2],
+    resolver: gamepad::Resolver,
+    clock: Option<Instant>,
+    /// Dispatched holds, including quick taps kept until the next simulation tick.
+    held_actions: std::collections::BTreeMap<String, u64>,
+    late_releases: Vec<String>,
     /// The merged state of the last poll.
     pub(super) state: PadState,
+    /// The hardware's buttons at the last poll, for `input-log`'s `pad`
+    /// events: the merged state hides which source moved.
+    last_hardware: PadState,
     /// The pad drove the game last (the mouse and keyboard hand control back).
     pub(super) in_use: bool,
     pub(super) style: GlyphStyle,
+    /// The controller driving this player, or else the first one its own reader sees.
+    pub(super) device: Option<Device>,
+    /// Controllers that came and went at this game's own reader since the last poll.
+    connections: Vec<Connection>,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
     /// The last vibration asked for, for `pad status`.
     last_rumble: Option<(&'static str, gamepad::Pulse)>,
     /// The player's health between polls (a drop is damage taken).
     health: HealthWatch,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Context {
+    screen: u64,
+    focus_navigation: bool,
+    focused: bool,
+    osk: bool,
+    dialog: bool,
+    enabled: bool,
 }
 
 #[cfg(all(feature = "controllers", not(target_os = "ios")))]
@@ -60,6 +88,31 @@ mod hardware;
 #[cfg(target_os = "ios")]
 #[path = "pad/hardware_ios.rs"]
 mod hardware;
+#[cfg(test)]
+mod parity_tests;
+pub(super) use hardware::{PadId, PadRouter};
+
+/// A controller coming or going, for this player's notice (`pad_connection_notice`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Connection {
+    /// A controller of this glyph family connected.
+    Connected(GlyphStyle),
+    /// One disconnected; `active`: it was driving this player.
+    Disconnected { active: bool },
+}
+
+/// What a controller did since the last frame.
+// iOS reads no pads for splitscreen (`hardware_ios.rs` routes none).
+#[cfg_attr(any(not(feature = "controllers"), target_os = "ios"), allow(dead_code))]
+pub(in crate::game) enum PadEvent {
+    Press(PadId, Button),
+    /// Disconnected (out of battery, unplugged, out of range).
+    Gone(PadId),
+    /// Connected again under the same id (Windows keeps it; macOS gives a new one). On Linux
+    /// gilrs gives a new device the slot of a disconnected one of the same model, so there this
+    /// can be another controller of that model.
+    Back(PadId),
+}
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
@@ -72,6 +125,39 @@ mod hardware {
     impl Pads {
         pub(super) fn read(&mut self) -> PadState {
             PadState::default()
+        }
+        pub(in crate::game) fn release_hardware(&mut self) {}
+    }
+
+    pub(in crate::game) type PadId = usize;
+    #[derive(Default)]
+    pub(in crate::game) struct PadRouter {}
+    impl PadRouter {
+        pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
+            Vec::new()
+        }
+        pub(in crate::game) fn device(
+            &self,
+            _: PadId,
+        ) -> Option<horizon_client::controller_ui::Device> {
+            None
+        }
+        pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
+        pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
+        pub(in crate::game) fn connected(&self, _: PadId) -> bool {
+            false
+        }
+        pub(in crate::game) fn uuid(&self, _: PadId) -> [u8; 16] {
+            [0; 16]
+        }
+        pub(in crate::game) fn state(&self, _: PadId) -> PadState {
+            PadState::default()
+        }
+        pub(in crate::game) fn name(&self, _: PadId) -> String {
+            String::new()
+        }
+        pub(in crate::game) fn style(&self, _: PadId) -> horizon_client::gamepad::GlyphStyle {
+            horizon_client::gamepad::GlyphStyle::Auto
         }
     }
 
@@ -93,14 +179,14 @@ impl Game<'_> {
     pub(super) fn trigger_feels(&self) -> (gamepad::TriggerFeel, gamepad::TriggerFeel) {
         let using = match self.using {
             Some((slot, ticks)) => match self.stack_in(slot) {
-                Some(s) if &*s.item == "minecraft:bow" => {
+                Some(s) if self.res.items().behavior(&s.item) == "minecraft:bow" => {
                     gamepad::TriggerFeel::Draw(gamepad::bow_power(ticks))
                 }
                 // TridentItem.THROW_THRESHOLD_TIME.
-                Some(s) if &*s.item == "minecraft:trident" => {
+                Some(s) if self.res.items().behavior(&s.item) == "minecraft:trident" => {
                     gamepad::TriggerFeel::Draw(ticks as f32 / 10.0)
                 }
-                Some(s) if &*s.item == "minecraft:crossbow" => {
+                Some(s) if self.res.items().behavior(&s.item) == "minecraft:crossbow" => {
                     gamepad::TriggerFeel::Draw(ticks as f32 / Self::charge_ticks(s).max(1) as f32)
                 }
                 Some(s) if self.blocks_attacks(s).is_some() => gamepad::TriggerFeel::Brace,
@@ -129,7 +215,7 @@ impl Game<'_> {
             .and_then(|id| self.mobs.iter().find(|m| m.id == id));
         let mount = mount.map_or("", |m| m.kind.id.as_str());
         let feel = |stack: Option<&horizon_client::items::ItemStack>| match stack
-            .map(|s| (s, &*s.item))
+            .map(|s| (s, self.res.items().behavior(&s.item)))
         {
             Some((s, "minecraft:crossbow")) if s.data().is_some_and(|d| !d.charged.is_empty()) => {
                 gamepad::TriggerFeel::Click
@@ -156,41 +242,163 @@ impl Game<'_> {
 }
 
 impl Pads {
+    /// The digital buttons the person's pad changed since the last poll.
+    pub(super) fn hardware_edges(&mut self, hardware: PadState) -> Vec<(Button, bool)> {
+        let edges = Button::ALL
+            .into_iter()
+            .filter_map(|button| {
+                let was = self.last_hardware.held(button);
+                let now = hardware.held(button);
+                (was != now).then_some((button, now))
+            })
+            .collect();
+        self.last_hardware = hardware;
+        edges
+    }
+
+    /// A replay's pad button, in place of `pad`'s line.
+    pub(super) fn inject_button(&mut self, button: Button, down: bool) {
+        self.injected.set(button, down);
+        match button {
+            Button::LeftTrigger => self.injected.triggers[0] = if down { 1.0 } else { 0.0 },
+            Button::RightTrigger => self.injected.triggers[1] = if down { 1.0 } else { 0.0 },
+            _ => {}
+        }
+    }
+
+    /// Splitscreen: this player's pad state, from `source`. Another pad, or
+    /// none: the old one's A going away isn't a release.
+    pub(super) fn feed_from(&mut self, source: Option<PadId>, state: PadState) {
+        if self.feed_source != source {
+            self.feed_source = source;
+            self.menu.armed = None;
+        }
+        self.feed = Some(state);
+    }
+    /// The device the controller settings name: a real one, else `horizon-ctl`'s virtual pad.
+    pub(super) fn device_or_virtual(&self) -> Option<Device> {
+        self.device.clone().or_else(|| {
+            self.in_use.then(|| Device {
+                name: "Virtual controller".to_owned(),
+                vendor: None,
+                product: None,
+            })
+        })
+    }
+    /// A replay ended: let go of everything it held.
+    pub(super) fn clear_injected(&mut self) {
+        self.menu.armed = None;
+        self.injected = PadState::default();
+    }
+
+    /// Resolved holds only: raw chord members must never leak into movement or key handoff.
+    pub(super) fn holds_action(&self, _settings: &gamepad::PadSettings, action: &str) -> bool {
+        self.held_actions.contains_key(action)
+    }
+
     /// A new player entity took over (spawn, respawn, a server joined, a
     /// dimension change): its health is not compared with the old one's.
     pub(super) fn player_replaced(&mut self) {
         self.health.forget();
     }
+
+    /// The active pad is a Nintendo one going by its letters.
+    fn by_letter(&self, settings: &gamepad::PadSettings) -> bool {
+        self.style == GlyphStyle::Nintendo && settings.nintendo_letters
+    }
 }
 
 impl Game<'_> {
+    fn pad_context(&self) -> Context {
+        Context {
+            screen: self.key_screen(),
+            focus_navigation: self.pad_navigation_mode(),
+            focused: self.focused,
+            osk: self.pad.menu.osk.is_some(),
+            dialog: self.dialog_open() || self.code_of_conduct.is_some(),
+            enabled: self.settings.controller.enabled,
+        }
+    }
+
     /// Once per loop iteration: read the pads and act on button changes.
-    pub(super) fn poll_pads(&mut self, event_loop: &ActiveEventLoop) {
-        let settings = &self.settings.controller;
-        if !settings.enabled {
-            self.pad_output_off();
-            if self.pad.state != PadState::default() {
-                self.pad.state = PadState::default();
-                for (button, down) in self.pad.edges.release_all() {
-                    self.pad_edge(event_loop, button, down);
-                }
+    pub(super) fn poll_pads(&mut self, event_loop: &dyn EventLoopCtl) {
+        self.pad.virtual_input = self.pad.injected != PadState::default();
+        let context = self.pad_context();
+        if let Some(old) = self.pad.context.filter(|old| *old != context) {
+            if old.screen != context.screen {
+                self.pad_remember_focus(old.screen);
             }
+            self.pad_cancel_inputs(event_loop);
+        }
+        self.pad.context = Some(context);
+        if !self.settings.controller.enabled {
+            self.pad_output_off();
+            self.pad_cancel_inputs(event_loop);
+            self.pad.state = PadState::default();
+            self.pad.in_use = false;
+            // The keyboard's menu focus follows its widget all the same.
+            self.pad_menu_frame(event_loop);
             return;
         }
-        let hardware = self.pad.read();
-        self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
-        let state = hardware.merge(&self.pad.injected);
-        self.pad.virtual_input = self.pad.injected != PadState::default();
+        let hardware = match self.pad.feed {
+            Some(state) => state,
+            None => self.pad.read(),
+        };
+        // A Nintendo pad going by its letters is read that way: its own, or the one
+        // splitscreen's router feeds this player.
+        let hardware = if self.pad.by_letter(&self.settings.controller) {
+            hardware.by_letter()
+        } else {
+            hardware
+        };
+        // A person's pad, for `input-log` and the repro recording; the virtual
+        // pad is an agent's `pad` line and is recorded as that.
+        let hardware_edges = self.pad.hardware_edges(hardware);
+        for (button, down) in hardware_edges {
+            self.note_input(
+                super::input_trace::InputOrigin::User,
+                super::input_trace::TraceKind::Pad {
+                    button: button.name().to_owned(),
+                    action: if down { "down" } else { "up" }.to_owned(),
+                },
+            );
+        }
+        for change in std::mem::take(&mut self.pad.connections) {
+            self.pad_connection_notice(change);
+        }
+        let style = self.settings.controller.glyphs.resolve(self.pad.style);
+        self.ui.options.pad_style = style;
+        // Nintendo glyphs on a pad going by its letters name the button playing each part.
+        self.ui.options.pad_by_letter =
+            style == GlyphStyle::Nintendo && self.pad.by_letter(&self.settings.controller);
+        self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
+        let mut state = hardware.merge(&self.pad.injected);
+        let activity = self.pad.activity.observe(&state, &self.settings.controller);
+        for (i, (stick, deadzone)) in [
+            (&mut state.left, self.settings.controller.move_deadzone),
+            (&mut state.right, self.settings.controller.look_deadzone),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if gamepad::radial(*stick, deadzone) == [0.0; 2] {
+                self.pad.blocked_sticks[i] = false;
+            }
+            if self.pad.blocked_sticks[i] || !self.pad_focused() {
+                *stick = [0.0; 2];
+            }
+        }
         for button in std::mem::take(&mut self.pad.taps) {
-            self.pad.injected.set(button, false);
+            self.pad.inject_button(button, false);
         }
         let threshold = self.settings.controller.trigger_threshold;
         let edges = self.pad.edges.update(&state, threshold);
-        if state.active(&self.settings.controller) {
+        if activity && self.pad_focused() {
             self.last_input = Instant::now();
             self.pad.in_use = true;
-            #[cfg(target_os = "ios")]
-            self.touch_hide(event_loop);
+            if super::touch::enabled() {
+                self.touch_hide(event_loop);
+            }
         }
         self.pad.state = state;
         self.pad_output_frame();
@@ -205,36 +413,162 @@ impl Game<'_> {
             self.pad_rumble(Rumble::Hurt(damage));
         }
         let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
-        for button in std::mem::take(&mut self.pad.late_releases) {
-            if !ticking || self.pad.pressed_at[button as usize] != Some(self.ticks) {
-                self.pad_button_logged(event_loop, button, false);
+        for action in std::mem::take(&mut self.pad.late_releases) {
+            if !ticking || self.pad.held_actions.get(&action) != Some(&self.ticks) {
+                if let Err(e) = self.pad_action(&action, false) {
+                    log::warn!("Horizon: releasing controller action {action}: {e}");
+                }
             } else {
-                self.pad.late_releases.push(button);
+                self.pad.late_releases.push(action);
             }
         }
+        // Gameplay edges are a batch so simultaneous overlapping chords use binding order.
+        if !self.pad_in_menu() && self.pad_focused() {
+            if !self.captured && self.focused && edges.iter().any(|(_, d)| *d) {
+                self.capture(true);
+            }
+            let start_bound = self
+                .pad_bindings()
+                .iter()
+                .any(|(_, b)| b.mask() & (1 << Button::Start as u32) != 0);
+            if !start_bound && edges.contains(&(Button::Start, true)) {
+                if let Err(e) = self.pad_back() {
+                    log::warn!("Horizon: controller pause: {e}");
+                }
+            } else {
+                let edges: Vec<_> = edges
+                    .into_iter()
+                    .filter(|(b, _)| *b != Button::Start || start_bound)
+                    .collect();
+                self.pad_resolve(&edges);
+            }
+            let changed = self
+                .pad
+                .context
+                .is_some_and(|old| old != self.pad_context());
+            if changed {
+                self.pad_cancel_inputs(event_loop);
+                self.pad.context = Some(self.pad_context());
+            }
+            self.pad_menu_frame(event_loop);
+            return;
+        }
         for (button, down) in edges {
-            self.pad_edge(event_loop, button, down);
+            self.pad_button_logged(event_loop, button, down);
+            let context = self.pad_context();
+            if let Some(old) = self.pad.context.filter(|old| *old != context) {
+                if old.screen != context.screen {
+                    self.pad_remember_focus(old.screen);
+                }
+                self.pad_cancel_inputs(event_loop);
+                self.pad.context = Some(context);
+                break;
+            }
+        }
+        if !self.pad_in_menu() && self.pad_focused() {
+            self.pad_resolve(&[]);
         }
         self.pad_menu_frame(event_loop);
     }
 
-    fn pad_edge(&mut self, event_loop: &ActiveEventLoop, button: Button, down: bool) {
-        let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
-        if down {
-            // Pressed again before its held-back release went out.
-            if let Some(i) = self.pad.late_releases.iter().position(|b| *b == button) {
-                self.pad.late_releases.remove(i);
-                self.pad_button_logged(event_loop, button, false);
+    fn pad_bindings(&self) -> Vec<(String, gamepad::Binding)> {
+        let mods = self.mod_pad_bindings();
+        self.settings
+            .controller
+            .configured()
+            .into_iter()
+            .filter(|(a, _)| !a.starts_with("mod.") || mods.iter().any(|m| m.action == *a))
+            .collect()
+    }
+    fn pad_resolve(&mut self, edges: &[(Button, bool)]) {
+        let bindings = self.pad_bindings();
+        let now = self.pad.clock.get_or_insert_with(Instant::now).elapsed();
+        let events = self.pad.resolver.advance(now, edges, &bindings);
+        let chord_members = events
+            .iter()
+            .filter(|(_, down)| *down)
+            .filter_map(|(a, _)| {
+                bindings.iter().find_map(|(name, b)| {
+                    (name == a && matches!(b, gamepad::Binding::Chord(_, _))).then_some(b.mask())
+                })
+            })
+            .fold(0, |mask, members| mask | members);
+        let member_single = |action: &str| {
+            bindings.iter().any(|(a, b)| {
+                a == action
+                    && matches!(b, gamepad::Binding::Single(_))
+                    && b.mask() & chord_members != 0
+            })
+        };
+        // A quick single tap may already await its simulation tick. A newly completed chord
+        // must release that hold too, even though the pure resolver already emitted its up.
+        for action in self.pad.late_releases.clone() {
+            if member_single(&action) {
+                self.pad.late_releases.retain(|a| a != &action);
+                if let Err(e) = self.pad_action(&action, false) {
+                    log::warn!("Horizon: releasing controller action {action}: {e}");
+                }
             }
-            self.pad.pressed_at[button as usize] = Some(self.ticks);
-        } else if ticking && self.pad.pressed_at[button as usize] == Some(self.ticks) {
-            self.pad.late_releases.push(button);
-            return;
         }
-        self.pad_button_logged(event_loop, button, down);
+        let context = self.pad_context();
+        for (action, down) in events {
+            if down && self.pad.late_releases.contains(&action) {
+                self.pad.late_releases.retain(|a| a != &action);
+                let _ = self.pad_action(&action, false);
+            }
+            let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
+            if !down
+                && !member_single(&action)
+                && !action.starts_with("mod.")
+                && ticking
+                && self.pad.held_actions.get(&action) == Some(&self.ticks)
+            {
+                if !self.pad.late_releases.contains(&action) {
+                    self.pad.late_releases.push(action);
+                }
+            } else if let Err(e) = self.pad_action(&action, down) {
+                log::warn!("Horizon: controller action {action}: {e}");
+            }
+            if self.pad_context() != context {
+                break;
+            }
+        }
     }
 
-    fn pad_button_logged(&mut self, event_loop: &ActiveEventLoop, button: Button, down: bool) {
+    /// End held actions and captures before another context receives input.
+    fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
+        // Before the releases below: a cancelled press must not click.
+        self.pad.menu.armed = None;
+        let held_sticks = [
+            gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
+                != [0.0; 2],
+            gamepad::radial(self.pad.state.right, self.settings.controller.look_deadzone)
+                != [0.0; 2],
+        ];
+        for (blocked, held) in self.pad.blocked_sticks.iter_mut().zip(held_sticks) {
+            *blocked |= held;
+        }
+        self.pad.state.left = [0.0; 2];
+        self.pad.state.right = [0.0; 2];
+        self.pad.late_releases.clear();
+        self.pad.edges.cancel();
+        self.pad.resolver.cancel();
+        for action in self.pad.held_actions.keys().cloned().collect::<Vec<_>>() {
+            if let Err(e) = self.pad_action(&action, false) {
+                log::warn!("Horizon: releasing controller action {action}: {e}");
+            }
+        }
+        self.pad_cancel_menu(event_loop);
+    }
+
+    pub(super) fn pad_yield_input(&mut self, event_loop: &dyn EventLoopCtl) {
+        if self.pad.in_use {
+            self.pad.in_use = false;
+            self.pad_cancel_inputs(event_loop);
+        }
+    }
+
+    fn pad_button_logged(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
         if let Err(e) = self.pad_button(event_loop, button, down) {
             log::warn!("Horizon: controller {}: {e}", button.name());
         }
@@ -248,7 +582,7 @@ impl Game<'_> {
 
     fn pad_button(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         button: Button,
         down: bool,
     ) -> Result<()> {
@@ -261,55 +595,90 @@ impl Game<'_> {
             self.capture(true);
         }
         if !playing {
-            self.pad_menu_button(event_loop, button, down)?;
-            if down {
-                return Ok(());
-            }
-        } else if button == Button::Start {
+            return self.pad_menu_button(event_loop, button, down);
+        }
+        // Start remains the ordinary pause shortcut unless explicitly used in a binding.
+        if button == Button::Start
+            && !self
+                .pad_bindings()
+                .iter()
+                .any(|(_, b)| b.mask() & (1 << Button::Start as u32) != 0)
+        {
             return if down { self.pad_back() } else { Ok(()) };
         }
-        // Releases always reach the mappings, so nothing stays held when a
-        // screen opened in between.
-        for action in self.settings.controller.actions_of(button) {
-            self.pad_action(action, down)?;
-        }
+        self.pad_resolve(&[(button, down)]);
         Ok(())
     }
 
     /// A bound action: a vanilla mapping acts as its default key or mouse
     /// button, like a rebound keyboard key.
     fn pad_action(&mut self, action: &str, down: bool) -> Result<()> {
-        match action {
-            gamepad::HOTBAR_PREVIOUS | gamepad::HOTBAR_NEXT => {
+        if down {
+            self.pad.held_actions.insert(action.to_owned(), self.ticks);
+        } else {
+            self.pad.held_actions.remove(action);
+        }
+        if action.starts_with("mod.") {
+            self.mod_pad_key(action, down);
+            return Ok(());
+        }
+        let Some(route) = gamepad::route(action) else {
+            log::warn!("Horizon: controller action {action} has no handler");
+            return Ok(());
+        };
+        match route {
+            Route::HotbarStep { next } => {
                 if down && self.screen == Screen::Playing {
-                    self.selected =
-                        gamepad::hotbar_step(self.selected, action == gamepad::HOTBAR_NEXT);
+                    self.selected = gamepad::hotbar_step(self.selected, next);
                 }
                 Ok(())
             }
-            "key.sneak"
+            Route::Sneak
                 if self.settings.controller.toggle_sneak && !self.settings.toggle_crouch =>
             {
-                // A stick click flips sneaking instead of holding it.
+                // A stick click flips sneaking instead of holding it, as
+                // vanilla's toggle crouch does: a screen opening releases it
+                // and closing restores it (ToggleKeyMapping).
+                if !down {
+                    return Ok(());
+                }
+                let screen_open = self.screen != Screen::Playing || self.title.is_some();
+                let was = self.keys.contains(&KeyCode::ShiftLeft);
+                self.toggles.pad_toggle(SNEAK, screen_open);
+                self.sync_toggle(SNEAK);
+                if !was && self.keys.contains(&KeyCode::ShiftLeft) {
+                    // The pad's latch: a keyboard handoff leaves it.
+                    self.keys.press(KeyCode::ShiftLeft, Source::Pad);
+                    self.keys.release(&KeyCode::ShiftLeft, Source::Keyboard);
+                }
+                self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft)
+            }
+            Route::Sneak => self.mapped_key(
+                KeyCode::ShiftLeft,
+                down,
+                false,
+                KeyCode::ShiftLeft,
+                Source::Pad,
+            ),
+            Route::Screenshot => {
                 if down {
-                    let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
-                    self.mapped_key(KeyCode::ShiftLeft, !sneaking, false)?;
+                    self.screenshot_action();
                 }
                 Ok(())
             }
-            _ => {
-                let default = KeyBinds::default_of(action);
-                if let Some(button) = mouse_button(default) {
-                    if self.title.is_none() && self.screen == Screen::Playing {
-                        self.play_mouse(button, down)?;
-                    }
-                    Ok(())
-                } else if let Some(key) = key_code(default) {
-                    self.mapped_key(key, down, false)
-                } else {
-                    Ok(())
+            Route::SmoothCamera => {
+                if down {
+                    self.smooth_camera_action();
                 }
+                Ok(())
             }
+            Route::Mouse(button) => {
+                if !down || (self.title.is_none() && self.screen == Screen::Playing) {
+                    self.play_mouse(button, down)?;
+                }
+                Ok(())
+            }
+            Route::Key(key) => self.mapped_key(key, down, false, key, Source::Pad),
         }
     }
 
@@ -333,7 +702,7 @@ impl Game<'_> {
             self.close_book();
             return Ok(());
         }
-        self.key_pressed(KeyCode::Escape)
+        self.key_pressed(KeyCode::Escape, KeyCode::Escape)
     }
 
     /// The left stick as the move vector, while playing.
@@ -361,15 +730,13 @@ impl Game<'_> {
         if yaw == 0.0 && pitch == 0.0 {
             return;
         }
-        let mut rotation = Rotation {
-            x_rot: self.pitch,
-            y_rot: self.yaw,
-            x_rot_o: self.pitch,
-            y_rot_o: self.yaw,
-        };
-        rotation.turn(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
-        self.yaw = rotation.y_rot;
-        self.pitch = rotation.x_rot;
+        // look_delta returns degrees; look_turn takes Entity.turn units (0.15 degrees).
+        let (x, y) = self.assisted_turn(
+            (f64::from(yaw / 0.15), f64::from(pitch / 0.15)),
+            seconds,
+            true,
+        );
+        self.device_look_turn(x, y, super::aim_assist::LookDevice::Controller);
     }
 
     /// Vibrate the active pad, when vibration is on and the pad is the one
@@ -387,6 +754,40 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl pad ...`.
+    /// A controller came or went with no splitscreen router: say so on this view, in its one
+    /// notice. Nothing here decides what the controller drives; a player who turned controllers
+    /// off isn't told about them.
+    fn pad_connection_notice(&mut self, change: Connection) {
+        if !self.settings.controller.enabled {
+            return;
+        }
+        let split =
+            |key: &str| horizon_client::lang::get(&format!("horizon.splitscreen.prompt.{key}"));
+        let notice = match change {
+            Connection::Connected(family) => Notice::new(
+                NoticeId::Connection,
+                Priority::Info,
+                split("controller_connected"),
+                horizon_client::lang::get("horizon.pad.notice.connected.press"),
+            )
+            .with_glyph(Glyph {
+                button: Button::South,
+                style: self.settings.controller.glyphs.resolve(family),
+            }),
+            Connection::Disconnected { active } => Notice::new(
+                NoticeId::Connection,
+                if active {
+                    Priority::Attention
+                } else {
+                    Priority::Info
+                },
+                split("controller_disconnected"),
+                split("controller_disconnected.hint"),
+            ),
+        };
+        self.split_hud.notice.raise(notice);
+    }
+
     pub(super) fn pad_command(&mut self, words: &[&str]) -> Result<Value> {
         let arg = |i: usize| -> Result<&str> {
             words
@@ -417,6 +818,9 @@ impl Game<'_> {
                         "reason": why, "strong": p.strong, "weak": p.weak, "ms": p.millis,
                     })),
                     "in_use": self.pad.in_use,
+                    "notice": self.split_hud.notice.showing().map(|(title, body)| {
+                        json!({ "title": title, "body": body })
+                    }),
                     "menu": self.pad_menu_status(),
                     "held": held,
                     "left": s.left,
@@ -430,7 +834,22 @@ impl Game<'_> {
                 }
                 Ok(status)
             }
+            "connection" => {
+                let change = match arg(2)? {
+                    "connected" => Connection::Connected(GlyphStyle::PlayStation),
+                    "disconnected" => Connection::Disconnected { active: true },
+                    other => {
+                        return Err(format!(
+                            "connection must be connected or disconnected, not {other}"
+                        )
+                        .into());
+                    }
+                };
+                self.pad.connections.push(change);
+                Ok(json!({ "ok": true }))
+            }
             "release" => {
+                self.pad.menu.armed = None;
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))
@@ -456,19 +875,24 @@ impl Game<'_> {
                 Ok(json!({ "ok": true }))
             }
             name => {
-                let button = Button::parse(name)
-                    .ok_or_else(|| format!("unknown pad button {name}; {}", HELP[0]))?;
-                match arg(2)? {
-                    "down" => self.pad.injected.set(button, true),
-                    "up" => self.pad.injected.set(button, false),
-                    "tap" => {
-                        self.pad.injected.set(button, true);
-                        self.pad.taps.push(button);
-                    }
+                let binding = gamepad::Binding::parse(name)
+                    .ok_or_else(|| format!("unknown pad button or chord {name}; {}", HELP[0]))?;
+                let down = match arg(2)? {
+                    "down" | "tap" => true,
+                    "up" => false,
                     other => {
                         return Err(
                             format!("pad action must be down, up or tap, not {other}").into()
                         );
+                    }
+                };
+                for button in Button::ALL {
+                    if binding.mask() & (1 << button as u32) == 0 {
+                        continue;
+                    }
+                    self.pad.inject_button(button, down);
+                    if arg(2)? == "tap" {
+                        self.pad.taps.push(button);
                     }
                 }
                 Ok(json!({ "ok": true }))

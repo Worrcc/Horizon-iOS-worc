@@ -5,6 +5,25 @@ whoever picks this up next, person or agent. [README.md](README.md) is the playe
 **The next big piece of work, porting Ice and Fire's AI, has its own plan:
 [ICE-AND-FIRE-AI-PLAN.md](ICE-AND-FIRE-AI-PLAN.md).**
 
+## Ice and Fire and Lootr (branch `claude/iaf-api-1`, 2026-11-01)
+
+The Ice and Fire port itself lives outside this repo (LGPL): `~/Projects/iceandfire-horizon`
+on the player's machine; its **`HANDOFF.md`** is the handoff for that work, `NEXT.md` the list.
+This branch (from `e4b2d1ce4`, pushed; CI builds the app) adds the general Horizon pieces:
+
+| Commit | What |
+|---|---|
+| `0db1a5e80`, `d5d1f0ced` | API 9: per-mob texture, sound, particles orders; game rules, difficulty; attribute and heal orders; world time and sky |
+| `81a71f745`, `0958c879f` | Entity JSON `fall_damage_multiplier`, `safe_fall_distance`, `persistent` |
+| `b38279bb0` | API 10: players.take-item/give-item, interaction sneaking/hand, Target::Player |
+| `377c502b5`, `adce77e80` | Clicks on scaled mobs; mount/dismount + rider input; clients apply `minecraft:scale` |
+| `f5ba1e41d` | API 11: world.generated-chunks (worldgen for mods), players.facing |
+| `c32e70404` | **Lootr's core (MIT, Noobanidus) built in**: per-player loot in loot-table containers, sneak to break; `docs/lootr.md` |
+| `b0c97d3a3` | world.set-loot-table; loot ids without a namespace read as `minecraft:` |
+| `6cb2ad169`, `6239879d3` | port-pack carries `layers` blocks as snow; API 12: item uses, attacks, effects, containers, place-structure |
+
+How to build a port like this: the skill `~/.claude/skills/horizon-wasm-mod-port/SKILL.md`.
+
 ## The state of things
 
 - **Branches** in `Worrcc/Horizon-iOS-worc` (public). No pull requests have been opened.

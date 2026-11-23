@@ -47,10 +47,7 @@ mod with_mods {
                 return;
             }
             let extras = self.settings.extras.clone();
-            let dir = Self::options_path()
-                .parent()
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_default();
+            let dir = Self::game_dir();
             let (tx, rx) = channel();
             self.mods.moved.running = Some(rx);
             let spawned = std::thread::Builder::new()

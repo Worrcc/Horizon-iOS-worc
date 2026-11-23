@@ -13,7 +13,8 @@ on:
   pull_request:
   workflow_dispatch:
 permissions:
-  contents: read
+  # write: a push publishes the build as a release and lists it in the sideloading source.
+  contents: write
 concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
@@ -34,7 +35,14 @@ jobs:
         # variable, not a secret, since client IDs are public. Unset, the app plays offline.
         env:
           HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
-        run: ios/build.sh
+        run: |
+          # A pushed build goes to the sideloading source under a plain rising version.
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            base="$(sed -n 's/^version = "\(.*\)"/\1/p' launcher/Cargo.toml | head -1)"
+            export HORIZON_IOS_SOURCE_VERSION="$base.${{ github.run_number }}"
+            echo "HORIZON_IOS_SOURCE_VERSION=$HORIZON_IOS_SOURCE_VERSION" >> "$GITHUB_ENV"
+          fi
+          ios/build.sh
       - name: Check the bundle
         run: |
           plutil -lint target/ios/Horizon.app/Info.plist
@@ -55,3 +63,45 @@ jobs:
             target/ios/block_info.hmod
           if-no-files-found: error
           retention-days: 30
+      - name: Publish to the sideloading source
+        # A release with the IPA, and apps.json on the branch ios-source: the AltStore-format
+        # source LiveContainer reads (ios/README.md, "Updating from a source"). The ten newest
+        # builds of every branch stay listed; older releases are deleted.
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="ios-${{ github.run_number }}"
+          gh release create "$tag" target/ios/Horizon.ipa target/ios/block_info.hmod \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Horizon iOS $HORIZON_IOS_SOURCE_VERSION ($GITHUB_REF_NAME)" \
+            --notes "Unsigned build of $GITHUB_REF_NAME at ${GITHUB_SHA:0:9}, for sideloading. No game files inside."
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          src="$RUNNER_TEMP/ios-source"
+          # Another branch's build may publish at the same moment: start again from its result.
+          for attempt in 1 2 3 4 5; do
+            rm -rf "$src"; git worktree prune
+            if git fetch origin ios-source 2>/dev/null; then
+              git worktree add --detach "$src" FETCH_HEAD
+            else
+              git worktree add --detach "$src"
+              git -C "$src" checkout --orphan ios-source
+              git -C "$src" rm -rfq .
+            fi
+            cp ios/App/Icons/AppIcon-1024.png "$src/icon.png"
+            ios/scripts/publish-source.py "$src/apps.json" target/ios/Horizon.ipa \
+              "$HORIZON_IOS_SOURCE_VERSION" "$tag" > "$RUNNER_TEMP/dropped"
+            git -C "$src" add apps.json icon.png
+            git -C "$src" commit -qm "Horizon iOS $HORIZON_IOS_SOURCE_VERSION ($GITHUB_REF_NAME)"
+            if git -C "$src" push origin HEAD:refs/heads/ios-source; then
+              while read -r old; do
+                [ -n "$old" ] && gh release delete "$old" --yes --cleanup-tag || true
+              done < "$RUNNER_TEMP/dropped"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "could not push the source" >&2
+          exit 1

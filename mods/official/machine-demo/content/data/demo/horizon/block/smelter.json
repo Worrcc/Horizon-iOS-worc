@@ -1,0 +1,40 @@
+{
+  "template": "minecraft:stone",
+  "container": {
+    "slots": 9,
+    "title": "block.demo.smelter",
+    "faces": {
+      "up": [
+        0
+      ],
+      "down": [
+        1
+      ],
+      "north": [
+        0,
+        1
+      ],
+      "south": [
+        0,
+        1
+      ],
+      "west": [
+        0,
+        1
+      ],
+      "east": [
+        0,
+        1
+      ]
+    },
+    "insert": [
+      0
+    ],
+    "extract": [
+      1
+    ],
+    "results": [
+      1
+    ]
+  }
+}

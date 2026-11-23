@@ -20,8 +20,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 target=aarch64-apple-ios
 platform=iPhoneOS
-profile_dir=release
-cargo_profile=(--release)
+profile_dir=ios-release
+cargo_profile=(--profile ios-release)
 identity=""
 provision=""
 bundle_id="${HORIZON_IOS_BUNDLE_ID:-io.github.worrcc.horizon}"
@@ -58,6 +58,15 @@ fi
 export IPHONEOS_DEPLOYMENT_TARGET=15.0
 rustup target add "$target" >/dev/null
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/launcher/Cargo.toml" | head -1)"
+# The version LiveContainer lists carries the commit (CI's GITHUB_SHA, else git), so the
+# installed build can be told apart before it is launched.
+commit="${GITHUB_SHA:-$(git -C "$root" rev-parse HEAD 2>/dev/null || true)}"
+display_version="$version${commit:+ (${commit:0:9})}"
+# A CI build published to the sideloading source (.github/workflows/ios.yml) takes a plain rising
+# version instead, the one the source lists it under, so an update list can compare them.
+if [ -n "${HORIZON_IOS_SOURCE_VERSION:-}" ]; then
+    display_version="$HORIZON_IOS_SOURCE_VERSION"
+fi
 
 echo "Building horizon-client for $target ($profile_dir)..."
 # `mods`: code mods, on wasmtime's Pulley interpreter (no JIT on iOS; crates/horizon-mods).
@@ -70,7 +79,7 @@ app="$out/Horizon.app"
 rm -rf "$app" "$out/Payload" "$out/Horizon.ipa"
 mkdir -p "$app"
 cp "$binary" "$app/horizon-client"
-sed -e "s/@VERSION@/$version/g" -e "s/@BUNDLE_ID@/$bundle_id/g" -e "s/@PLATFORM@/$platform/g" \
+sed -e "s/@DISPLAY_VERSION@/$display_version/g" -e "s/@VERSION@/$version/g" -e "s/@BUNDLE_ID@/$bundle_id/g" -e "s/@PLATFORM@/$platform/g" \
     "$root/ios/App/Info.plist" > "$app/Info.plist"
 plutil -lint "$app/Info.plist" >/dev/null
 cp "$root"/ios/App/Icons/AppIcon*@*.png "$app/"

@@ -1,0 +1,9 @@
+id = "behaviour_demo"
+name = "Behaviour Demo"
+version = "0.1.0"
+description = "API 29 server behaviour hooks demonstration."
+authors = ["Horizon"]
+api = "0.3"
+side = "server"
+capabilities = ["world", "players"]
+experimental = ["world", "players"]

@@ -1,19 +1,29 @@
 //! Loading and calling mods with wasmtime's component model.
 use crate::manifest::{Manifest, Package, Side};
 use server_bindings::{
-    HorizonServerMod,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
     horizon::mods::{entities, players, world as mod_world},
 };
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 use wasmtime::{
-    Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
-    component::{Component, HasSelf, Linker},
+    Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
+    component::{HasSelf, Instance, Linker, TypedFunc, Val},
 };
+
+mod budget;
+mod container_host;
+mod engine;
+pub use budget::LimitMode;
+pub use container_host::{
+    ContainerButton, ContainerPart, ContainerPointerKind, ContainerReply, ContainerRequest,
+    ContainerShift, ContainerSlot, ContainerStack, ContainerState,
+};
+use container_host::{ContainerCallbacks, ContainerData, ContainerHost};
 
 mod bindings {
     wasmtime::component::bindgen!({
@@ -26,7 +36,7 @@ mod server_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "horizon-server-mod",
-        additional_derives: [PartialEq],
+        additional_derives: [PartialEq, serde::Deserialize],
         with: {
             "horizon:mods/log": super::bindings::horizon::mods::log,
             "horizon:mods/storage": super::bindings::horizon::mods::storage,
@@ -43,7 +53,7 @@ mod ui_bindings {
     });
 }
 pub use bindings::horizon::mods::{
-    game::{Clock, Hit, Player},
+    game::{Clock, EntityHit, Hit, Player},
     hud::{Corner, Line},
 };
 use bindings::{
@@ -53,38 +63,107 @@ use bindings::{
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, Decision,
+        Hand as BehaviourHand, ServerCommand,
     },
     horizon::mods::entities::{
-        Area as EntityArea, Entity as ModEntity, Interaction as EntityInteraction,
-        Order as EntityOrder, Point as EntityPoint, Target as EntityTarget, Walk as EntityWalk,
+        Area as EntityArea, AttributeChange as EntityAttributeChange, Death, EffectChange,
+        Entity as ModEntity, HurtEvent, Interaction as EntityInteraction, Mount as EntityMount,
+        Order as EntityOrder, Particles as EntityParticles, Point as EntityPoint,
+        Rider as EntityRider, Sound as EntitySound, StrikeHit, Target as EntityTarget,
+        Walk as EntityWalk,
     },
-    horizon::mods::players::{GameMode, Player as ServerPlayer},
-    horizon::mods::world::BlockChange,
+    horizon::mods::menus::MenuItem,
+    horizon::mods::players::{
+        ActiveEffect, Attack as PlayerAttack, BlockHit as PlayerBlockHit, EquipmentSlots, GameMode,
+        ItemFilter, ItemUse as PlayerItemUse, Look as PlayerLook, Player as ServerPlayer,
+        PlayerDamage, PlayerDeath, PlayerRespawn, PlayerVitals, Point as PlayerPoint,
+        TeleportTarget,
+    },
+    horizon::mods::world::{
+        BlastKind, BlockChange, BlockChangePos, BreakOptions, ChunkPos, DustColor,
+        ItemStack as ContainerItemStack, ParticleBurst, Point as WorldPoint, Stack as MachineStack,
+        StackInfo, StackInfoWithData, WorldTime,
+    },
 };
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
-type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
+mod server_callbacks;
+use server_callbacks::ServerCallbacks as HorizonServerMod;
+type ServerEvents = HorizonServerMod;
+mod storage_api;
+pub use storage_api::*;
+mod machines;
+pub use machines::*;
+mod behaviour;
+mod player_world;
+pub use behaviour::*;
+pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
+mod channel_host;
+pub use channel_host::{CHANNEL_DATA, CHANNEL_MESSAGES, ChannelPeers};
+mod atmosphere_host;
+pub use atmosphere_host::{AtmosphereEmitter, AtmosphereMix, AtmosphereScene, EyeMedium};
+/// Canvas-screen pointer actions (API level 18).
+pub use ui_bindings::exports::horizon::mods::ui_events::PointerKind;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
 /// ui`), for the game to draw with its menus' own widgets.
 pub use ui_bindings::horizon::mods::ui::{
     ButtonWidget, ItemWidget, ListWidget, Screen as UiScreen, TextWidget, Widget as UiWidget,
 };
 use ui_bindings::{UiHost, horizon::mods::ui};
+
+/// Resolve each callback separately: level-17 UI exports lack the three
+/// canvas callbacks, and older mods may have no ui-events interface at all.
+#[derive(Default)]
+struct UiCallbacks {
+    select: Option<TypedFunc<(u32, u32), ()>>,
+    closed: Option<TypedFunc<(), ()>>,
+    settings_opened: Option<TypedFunc<(), ()>>,
+    pointer: Option<TypedFunc<(PointerKind, f32, f32, u32), ()>>,
+    scroll: Option<TypedFunc<(f32, f32, f32), ()>>,
+    screen_key: Option<TypedFunc<(String, bool), ()>>,
+}
+impl UiCallbacks {
+    fn new(store: &mut Store<State>, instance: &Instance) -> Self {
+        let Some(interface) =
+            instance.get_export_index(&mut *store, None, "horizon:mods/ui-events@0.1.0")
+        else {
+            return Self::default();
+        };
+        macro_rules! callback {
+            ($name:literal) => {
+                instance
+                    .get_export_index(&mut *store, Some(&interface), $name)
+                    .and_then(|index| instance.get_typed_func(&mut *store, index).ok())
+            };
+        }
+        Self {
+            select: callback!("select"),
+            closed: callback!("closed"),
+            settings_opened: callback!("settings-opened"),
+            pointer: callback!("pointer"),
+            scroll: callback!("scroll"),
+            screen_key: callback!("screen-key"),
+        }
+    }
+}
 /// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
 mod render_bindings {
     wasmtime::component::bindgen!({
         path: "../horizon-mod-sdk/wit",
         world: "render-host",
+        additional_derives: [PartialEq],
     });
 }
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
-pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+pub use render_bindings::horizon::mods::input::{
+    AimAssist, Event as InputEvent, HeldItem, ItemUse, LookDeviceKind, TouchButton, TouchContext,
+};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
     Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
+    TextShape, WorldLine, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -100,20 +179,52 @@ pub use recipes_bindings::horizon::mods::browser::{
     Layout as BrowserLayout, RecipeView as BrowserRecipe, SlotClick as BrowserSlotClick,
     Stack as BrowserStack,
 };
+pub use recipes_bindings::horizon::mods::browser_ext::{
+    Event as BrowserExtEvent, ItemFact as ItemFacts, OtherRecipe,
+};
 /// What capability `recipes` reads (WIT `interface recipes`).
 pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
-use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
+use recipes_bindings::{
+    RecipesHost,
+    horizon::mods::{browser, browser_ext, recipes},
+};
+/// Capability `world-read`'s imports (docs/mods.md): the player's loaded world.
+mod world_read_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "world-read-host",
+    });
+}
+use world_read_bindings::WorldReadHost;
+mod canvas_host;
+mod client_world_host;
+pub use canvas_host::{
+    CANVAS_PAGE, CanvasImageShape, CanvasPanel, CanvasScreen, CanvasShape, CanvasUpload,
+    FRAME_BUDGET, FRAME_BUDGET_MAX, IMAGE_SIDE, IMAGE_TEXELS, ImageRect, SCREEN_BUDGET_MAX,
+    SCREEN_SHAPES, UPLOAD_BYTES,
+};
+pub use client_world_host::{
+    BlockFace, BlockTable, CHANGES_MAX, CHANGES_RADIUS, COLUMN_CHUNKS, COLUMN_DEPTH, ChunkColumns,
+    ClientDimension, ClientTexture, ClientWorldView, ColumnLayer, FaceTint, Harvest, NO_SPRITE,
+    NO_TOP, state_flags,
+};
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
-/// Fuel (about one unit per WebAssembly instruction) per call: a bound on
+/// Work units per call (1,000,000 = 1 ms with epochs; instructions with fuel): a bound on
 /// runaway loops, far above the hooks' time budgets.
 const FUEL_INIT: u64 = 2_000_000_000;
 const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
+/// `world.generated-chunks` lists at most this many chunks.
+pub const GENERATED_CHUNKS: usize = 256;
+/// Item uses and landed melee attacks retained per tick.
+pub const PLAYER_ACTIONS: usize = 256;
+/// Largest block container accepted by the plain-slot API.
+pub const CONTAINER_SLOTS: usize = 256;
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
 /// Orders a mod may give per `entities.give-orders` call, mobs `entities.mobs` and
@@ -125,6 +236,9 @@ const NEAR_RADIUS: f64 = 64.0;
 const AREA_RADIUS: f64 = 16.0;
 /// `entities.spawn` calls one hook call may make.
 const SPAWNS_PER_CALL: usize = 64;
+/// `entities.ride`: at most this many per hook call, within this many blocks.
+const RIDES_PER_CALL: usize = 64;
+const RIDE_RANGE: f64 = 16.0;
 /// `set-data`'s bounds: keys a mob keeps, a key's and a value's length.
 const DATA_KEYS: usize = 32;
 const DATA_KEY_CHARS: usize = 64;
@@ -138,21 +252,38 @@ const QUIET_PER_CALL: usize = 256;
 pub const RAYCAST_MAX: f32 = 1024.0;
 const HUD_LINES: usize = 16;
 const LINE_CHARS: usize = 256;
-/// Total bytes a mod's `storage` may hold on disk, across all its keys.
-const STORAGE_QUOTA: u64 = 4 << 20;
-/// Distinct keys a mod's `storage` may hold: `STORAGE_QUOTA` alone doesn't
-/// bound a flood of zero- or near-zero-byte files (each still a file name,
-/// a directory entry and an inode).
-const STORAGE_MAX_KEYS: usize = 64;
 /// Bytes `storage::set` may write across one hook call: fuel bounds a
 /// mod's CPU time per call, not the time a synchronous disk write takes, so
 /// a cheap-in-fuel loop replacing one key with large payloads needs its own
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
+/// Resource names accepted by entity orders, shared across ticks until resources reload.
+#[derive(Clone, Debug, Default)]
+pub struct EntityResources {
+    pub textures: std::collections::HashSet<String>,
+    pub sounds: std::collections::HashSet<String>,
+    /// Only vanilla particle codecs with no options, by network id.
+    pub particles: std::collections::HashMap<String, i32>,
+}
+
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
+    /// API 28: negotiated channel peers for running mod ids.
+    pub channel_peers: ChannelPeers,
+    /// Simulation tick, including on servers without a window player.
+    pub tick: u64,
+    /// Whether the game is showing its touch controls.
+    pub touch_active: bool,
+    /// The device of the most recent applied look movement.
+    pub look_device: LookDeviceKind,
+    /// API 33: what capability `atmosphere`'s `conditions` reads; none on the title.
+    pub atmosphere: Option<AtmosphereScene>,
+    /// API 33: every sprite set the client's particle engine has, by name
+    /// (`<namespace>:<name>`, vanilla types as `minecraft:<type>`), which
+    /// `atmosphere.define-effect` checks a sprite against.
+    pub particle_sets: Arc<std::collections::HashSet<String>>,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -171,27 +302,68 @@ pub struct Snapshot {
     pub font_widths: Arc<[f32]>,
     /// The players on the server, for server mods.
     pub players: Vec<ServerPlayer>,
+    /// Current server rules and difficulty, for read-only capability `world` queries.
+    pub game_rules: std::collections::BTreeMap<String, String>,
+    pub difficulty: String,
+    /// The dimension-specific daylight and weather, with the server's shared clock.
+    pub world_times: std::collections::BTreeMap<String, WorldTime>,
     /// The loaded mobs, for capability `entities`; the game fills it only
     /// while a running mod has it ([`Mods::wants_entities`]).
     pub entities: Arc<[ModEntity]>,
     /// The content mods' mob types, for `entities.spawn`; filled with [`Snapshot::entities`].
     pub mob_kinds: Arc<[String]>,
+    /// Loaded mobs riding something: (rider, vehicle), for `entities.vehicle`
+    /// and `entities.ride`; filled with [`Snapshot::entities`].
+    pub vehicles: Arc<[(u32, u32)]>,
+    /// Loaded mobs whose runtime species can be tamed (including content templates).
+    pub tamable_mobs: Arc<[u32]>,
+    /// Loaded resources used to check texture, sound and particle orders.
+    pub entity_resources: Arc<EntityResources>,
     /// Players' right clicks on content mods' mobs during the last tick, for
     /// `entities.interactions`.
     pub interactions: Arc<[EntityInteraction]>,
+    /// Item right clicks and landed melee hits during the last tick.
+    pub item_uses: Arc<[PlayerItemUse]>,
+    pub attacks: Arc<[PlayerAttack]>,
+    pub hurt_events: Arc<[HurtEvent]>,
+    pub deaths: Arc<[Death]>,
+    pub player_damage: Arc<[PlayerDamage]>,
+    /// API 31: last tick's player deaths and respawns, at most 256 each.
+    pub player_deaths: Arc<[PlayerDeath]>,
+    pub player_respawns: Arc<[PlayerRespawn]>,
+    /// API 31: (uuid, vitals, effects <= 64), filled only while a running mod has capability players.
+    pub player_vitals: Arc<[(String, PlayerVitals, Vec<ActiveEffect>)]>,
+    /// Status effects from the game registry, including for players-only mods.
+    pub effect_ids: Arc<std::collections::HashSet<String>>,
+    /// Where each online server player looks, by UUID, for `players.facing`.
+    pub player_looks: Arc<[(String, PlayerLook)]>,
+    /// The current vanilla op levels, by online player's UUID.
+    pub player_permissions: Arc<[(String, u8)]>,
+    /// Available dimensions and their current world border [min x, min z, max x, max z].
+    pub teleport_borders: std::collections::BTreeMap<String, [f64; 4]>,
+    /// Overworld level.dat spawn data, shared across the server's dimensions.
+    pub world_spawn: Option<(String, WorldPoint, f32)>,
+    /// The chunks first generated during the last tick, for `world.generated-chunks`.
+    pub generated_chunks: Arc<[ChunkPos]>,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
     pub view_hit: Option<(f32, Hit)>,
+    /// Nearest living entity along the view and its distance from the eye.
+    pub view_entity: Option<(f32, EntityHit)>,
     /// Every item and recipe, for capability `recipes`; the game makes them
     /// once, and only while a mod reads them ([`Mods::wants_recipes`]).
     pub recipes: Option<Arc<Recipes>>,
     /// The `book-id`s of the recipes the player's book holds.
     pub known_recipes: Arc<[i32]>,
-    /// The open screen takes recipes (`recipes.place`).
+    /// The open inventory, crafting table, furnace, blast furnace or smoker
+    /// takes recipes (`recipes.place`); false for spectators.
     pub placing: bool,
     /// The player is in creative mode (`recipes.give`).
     pub creative: bool,
+    /// Which world the player is in (`game.world-id`): `sp:<save folder>`
+    /// or `mp:<address>`; none on the title screen.
+    pub world_id: Option<String>,
 }
 
 /// Capability `recipes`'s tables: `items` in the registry's order, which
@@ -200,6 +372,8 @@ pub struct Snapshot {
 pub struct Recipes {
     pub items: Vec<RecipeItem>,
     pub recipes: Vec<Recipe>,
+    pub facts: Vec<ItemFacts>,
+    pub others: Vec<OtherRecipe>,
 }
 
 /// Which mods a game starts: the window's game the client mods, the game
@@ -223,18 +397,50 @@ impl Runs {
 /// What mods asked the game to show since the last [`Mods::drain`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
+    /// API 20: checked now, applied on the live game after the hooks.
+    BreakBlocksAs {
+        mod_id: String,
+        player: String,
+        dimension: String,
+        blocks: Vec<BlockChangePos>,
+        options: BreakOptions,
+    },
     /// `chat.show`: a line after the mod's name.
-    Chat { name: String, text: String },
+    Chat {
+        name: String,
+        text: String,
+    },
+    /// `chat.open`: prefill chat for the player; no message or command is sent.
+    OpenChat {
+        owner: usize,
+        text: String,
+    },
     /// A mod command's feedback, red when `error`.
-    Feedback { text: String, error: bool },
+    Feedback {
+        text: String,
+        error: bool,
+    },
     /// `command.run`: a vanilla command line, without its slash, to run as
     /// the player.
-    Command { line: String },
+    Command {
+        line: String,
+    },
     /// `command.run-quiet`: vanilla command lines to run as the player with
     /// nothing in the chat (`horizon_protocol::quiet` on a server).
-    QuietCommands { mod_id: String, lines: Vec<String> },
+    QuietCommands {
+        mod_id: String,
+        lines: Vec<String>,
+    },
+    /// API 20: server-mod command lines, with no command feedback or vanilla fallback.
+    ModQuietCommands {
+        mod_id: String,
+        lines: Vec<String>,
+    },
     /// The mod was turned off: it trapped, overran or failed to start.
-    Stopped { name: String, reason: String },
+    Stopped {
+        name: String,
+        reason: String,
+    },
     /// `players.tell`: a line after the mod's name, to the player with this id.
     Tell {
         name: String,
@@ -242,7 +448,10 @@ pub enum Output {
         text: String,
     },
     /// `players.broadcast`: a line after the mod's name, to every player.
-    Broadcast { name: String, text: String },
+    Broadcast {
+        name: String,
+        text: String,
+    },
     /// A server mod command's feedback, to the player who typed it.
     Reply {
         player: String,
@@ -255,6 +464,126 @@ pub enum Output {
         name: String,
         dimension: String,
         blocks: Vec<BlockChange>,
+    },
+    /// API 28: a validated reservation, checked again against live endpoints on apply.
+    StorageMove(StorageMove),
+    StorageDataWrite(StorageDataWrite),
+    GiveItemWithData {
+        player: String,
+        item: String,
+        count: u32,
+        mod_id: String,
+        data: Option<String>,
+    },
+    SpawnItemWithData {
+        dimension: String,
+        at: EntityPoint,
+        item: String,
+        count: u32,
+        mod_id: String,
+        data: Option<String>,
+    },
+    Menu(MenuOperation),
+    BlockDataWrite(BlockDataWrite),
+    BreakProgress {
+        mod_id: String,
+        dimension: String,
+        pos: (i32, i32, i32),
+        stage: i32,
+    },
+    /// API 28: scoped bytes, delivered over negotiated custom payloads after hooks.
+    Channel {
+        mod_id: String,
+        player: Option<String>,
+        name: String,
+        data: Vec<u8>,
+    },
+    /// `world.set-loot-table`: a container's loot table, after the tick's block writes.
+    SetLootTable {
+        dimension: String,
+        pos: (i32, i32, i32),
+        table: String,
+    },
+    /// `players.add-effect`: a change sent to the player's client too.
+    PlayerEffect {
+        player: String,
+        effect: EffectChange,
+    },
+    /// `world.set-container`: plain slots replaced after the tick's block writes.
+    SetContainer {
+        dimension: String,
+        pos: (i32, i32, i32),
+        slots: Vec<Option<ContainerItemStack>>,
+    },
+    /// `world.place-structure`: a template loaded after the tick's block writes.
+    PlaceStructure {
+        dimension: String,
+        id: String,
+        pos: (i32, i32, i32),
+        rotation: u32,
+        mirror: bool,
+    },
+    MobEffect {
+        mob: u32,
+        change: EffectChange,
+    },
+    MobPush {
+        mob: u32,
+        velocity: EntityPoint,
+    },
+    PlayerHeal {
+        player: String,
+        amount: f32,
+    },
+    SpawnItem {
+        dimension: String,
+        at: EntityPoint,
+        item: String,
+        count: u32,
+    },
+    Tame {
+        mob: u32,
+        owner: Option<String>,
+    },
+    DamageItem {
+        player: String,
+        hand: String,
+        amount: u32,
+    },
+    Strike {
+        mob: u32,
+        hit: StrikeHit,
+    },
+    PlayerKnockback {
+        player: String,
+        strength: f32,
+        dx: f64,
+        dz: f64,
+    },
+    PlayerTeleport {
+        player: String,
+        target: TeleportTarget,
+    },
+    PlayerPush {
+        player: String,
+        velocity: EntityPoint,
+    },
+    PlaySound {
+        dimension: String,
+        at: EntityPoint,
+        sound: EntitySound,
+    },
+    /// `entities.ride`: a content mod's mob onto another mob, or off (none), with the
+    /// tick's orders.
+    Ride {
+        rider: u32,
+        vehicle: Option<u32>,
+    },
+    /// `world.set-spawner`: a monster spawner's mob, after the tick's block writes.
+    SetSpawner {
+        dimension: String,
+        pos: (i32, i32, i32),
+        entity: String,
     },
     /// `entities.give-orders`: orders to content mods' mobs, by id, in order, each
     /// checked against the tick's [`Snapshot::entities`].
@@ -273,38 +602,186 @@ pub enum Output {
     },
     /// `ui.open-screen`: the mod's entry in `entries()`; what it shows is
     /// [`Mods::screen`].
-    OpenScreen { owner: usize },
+    OpenScreen {
+        owner: usize,
+    },
     /// `ui.close-screen`: the mod closed its own screen (no `closed` back).
-    CloseScreen { owner: usize },
+    CloseScreen {
+        owner: usize,
+    },
     /// `render.shake`: strength 0 to 1, fading out over `seconds` (≤ 10).
-    Shake { strength: f32, seconds: f32 },
-    /// `recipes.place`: the recipe book's click on this display id, all of
+    Shake {
+        strength: f32,
+        seconds: f32,
+    },
+    /// `recipes.place`: the recipe book's click on this display id in the
+    /// inventory, crafting table, furnace, blast furnace or smoker, all of
     /// it when `all`.
-    PlaceRecipe { book_id: i32, all: bool },
+    PlaceRecipe {
+        book_id: i32,
+        all: bool,
+    },
     /// `recipes.give`: a stack for a creative player.
     Give {
         item: String,
         count: u32,
         components: String,
     },
+    PlayerSetHealth {
+        player: String,
+        health: f32,
+    },
+    PlayerHurt {
+        player: String,
+        amount: f32,
+        damage_type: String,
+    },
+    PlayerSetFood {
+        player: String,
+        food: u32,
+        saturation: f32,
+    },
+    PlayerGiveExperience {
+        player: String,
+        points: u32,
+    },
+    PlayerGiveLevels {
+        player: String,
+        levels: i32,
+    },
+    /// Ids from the snapshot's active effects at call time.
+    PlayerClearEffects {
+        player: String,
+        ids: Vec<String>,
+    },
+    PlaySoundTo {
+        player: String,
+        sound: EntitySound,
+    },
+    SpawnParticles {
+        dimension: String,
+        particles: ParticleBurst,
+    },
+    Explode {
+        dimension: String,
+        center: WorldPoint,
+        radius: f32,
+        fire: bool,
+        blast: BlastKind,
+    },
+    MakeBlockFall {
+        dimension: String,
+        pos: BlockChangePos,
+        expected: String,
+        velocity: WorldPoint,
+        hurts: bool,
+    },
 }
 
 /// The game's world as capability `world` reads it during a call: the
 /// game lends one with [`Mods::lend_world`] and takes it back after.
 pub trait WorldView: std::any::Any + Send {
+    fn block_data(
+        &self,
+        _dimension: &str,
+        _pos: BlockChangePos,
+        _mod_id: &str,
+    ) -> Result<BlockDataImage, String> {
+        Err("no content block inventory at loaded position".into())
+    }
+
+    fn block_has_tag(&self, _block: &str, _tag: &str) -> bool {
+        false
+    }
     /// The block state at a position, `minecraft:oak_log[axis=y]`; `None`
     /// where no chunk of that dimension is loaded.
     fn block(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// OCEAN_FLOOR first-available heights of a loaded chunk, in local z * 16 + x order.
+    fn heightmap(&self, _dimension: &str, _x: i32, _z: i32) -> Option<Vec<i32>> {
+        None
+    }
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
+    /// Sky light 15 at the position; false when no chunk can be read.
+    fn can_see_sky(&self, _dimension: &str, _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
+    /// One block's plain container slots (components are not carried).
+    fn container(
+        &self,
+        _dimension: &str,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+    ) -> Option<Vec<Option<ContainerItemStack>>> {
+        None
+    }
+    /// API 28: shared reservation view; never exposes components to the guest.
+    fn storage(&mut self) -> Option<&mut StorageView> {
+        None
+    }
+    /// Check the item registry and that a nonempty stack fits its maximum size.
+    fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+        if resource_id(item) && (1..=99).contains(&count) {
+            Ok(())
+        } else {
+            Err(format!("invalid item stack {item} x{count}"))
+        }
+    }
+    /// The same per-call bound as players.give-item, including zero-count no-op.
+    fn check_give_stack(&self, item: &str, count: u32) -> Result<(), String> {
+        if count <= 6400 {
+            self.check_item_stack(item, 1)
+        } else {
+            Err("give-item is at most 100 stacks per call".into())
+        }
+    }
+    /// Whether a structure template exists in the loaded vanilla/mod resources.
+    fn check_structure(&self, id: &str) -> Result<(), String> {
+        Err(format!("no structure template {id}"))
+    }
     /// Whether `dimension` is one the server has.
     fn has_dimension(&self, dimension: &str) -> bool;
+    fn fluid_flow(&self, _dimension: &str, _pos: BlockChangePos) -> Option<[f64; 3]> {
+        None
+    }
     /// `Err` (why) for a state string that names no block state.
     fn check_state(&self, state: &str) -> Result<(), String>;
 }
 
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
+
+/// The real server inventories lent during mod hooks, shared between all mods.
+/// Implementations validate item ids and preserve stack components on removal.
+pub trait PlayerInventories: std::any::Any + Send {
+    fn equipment(&self, _player: &str) -> Option<EquipmentSlots> {
+        None
+    }
+    fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String>;
+    /// API 31: remove up to max matching stacks' items (0 only counts); the game resolves tags and mod data.
+    fn clear_items(
+        &mut self,
+        _player: &str,
+        _filter: &ItemFilter,
+        _mod_id: &str,
+        _max: u32,
+    ) -> Result<u32, String> {
+        Err("clear-items unavailable".into())
+    }
+    fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String>;
+    fn give_item_with_data(
+        &mut self,
+        _player: &str,
+        _item: &str,
+        _count: u32,
+        _mod_id: &str,
+        _data: Option<&str>,
+    ) -> Result<(), String> {
+        Err("item data creation unavailable".into())
+    }
+}
+type InventoriesSlot = Arc<Mutex<Option<Box<dyn PlayerInventories>>>>;
 
 /// A mod's text panel, drawn every frame until it changes.
 #[derive(Clone, Debug)]
@@ -333,6 +810,8 @@ pub struct Entry {
     pub status: Status,
     /// The mod's average time per call of its busiest hook.
     pub cost: Duration,
+    /// Work used by the last call (all of it on overrun); see `last_fuel_used`.
+    last_fuel: u64,
     run: Option<Running>,
     modified: Option<SystemTime>,
 }
@@ -350,14 +829,24 @@ impl Entry {
 
 struct Running {
     store: Store<State>,
-    /// The mod's `ui-events` export; none for a mod built before `ui`, or a
-    /// server mod.
-    ui: Option<UiHost>,
+    /// Optional UI callbacks; empty for a mod built before ui or a server mod.
+    ui: UiCallbacks,
+    container: ContainerCallbacks,
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
+    /// It imports `game.raycast-entity`.
+    entity_raycasts: bool,
     /// It imports capability `recipes`.
     reads_recipes: bool,
+    /// It imports `canvas` (capability `render`).
+    canvas: bool,
+    /// It imports capability `world-read`.
+    reads_client_world: bool,
+    storage_api: bool,
+    stack_data_api: bool,
+    block_data_api: bool,
+    machine_api: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -397,6 +886,23 @@ struct UiState {
     /// The calls since the last hook ended, for [`Output`].
     open: bool,
     close: bool,
+    /// The last chat prefill in this hook, applied after its screen changes.
+    chat: Option<String>,
+}
+
+impl UiState {
+    /// Screen changes from one hook, including init, with its installed owner.
+    fn drain(&mut self, owner: usize, out: &mut Vec<Output>) {
+        if std::mem::take(&mut self.open) {
+            out.push(Output::OpenScreen { owner });
+        }
+        if std::mem::take(&mut self.close) {
+            out.push(Output::CloseScreen { owner });
+        }
+        if let Some(text) = self.chat.take() {
+            out.push(Output::OpenChat { owner, text });
+        }
+    }
 }
 
 /// Capability `ui`'s panel beside container screens (`browser`).
@@ -418,6 +924,17 @@ pub struct RecipePage {
     pub tabs: Vec<BrowserStack>,
     pub tab: u32,
     pub recipes: Vec<BrowserRecipe>,
+    pub custom: Vec<Option<CustomGeometry>>,
+}
+/// Geometry beside a recipe, without changing the older browser recipe type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub slots: Vec<(i32, i32)>,
+    pub result: Option<(i32, i32)>,
+    pub texts: Vec<(i32, i32, String, u32)>,
+    pub sprites: Vec<(i32, i32, String)>,
 }
 static BROWSER_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Items a panel may hold, and events kept for `browser.poll`.
@@ -431,6 +948,46 @@ const RECIPE_TABS: usize = 16;
 const SLOT_STACKS: usize = 64;
 const BROWSER_EVENTS: usize = 256;
 impl BrowserState {
+    fn set_recipes(
+        &mut self,
+        title: String,
+        tabs: Vec<BrowserStack>,
+        tab: u32,
+        entries: impl Iterator<Item = (BrowserRecipe, Option<CustomGeometry>)>,
+    ) {
+        let stack = |s: BrowserStack| BrowserStack {
+            item: clip(s.item),
+            components: clip_to(s.components, 4096),
+            ..s
+        };
+        let cycle = |list: Vec<BrowserStack>| -> Vec<BrowserStack> {
+            list.into_iter().take(SLOT_STACKS).map(stack).collect()
+        };
+        let (recipes, custom): (Vec<_>, Vec<_>) = entries
+            .take(BROWSER_RECIPES)
+            .map(|(r, custom)| {
+                (
+                    BrowserRecipe {
+                        width: r.width.clamp(1, 3),
+                        height: r.height.clamp(1, 3),
+                        slots: r.slots.into_iter().take(RECIPE_SLOTS).map(cycle).collect(),
+                        results: cycle(r.results),
+                        note: clip(r.note),
+                        ..r
+                    },
+                    custom,
+                )
+            })
+            .unzip();
+        self.recipes = (!recipes.is_empty()).then(|| RecipePage {
+            title: clip(title),
+            tabs: tabs.into_iter().take(RECIPE_TABS).map(stack).collect(),
+            tab,
+            recipes,
+            custom,
+        });
+        self.version = BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     fn push(&mut self, event: BrowserEvent) {
         if self.events.len() == BROWSER_EVENTS {
             self.events.pop_front();
@@ -439,15 +996,38 @@ impl BrowserState {
     }
 }
 
+/// Additive browser state; defaults preserve older mods' panel visibility.
+#[derive(Default)]
+struct BrowserExtState {
+    bookmarks: Vec<BrowserStack>,
+    item_lines: HashMap<u32, Vec<String>>,
+    bookmark_lines: HashMap<u32, Vec<String>>,
+    keep_empty: bool,
+    version: u64,
+    events: std::collections::VecDeque<BrowserExtEvent>,
+}
+impl BrowserExtState {
+    fn push(&mut self, event: BrowserExtEvent) {
+        if self.events.len() == BROWSER_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+}
+
 struct State {
+    call_budget: budget::CallBudget,
+    player_world: player_world::Budgets,
     name: String,
     id: String,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     panel: Option<Panel>,
     ui: UiState,
+    container: ContainerData,
     /// Capability `render`'s HUD shapes, drawn until replaced.
     shapes: Vec<Shape>,
+    world_lines: ModWorldLines,
     /// Capability `render`'s corner panel.
     corner: Option<CornerPanel>,
     /// Capability `render`'s zoom, when the mod zooms.
@@ -458,6 +1038,7 @@ struct State {
     far_terrain: Option<ModFarTerrain>,
     input: InputState,
     browser: BrowserState,
+    browser_ext: BrowserExtState,
     /// Capability `storage`'s folder; made on first `set`.
     data_dir: PathBuf,
     /// Bytes `storage::set` may still write before this hook call ends
@@ -465,28 +1046,151 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    storage: StorageUsage,
+    see_through: std::collections::HashSet<u32>,
+    /// Tick of the last item spawn, and successful requests in that tick.
+    item_spawn_budget: (Option<u64>, u32),
+    break_budget: (Option<u64>, usize),
+    mod_command_budget: (Option<u64>, usize),
+    behaviour: behaviour::Behaviour,
+    uses: (bool, bool),
+    use_budget: (Option<u64>, usize),
+    channel_budget: (Option<u64>, usize),
+    channel_receive_budget: (Option<u64>, usize),
+    channel_callback: Option<TypedFunc<(String, Vec<u8>), ()>>,
+    /// Capability `atmosphere`'s profiles and mix (API 33).
+    atmosphere: atmosphere_host::AtmosphereState,
+    server: bool,
+    storage_move_budget: (Option<u64>, usize),
+    machines: machines::MachineState,
     limits: StoreLimits,
     world: WorldSlot,
+    inventories: InventoriesSlot,
+    /// Capability `render`'s images, canvas box and frame budget.
+    canvas: canvas_host::CanvasState,
+    client_world: client_world_host::ClientWorldSlot,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
 /// the state with none: no engine, and every hook a no-op.
 #[derive(Default)]
 pub struct Mods {
-    engine: Option<(Engine, Linker<State>)>,
+    engine_cache: Option<Arc<engine::Cache>>,
+    container_bridge: container_host::Bridge,
+    machine_bridge: machines::Bridge,
+    menu_leases: machines::MenuLeases,
+    container_shift: ContainerShift,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     world: WorldSlot,
+    inventories: InventoriesSlot,
+    /// Capability `world-read`'s view, lent by the game.
+    client_world: client_world_host::ClientWorldSlot,
+    /// The mod-image page the running mods' canvases share.
+    page: canvas_host::PageSlot,
+    /// The calls under way are `frame` calls: the budget controller runs.
+    framing: bool,
+    /// The host's thermal limit also applies to mods started later.
+    canvas_screen_budget_limited: bool,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
 }
 
 impl Mods {
+    /// An isolated engine with an explicit limit mode (especially for tests).
+    /// Engine backend selection still respects HORIZON_MODS_ENGINE/force-pulley.
+    pub fn with_limit(limit: LimitMode) -> Self {
+        Self {
+            engine_cache: Some(Arc::new(engine::Cache::new(limit))),
+            ..Self::default()
+        }
+    }
+    /// Lines disappear with their owning runtime, or when the player leaves.
+    pub fn world_lines(&self) -> impl Iterator<Item = &ModWorldLines> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref().map(|r| &r.store.data().world_lines))
+    }
+    pub fn clear_world_lines(&mut self) {
+        for r in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
+            r.store.data_mut().world_lines = ModWorldLines::default();
+        }
+    }
+    /// Buttons in draw order; the last one wins an overlap.
+    pub fn touch_buttons(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (usize, &str, &TouchButton, bool)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.run.as_ref().map(|r| (i, &r.store.data().input)))
+            .flat_map(|(i, input)| {
+                input
+                    .touch_buttons
+                    .iter()
+                    .map(move |(name, b)| (i, name.as_str(), b, input.touch_down.contains(name)))
+            })
+    }
+    pub fn touch_key(&mut self, owner: usize, name: &str, pressed: bool) {
+        if let Some(r) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            let state = r.store.data_mut();
+            let input = &mut state.input;
+            if !pressed
+                || input.touch_buttons.iter().any(|(n, _)| n == name)
+                || state.canvas.box_key.as_deref() == Some(name)
+            {
+                input.touch_key(name, pressed);
+            }
+        }
+    }
+    /// A resolved automatic/explicit touch button holds a registered key.
+    pub fn registered_touch_key(&mut self, owner: usize, name: &str, pressed: bool) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            let input = &mut run.store.data_mut().input;
+            if !pressed || input.keys.iter().any(|k| k.name == name) {
+                input.touch_key(name, pressed);
+            }
+        }
+    }
+    /// A user-bound controller action for a registered key. Independent of keyboard and touch.
+    pub fn controller_key(&mut self, owner: usize, name: &str, pressed: bool) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            let input = &mut run.store.data_mut().input;
+            if input.keys.iter().any(|k| k.name == name) {
+                input.controller_key(name, pressed);
+            }
+        }
+    }
+    pub fn touch_key_down(&self, owner: usize, name: &str) -> bool {
+        self.entries
+            .get(owner)
+            .and_then(|e| e.run.as_ref())
+            .is_some_and(|r| r.store.data().input.touch_down.iter().any(|n| n == name))
+    }
     /// Changes whenever the running mods (so their commands) change.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    /// Only storage API users need component descriptions in the world loan.
+    pub fn wants_storage(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|r| r.storage_api || r.stack_data_api)
+        })
+    }
+    pub fn stack_data_mods(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                e.run
+                    .as_ref()
+                    .filter(|r| r.stack_data_api)
+                    .map(|r| r.store.data().id.clone())
+            })
+            .collect()
     }
     /// Whether a running mod may use capability `world`: only then is a
     /// view worth lending.
@@ -497,6 +1201,27 @@ impl Mods {
                     .as_ref()
                     .is_some_and(|m| m.capabilities.contains(&crate::Capability::World))
         })
+    }
+    /// Whether lending inventories for capability `players` is useful.
+    pub fn wants_players(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.status == Status::Running
+                && e.manifest
+                    .as_ref()
+                    .is_some_and(|m| m.capabilities.contains(&crate::Capability::Players))
+        })
+    }
+    pub fn lend_inventories(&mut self, inventories: Box<dyn PlayerInventories>) {
+        *self
+            .inventories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(inventories);
+    }
+    pub fn take_inventories(&mut self) -> Option<Box<dyn PlayerInventories>> {
+        self.inventories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
     /// Whether a running mod may use capability `entities`: only then is
     /// [`Snapshot::entities`] worth filling.
@@ -540,6 +1265,19 @@ impl Mods {
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
         let mut mods = Mods::default();
+        mods.load_into(runs, paths, enabled, reserved);
+        mods
+    }
+    /// [`Mods::load_for`] into these mods, which have none yet: what the
+    /// game lent them ([`Mods::lend_client_world`]) serves the mods' `init`.
+    pub fn load_into(
+        &mut self,
+        runs: Runs,
+        paths: &[PathBuf],
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+    ) {
+        let mods = self;
         for path in paths {
             let modified = modified(path);
             let mut entry = Entry {
@@ -547,6 +1285,7 @@ impl Mods {
                 manifest: None,
                 status: Status::Off,
                 cost: Duration::ZERO,
+                last_fuel: 0,
                 run: None,
                 modified,
             };
@@ -575,45 +1314,14 @@ impl Mods {
             if let (Status::Failed(reason), Some(m)) = (&entry.status, &entry.manifest) {
                 log::warn!("Horizon: mod {} did not start: {reason}", m.id);
             }
+            if let Some(run) = &mut entry.run {
+                run.store
+                    .data_mut()
+                    .ui
+                    .drain(mods.entries.len(), &mut mods.out);
+            }
             mods.entries.push(entry);
         }
-        mods
-    }
-
-    fn engine(&mut self) -> Result<&(Engine, Linker<State>), String> {
-        if self.engine.is_none() {
-            let mut config = Config::new();
-            config.wasm_component_model(true).consume_fuel(true);
-            // iOS: Pulley bytecode in place of machine code, which only a JIT entitlement (or a
-            // debugger attached) could run; bounds checks in place of guard pages and signal
-            // handlers, and memories that grow by copying, not inside a 4 GiB reservation an
-            // app's address space has no room for.
-            #[cfg(target_os = "ios")]
-            config
-                .target("pulley64")
-                .map_err(|e| e.to_string())?
-                .signals_based_traps(false)
-                .memory_reservation(0)
-                .memory_guard_size(0);
-            let engine = Engine::new(&config).map_err(|e| e.to_string())?;
-            let mut linker = Linker::new(&engine);
-            HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            self.engine = Some((engine, linker));
-        }
-        Ok(self.engine.as_ref().expect("made above"))
     }
 
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
@@ -650,17 +1358,40 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
-        let (engine, linker) = self.engine()?;
-        let component =
-            Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
+        let inventories = self.inventories.clone();
+        let client_world = self.client_world.clone();
+        let page = self.page.clone();
+        let container_bridge = self.container_bridge.clone();
+        let container_shift = self.container_shift.clone();
+        let mut canvas = canvas_host::CanvasState::new(page);
+        canvas.limit_screen_budget(self.canvas_screen_budget_limited);
+        let cache = self.engine_cache.get_or_insert_with(engine::shared);
+        let budget = cache.limit;
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = cache.compile_env(wasm)?;
         let ty = component.component_type();
         let imports: Vec<String> = ty
             .imports(engine)
             .map(|(name, _)| name.to_string())
             .collect();
-        m.check_imports(imports.iter().map(String::as_str))?;
-        // A function this Horizon doesn't have: say so, not wasmtime's linking error.
         let functions = crate::api_level::imports(wasm)?;
+        m.check_code_imports(imports.iter().map(String::as_str), &functions)?;
+        // A function this Horizon doesn't have: say so, not wasmtime's linking error.
+        if functions.iter().any(|f| {
+            matches!(
+                f.as_str(),
+                "canvas.open-canvas-screen"
+                    | "canvas.set-screen-items"
+                    | "canvas.set-canvas-screen"
+                    | "canvas.close-canvas-screen"
+            )
+        }) && !m.capabilities.contains(&crate::Capability::Ui)
+        {
+            return Err("canvas screens need capability ui as well as render".into());
+        }
         let (level, function) = crate::api_level::needed(functions.iter().map(String::as_str));
         if let Some(why) = crate::api_level::too_new(level, function) {
             return Err(why);
@@ -671,45 +1402,85 @@ impl Mods {
             .join(crate::manifest::STORAGE_DIR)
             .join(&m.id);
         let state = State {
+            call_budget: budget::CallBudget::default(),
+            player_world: Default::default(),
             name: m.name.clone(),
             id: m.id.clone(),
             snapshot,
             out: Vec::new(),
             panel: None,
             ui: UiState::default(),
+            container: ContainerData::new(container_bridge, &container_shift),
             shapes: Vec::new(),
+            world_lines: ModWorldLines::default(),
             corner: None,
             zoom: None,
             minimap: None,
             far_terrain: None,
             input: InputState::default(),
             browser: BrowserState::default(),
+            browser_ext: BrowserExtState::default(),
+            storage: StorageUsage::load(&data_dir, m.storage_limits())?,
+            see_through: Default::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
+            item_spawn_budget: (None, 0),
+            break_budget: (None, 0),
+            mod_command_budget: (None, 0),
+            behaviour: Default::default(),
+            uses: (false, false),
+            use_budget: (None, 0),
+            channel_budget: (None, 0),
+            channel_receive_budget: (None, 0),
+            channel_callback: None,
+            atmosphere: atmosphere_host::AtmosphereState::new(m.namespaces.clone()),
+            server,
+            storage_move_budget: (None, 0),
+            machines: machines::MachineState::new(
+                self.machine_bridge.clone(),
+                self.menu_leases.clone(),
+            ),
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
                 .build(),
             world,
+            inventories,
+            canvas,
+            client_world,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
-        store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
+        budget
+            .start(&mut store, FUEL_INIT)
+            .map_err(|e| e.to_string())?;
+        store.data_mut().canvas.work = canvas_host::Work {
+            start: FUEL_INIT,
+            soft: FUEL_INIT,
+            ..canvas_host::Work::default()
+        };
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
+        let container = if !server && m.capabilities.contains(&crate::Capability::Container) {
+            ContainerCallbacks::new(&mut store, &instance)
+        } else {
+            ContainerCallbacks::default()
+        };
+        let channel_callback = channel_host::callback(&mut store, &instance);
+        store.data_mut().channel_callback = channel_callback;
         let (mut hooks, ui) = if server {
             let exports = HorizonServerMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             let r = exports
                 .horizon_mods_server_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Hooks::Server(exports, r), None)
+            (Hooks::Server(exports, r), UiCallbacks::default())
         } else {
             let exports = HorizonMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             // `ui-events` is a mod built since `ui`'s; older mods have no export
             // and stay callable through `events` alone.
-            let ui = UiHost::new(&mut store, &instance).ok();
+            let ui = UiCallbacks::new(&mut store, &instance);
             let r = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
@@ -744,9 +1515,43 @@ impl Mods {
         Ok(Some(Running {
             store,
             ui,
+            container,
             hooks,
-            raycasts: functions.iter().any(|f| f == "game.raycast"),
-            reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
+            raycasts: functions
+                .iter()
+                .any(|f| f == "game.raycast" || f == "game.raycast-entity"),
+            entity_raycasts: functions.iter().any(|f| f == "game.raycast-entity"),
+            reads_recipes: functions.iter().any(|f| {
+                f.starts_with("recipes.")
+                    || matches!(
+                        f.as_str(),
+                        "browser-ext.item-facts"
+                            | "browser-ext.other-recipes"
+                            | "browser-ext.recipe-count"
+                            | "browser-ext.recipes-page"
+                    )
+            }),
+            canvas: functions.iter().any(|f| f.starts_with("canvas.")),
+            reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
+            block_data_api: functions
+                .iter()
+                .any(|f| matches!(f.as_str(), "world.block-data" | "world.set-block-data")),
+            machine_api: functions.iter().any(|f| f == "world.destroy-block"),
+            stack_data_api: functions.iter().any(|f| {
+                f.starts_with("world.")
+                    && !matches!(f.as_str(), "world.block-data" | "world.set-block-data")
+                    && (f.ends_with("-data") || f.ends_with("-with-data"))
+            }),
+            storage_api: functions.iter().any(|f| {
+                matches!(
+                    f.as_str(),
+                    "world.container-stacks"
+                        | "world.player-stacks"
+                        | "world.container-move"
+                        | "world.container-to-player"
+                        | "world.player-to-container"
+                )
+            }),
         }))
     }
 
@@ -762,6 +1567,12 @@ impl Mods {
     }
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+    /// Work units used by the last hook: instructions in Fuel mode, elapsed
+    /// nanoseconds in Epoch mode, capped at the call budget. The historical
+    /// name is retained for bench callers; this is outside the guest API.
+    pub fn last_fuel_used(&self, index: usize) -> Option<u64> {
+        self.entries.get(index).map(|e| e.last_fuel)
     }
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
@@ -829,22 +1640,58 @@ impl Mods {
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
+        run.store.data_mut().container.reset_budget();
+        // Epoch grants use wall time directly; Fuel grants use the measured
+        // instruction rate. Other hooks share their hard work allowance.
+        let budget = run.store.data().call_budget.mode;
+        let canvas = &mut run.store.data_mut().canvas;
+        let soft = if self.framing && budget == LimitMode::Epoch {
+            u64::from(canvas.budget.granted) * 1000
+        } else if self.framing {
+            canvas.budget.allowance(fuel)
+        } else {
+            fuel
+        };
+        canvas.work = canvas_host::Work {
+            start: fuel,
+            soft,
+            ..canvas_host::Work::default()
+        };
         let started = Instant::now();
-        let result = run.store.set_fuel(fuel).and_then(|()| f(run));
+        let result = budget.start(&mut run.store, fuel).and_then(|()| f(run));
+        let took = started.elapsed();
+        entry.last_fuel = if result.as_ref().err().is_some_and(|e| {
+            matches!(
+                e.downcast_ref::<Trap>(),
+                Some(Trap::OutOfFuel | Trap::Interrupt)
+            )
+        }) {
+            fuel
+        } else {
+            fuel.saturating_sub(budget.remaining(&run.store))
+        };
         // An average over about the last 64 calls.
-        entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
+        entry.cost = (entry.cost * 63 + took) / 64;
+        if self.framing && result.is_ok() && budget == LimitMode::Fuel {
+            let used = fuel.saturating_sub(budget.remaining(&run.store));
+            let canvas = &mut run.store.data_mut().canvas;
+            let own = took.saturating_sub(canvas.work.host_time);
+            canvas.budget.observe(used, own);
+        }
+        if let Some(window) = canvas_host::frame_times_window() {
+            let data = run.store.data_mut();
+            let (times, hooks) = if self.framing {
+                (&mut data.canvas.times, "frame")
+            } else {
+                (&mut data.canvas.other_times, "other hook")
+            };
+            if let Some(line) = times.record(took, window) {
+                log::info!("Horizon: mod {}: {line} ({hooks})", data.id);
+            }
+        }
         let data = run.store.data_mut();
-        let (open, close) = (
-            std::mem::take(&mut data.ui.open),
-            std::mem::take(&mut data.ui.close),
-        );
         self.out.append(&mut data.out);
-        if open {
-            self.out.push(Output::OpenScreen { owner: i });
-        }
-        if close {
-            self.out.push(Output::CloseScreen { owner: i });
-        }
+        data.ui.drain(i, &mut self.out);
         match result {
             Ok(r) => Some(r),
             Err(e) => {
@@ -869,7 +1716,9 @@ impl Mods {
     }
     /// A rendered frame, `seconds` after the last.
     pub fn frame(&mut self, seconds: f32) {
+        self.framing = true;
         self.each_client(FUEL_FRAME, |h| h.frame, |m, s| m.call_frame(s, seconds));
+        self.framing = false;
     }
     /// A chat line the player received, as plain text.
     pub fn chat(&mut self, text: &str) {
@@ -944,11 +1793,32 @@ impl Mods {
     }
     /// `player` broke `state` at `pos`.
     pub fn block_broken(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
-        self.each_server(
-            FUEL_EVENT,
-            |h| h.blocks,
-            |m, s| m.call_block_broken(s, player, pos, state),
-        );
+        self.block_broken_except(player, pos, state, None);
+    }
+    /// A queued break reaches everyone except its originating mod.
+    pub fn block_broken_except(
+        &mut self,
+        player: &ServerPlayer,
+        pos: BlockPos,
+        state: &str,
+        exclude: Option<&str>,
+    ) {
+        for i in 0..self.entries.len() {
+            if self.entries[i].run.as_ref().is_some_and(|r| {
+                r.hooks.server().is_some_and(|h| h.blocks)
+                    && exclude != Some(r.store.data().id.as_str())
+            }) {
+                self.call(i, FUEL_EVENT, |run| match &run.hooks {
+                    Hooks::Server(m, _) => m.horizon_mods_server_events().call_block_broken(
+                        &mut run.store,
+                        player,
+                        pos,
+                        state,
+                    ),
+                    _ => Ok(()),
+                });
+            }
+        }
     }
     /// `player` placed `state` at `pos`.
     pub fn block_placed(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
@@ -1010,6 +1880,19 @@ impl Mods {
         }
         true
     }
+    /// A typed server-mod command, discarding only its feedback/errors, including parse errors.
+    /// Explicit world/player operations from the hook still run; earlier outputs are retained.
+    pub fn server_command_quiet(&mut self, player: &ServerPlayer, line: &str) -> bool {
+        let before = self.out.len();
+        let owned = self.server_command(player, line);
+        let added = self.out.split_off(before);
+        self.out.extend(
+            added
+                .into_iter()
+                .filter(|o| !matches!(o, Output::Reply { .. } | Output::Feedback { .. })),
+        );
+        owned
+    }
     /// The running mods' HUD panels.
     pub fn panels(&self) -> impl Iterator<Item = &Panel> {
         self.entries
@@ -1022,25 +1905,74 @@ impl Mods {
             .iter()
             .filter_map(|e| e.run.as_ref()?.store.data().corner.as_ref())
     }
-    /// Some running mod calls `game.raycast`: the snapshot needs a
+    /// Some running mod calls `game.raycast` or `game.raycast-entity`: the snapshot needs a
     /// [`Snapshot::view_hit`].
     pub fn wants_raycast(&self) -> bool {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.raycasts))
     }
+    /// Some running mod reads the living entity under the crosshair.
+    pub fn wants_entity_raycast(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.entity_raycasts))
+    }
     /// The panel beside container screens (`browser.set-items`): the first
-    /// running mod with items or recipes, its index, the panel's version and
-    /// the items.
+    /// running mod with items, recipes or `browser-ext.keep-empty`, its index,
+    /// the panel's version and the items.
     pub fn browser_items(&self) -> Option<(usize, u64, &[BrowserStack])> {
         self.entries.iter().enumerate().find_map(|(i, e)| {
-            let b = &e.run.as_ref()?.store.data().browser;
-            (!b.items.is_empty() || b.recipes.is_some()).then_some((
+            let data = e.run.as_ref()?.store.data();
+            let b = &data.browser;
+            (!b.items.is_empty() || b.recipes.is_some() || data.browser_ext.keep_empty).then_some((
                 i,
                 b.version,
                 b.items.as_slice(),
             ))
         })
+    }
+    /// Mod `owner`'s bookmarks and the version to convert once.
+    pub fn browser_bookmarks(&self, owner: usize) -> Option<(u64, &[BrowserStack])> {
+        let b = &self
+            .entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .browser_ext;
+        Some((b.version, &b.bookmarks))
+    }
+    /// Mod `owner`'s extra main-panel tooltip lines, if any.
+    pub fn browser_item_lines(&self, owner: usize) -> Option<&HashMap<u32, Vec<String>>> {
+        let b = &self
+            .entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .browser_ext;
+        (!b.item_lines.is_empty()).then_some(&b.item_lines)
+    }
+    /// Mod `owner`'s extra bookmark tooltip lines, if any.
+    pub fn browser_bookmark_lines(&self, owner: usize) -> Option<&HashMap<u32, Vec<String>>> {
+        let b = &self
+            .entries
+            .get(owner)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .browser_ext;
+        (!b.bookmark_lines.is_empty()).then_some(&b.bookmark_lines)
+    }
+    /// The player did `event` on mod `owner`'s bookmark panel.
+    pub fn browser_ext_event(&mut self, owner: usize, event: BrowserExtEvent) {
+        if let Some(run) = self.entries.get_mut(owner).and_then(|e| e.run.as_mut()) {
+            run.store.data_mut().browser_ext.push(event);
+        }
     }
     /// What mod `owner`'s panel shows instead of its items
     /// (`browser.set-recipes`).
@@ -1154,6 +2086,25 @@ impl Mods {
         input.rebind(name, key.to_owned());
         true
     }
+    /// Puts a key back on the key its mod registered it with; false for an
+    /// unknown mod or key.
+    pub fn reset_key(&mut self, i: usize, name: &str) -> bool {
+        let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) else {
+            return false;
+        };
+        let input = &mut run.store.data_mut().input;
+        let Some(default) = input
+            .keys
+            .iter()
+            .find(|k| k.name == name)
+            .map(|k| k.default_key.clone())
+        else {
+            return false;
+        };
+        input.bindings.retain(|(n, _)| n != name);
+        input.rebind(name, default);
+        true
+    }
     /// The use button went down with `item`: `use-start` to each mod that
     /// claimed it.
     pub fn use_start(&mut self, item: &HeldItem) {
@@ -1183,6 +2134,16 @@ impl Mods {
                 .map(|k| k.name.clone())
                 .collect();
             for name in names {
+                if down {
+                    if !input.physical_down.contains(&name) {
+                        input.physical_down.push(name.clone());
+                    }
+                } else {
+                    input.physical_down.retain(|n| n != &name);
+                    if input.touch_down.contains(&name) || input.controller_down.contains(&name) {
+                        continue;
+                    }
+                }
                 let held = input.down.iter().position(|n| *n == name);
                 match (down, held) {
                     (true, None) => input.down.push(name.clone()),
@@ -1206,10 +2167,17 @@ impl Mods {
     pub fn release_keys(&mut self) {
         for run in self.entries.iter_mut().filter_map(|e| e.run.as_mut()) {
             let input = &mut run.store.data_mut().input;
+            input.touch_down.clear();
+            input.controller_down.clear();
+            input.physical_down.clear();
             for name in std::mem::take(&mut input.down) {
                 input.push(InputEvent::KeyUp(name));
             }
         }
+    }
+    /// Per-mod aim assistance, borrowed without allocating; removed with its runtime.
+    pub fn aim_assists(&self) -> impl Iterator<Item = &AimAssist> {
+        self.inputs().filter_map(|i| i.aim_assist.as_ref())
     }
     /// Some running mod holds the mouse wheel.
     pub fn wheel_claimed(&self) -> bool {
@@ -1285,36 +2253,55 @@ impl Mods {
     }
     /// A `list` widget's row was picked on a surface of mod `i`.
     pub fn ui_select(&mut self, i: usize, id: u32, row: u32) {
-        self.ui_event(i, |ui, s| {
-            ui.horizon_mods_ui_events().call_select(s, id, row)
-        });
+        self.ui_event(i, |ui| ui.select, (id, row));
     }
     /// The player left mod `i`'s screen (Esc or Done).
     pub fn ui_closed(&mut self, i: usize) {
-        self.ui_event(i, |ui, s| ui.horizon_mods_ui_events().call_closed(s));
+        if let Some(run) = self.entries.get_mut(i).and_then(|e| e.run.as_mut()) {
+            run.store.data_mut().canvas.set_screen(None);
+        }
+        self.ui_event(i, |ui| ui.closed, ());
     }
     /// The player opened mod `i`'s settings page.
     pub fn ui_settings_opened(&mut self, i: usize) {
-        self.ui_event(i, |ui, s| {
-            ui.horizon_mods_ui_events().call_settings_opened(s)
-        });
+        self.ui_event(i, |ui| ui.settings_opened, ());
     }
     /// A `ui-events` call on mod `i`; no export, no call (mods built
     /// before `ui` have none).
-    fn ui_event(
+    fn ui_event<P>(
         &mut self,
         i: usize,
-        f: impl FnOnce(&UiHost, &mut Store<State>) -> wasmtime::Result<()>,
-    ) {
-        let has_ui = self
+        get: impl FnOnce(&UiCallbacks) -> Option<TypedFunc<P, ()>>,
+        args: P,
+    ) where
+        P: wasmtime::component::ComponentNamedList + wasmtime::component::Lower + 'static,
+    {
+        let Some(func) = self
             .entries
             .get(i)
             .and_then(|e| e.run.as_ref())
-            .is_some_and(|r| r.ui.is_some());
-        if has_ui {
-            self.call(i, FUEL_EVENT, |run| {
-                f(run.ui.as_ref().expect("checked above"), &mut run.store)
-            });
+            .and_then(|r| get(&r.ui))
+        else {
+            return;
+        };
+        self.call(i, FUEL_EVENT, |run| func.call(&mut run.store, args));
+    }
+    /// Pointer action on the owner's open canvas screen; absent hooks are ignored.
+    pub fn ui_pointer(&mut self, i: usize, kind: PointerKind, x: f32, y: f32, button: u32) {
+        if self.canvas_screen(i).is_some() && x.is_finite() && y.is_finite() {
+            self.ui_event(i, |ui| ui.pointer, (kind, x, y, button));
+        }
+    }
+    /// Wheel steps at GUI coordinates on the owner's open canvas screen.
+    pub fn ui_scroll(&mut self, i: usize, x: f32, y: f32, steps: f32) {
+        if self.canvas_screen(i).is_some() && x.is_finite() && y.is_finite() && steps.is_finite() {
+            self.ui_event(i, |ui| ui.scroll, (x, y, steps));
+        }
+    }
+    /// A key on the owner's open canvas screen; Escape belongs to the game.
+    pub fn ui_screen_key(&mut self, i: usize, key: &str, down: bool) {
+        if self.canvas_screen(i).is_some() && key != "key.keyboard.escape" {
+            self.ui_event(i, |ui| ui.screen_key, (key.to_owned(), down));
         }
     }
     /// What mods asked to show since the last call.
@@ -1348,6 +2335,9 @@ impl Mods {
                 Ok(run) => {
                     log::info!("Horizon: mod {id} reloaded");
                     entry.run = run;
+                    if let Some(run) = &mut entry.run {
+                        run.store.data_mut().ui.drain(i, &mut self.out);
+                    }
                     entry.status = Status::Running;
                 }
                 Err(e) => {
@@ -1358,6 +2348,74 @@ impl Mods {
         }
         any
     }
+}
+
+fn linker(engine: &Engine) -> Result<Linker<State>, String> {
+    let mut linker = Linker::new(engine);
+    HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::menus::add_to_linker::<State, HasSelf<State>>(
+        &mut linker,
+        |s| s,
+    )
+    .map_err(|e| e.to_string())?;
+    channel_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
+    atmosphere_host::add_to_linker(&mut linker).map_err(|e| e.to_string())?;
+    players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    // Orders are imported by mods. Their variant grows over time, but
+    // Wasmtime's typed bindings require an identical case list. Decode
+    // by case name so components built against earlier subsets keep
+    // their own discriminants and still reach the same validation.
+    linker.allow_shadowing(true);
+    linker
+        .instance("horizon:mods/entities@0.1.0")
+        .map_err(|e| e.to_string())?
+        .func_new("give-orders", |mut store, _, params, results| {
+            let result = decode_orders(params)
+                .and_then(|orders| entities::Host::give_orders(store.data_mut(), orders));
+            let [output] = results else {
+                return Err(wasmtime::Error::msg("give-orders returns one result"));
+            };
+            *output = Val::Result(
+                result
+                    .map(|()| None)
+                    .map_err(|error| Some(Box::new(Val::String(error)))),
+            );
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+    linker.allow_shadowing(false);
+    ContainerHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    // `work-left` reads the store's call budget, which a plain host
+    // function has no way to.
+    linker.allow_shadowing(true);
+    linker
+        .instance("horizon:mods/canvas@0.1.0")
+        .map_err(|e| e.to_string())?
+        .func_wrap(
+            "work-left",
+            |store: wasmtime::StoreContextMut<'_, State>, (): ()| {
+                let budget = store.data().call_budget.mode;
+                Ok((budget.work_left(&store),))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    linker.allow_shadowing(false);
+    WorldReadHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
+    Ok(linker)
 }
 
 /// A command's arguments are well formed: names given and distinct,
@@ -1403,7 +2461,7 @@ fn modified(path: &Path) -> Option<SystemTime> {
 /// A trap or error, as the player reads it.
 fn reason(e: &wasmtime::Error) -> String {
     match e.downcast_ref::<Trap>() {
-        Some(Trap::OutOfFuel) => "it took too long (an endless loop?)".into(),
+        Some(Trap::OutOfFuel | Trap::Interrupt) => "it took too long (an endless loop?)".into(),
         Some(Trap::UnreachableCodeReached) => "it crashed (a panic)".into(),
         Some(trap) => format!("it crashed: {trap}"),
         None => format!("{e:#}"),
@@ -1474,9 +2532,24 @@ impl game::Host for State {
         // NaN compares false: no hit.
         (*at <= distance.min(RAYCAST_MAX) && !distance.is_nan()).then(|| hit.clone())
     }
+    fn world_id(&mut self) -> Option<String> {
+        self.snapshot.world_id.clone()
+    }
+    fn raycast_entity(&mut self, distance: f32) -> Option<EntityHit> {
+        let (at, hit) = self.snapshot.view_entity.as_ref()?;
+        (*at <= distance.min(RAYCAST_MAX)
+            && !distance.is_nan()
+            && self
+                .snapshot
+                .view_hit
+                .as_ref()
+                .is_none_or(|(block, _)| at < block))
+        .then(|| hit.clone())
+    }
 }
 impl browser::Host for State {
     fn set_items(&mut self, items: Vec<BrowserStack>) {
+        self.browser_ext.item_lines.clear();
         self.browser.items = items
             .into_iter()
             .take(BROWSER_ITEMS)
@@ -1495,38 +2568,148 @@ impl browser::Host for State {
         tab: u32,
         recipes: Vec<BrowserRecipe>,
     ) {
-        let stack = |s: BrowserStack| BrowserStack {
-            item: clip(s.item),
-            components: clip_to(s.components, 4096),
-            ..s
-        };
-        let cycle = |list: Vec<BrowserStack>| -> Vec<BrowserStack> {
-            list.into_iter().take(SLOT_STACKS).map(stack).collect()
-        };
-        self.browser.recipes = (!recipes.is_empty()).then(|| {
-            let recipes = recipes
-                .into_iter()
-                .take(BROWSER_RECIPES)
-                .map(|r| BrowserRecipe {
-                    width: r.width.clamp(1, 3),
-                    height: r.height.clamp(1, 3),
-                    slots: r.slots.into_iter().take(RECIPE_SLOTS).map(cycle).collect(),
-                    results: cycle(r.results),
-                    note: clip(r.note),
-                    ..r
-                })
-                .collect();
-            RecipePage {
-                title: clip(title),
-                tabs: tabs.into_iter().take(RECIPE_TABS).map(stack).collect(),
-                tab,
-                recipes,
-            }
-        });
-        self.browser.version = BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.browser
+            .set_recipes(title, tabs, tab, recipes.into_iter().map(|r| (r, None)));
     }
     fn poll(&mut self) -> Vec<BrowserEvent> {
         self.browser.events.drain(..).collect()
+    }
+}
+impl browser_ext::Host for State {
+    fn recipe_count(&mut self) -> u32 {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map_or(0, |r| r.recipes.len().min(u32::MAX as usize) as u32)
+    }
+    fn recipes_page(&mut self, start: u32, count: u32) -> Vec<Recipe> {
+        self.snapshot.recipes.as_ref().map_or_else(Vec::new, |r| {
+            let start = (start as usize).min(r.recipes.len());
+            let end = start
+                .saturating_add((count.min(2048)) as usize)
+                .min(r.recipes.len());
+            r.recipes[start..end].to_vec()
+        })
+    }
+    fn item_facts(&mut self) -> Vec<ItemFacts> {
+        self.snapshot
+            .recipes
+            .as_ref()
+            .map_or_else(Vec::new, |r| r.facts.clone())
+    }
+    fn other_recipes(&mut self) -> Vec<OtherRecipe> {
+        self.snapshot.recipes.as_ref().map_or_else(Vec::new, |r| {
+            r.others
+                .iter()
+                .filter(|r| r.json.len() <= 16 * 1024)
+                .take(4096)
+                .cloned()
+                .collect()
+        })
+    }
+
+    fn set_recipes(
+        &mut self,
+        title: String,
+        tabs: Vec<BrowserStack>,
+        tab: u32,
+        recipes: Vec<browser_ext::RecipeEntry>,
+    ) {
+        self.browser.set_recipes(
+            title,
+            tabs,
+            tab,
+            recipes.into_iter().map(|entry| {
+                let c = match entry {
+                    browser_ext::RecipeEntry::Custom(c) => c,
+                    browser_ext::RecipeEntry::Standard(r) => return (r, None),
+                };
+                let (width, height) = (c.width.clamp(1, 160), c.height.clamp(1, 120));
+                let pos =
+                    |x: i32, y: i32| (x.clamp(0, width as i32 - 1), y.clamp(0, height as i32 - 1));
+                let slots: Vec<_> = c.slots.into_iter().take(RECIPE_SLOTS).collect();
+                let custom = CustomGeometry {
+                    width,
+                    height,
+                    slots: slots.iter().map(|s| pos(s.x, s.y)).collect(),
+                    result: c.result.as_ref().map(|s| pos(s.x, s.y)),
+                    texts: c
+                        .texts
+                        .into_iter()
+                        .take(16)
+                        .map(|t| {
+                            let (x, y) = pos(t.x, t.y);
+                            (x, y, clip(t.text), t.color & 0xFFFFFF)
+                        })
+                        .collect(),
+                    sprites: c
+                        .sprites
+                        .into_iter()
+                        .take(16)
+                        .map(|s| {
+                            let (x, y) = pos(s.x, s.y);
+                            (x, y, clip(s.sprite))
+                        })
+                        .collect(),
+                };
+                (
+                    BrowserRecipe {
+                        layout: BrowserLayout::Single,
+                        width: 1,
+                        height: 1,
+                        slots: slots.into_iter().map(|s| s.stacks).collect(),
+                        results: c.result.map_or_else(Vec::new, |s| s.stacks),
+                        note: String::new(),
+                        action: c.action,
+                    },
+                    Some(custom),
+                )
+            }),
+        );
+    }
+
+    fn set_item_lines(&mut self, bookmarks: bool, lines: Vec<browser_ext::ItemLines>) {
+        let lines = lines
+            .into_iter()
+            .take(BROWSER_ITEMS)
+            .map(|item| {
+                let lines = item
+                    .lines
+                    .into_iter()
+                    .take(8)
+                    .map(|s| clip_to(s, 128))
+                    .collect();
+                (item.index, lines)
+            })
+            .collect();
+        let version = BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if bookmarks {
+            self.browser_ext.bookmark_lines = lines;
+            self.browser_ext.version = version;
+        } else {
+            self.browser_ext.item_lines = lines;
+            self.browser.version = version;
+        }
+    }
+    fn set_bookmarks(&mut self, items: Vec<BrowserStack>) {
+        self.browser_ext.bookmark_lines.clear();
+        self.browser_ext.bookmarks = items
+            .into_iter()
+            .take(1024)
+            .map(|s| BrowserStack {
+                item: clip(s.item),
+                components: clip_to(s.components, 4096),
+                ..s
+            })
+            .collect();
+        self.browser_ext.version =
+            BROWSER_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn keep_empty(&mut self, keep: bool) {
+        self.browser_ext.keep_empty = keep;
+    }
+    fn poll(&mut self) -> Vec<BrowserExtEvent> {
+        self.browser_ext.events.drain(..).collect()
     }
 }
 impl recipes::Host for State {
@@ -1621,11 +2804,670 @@ impl chat::Host for State {
             text: clip(text),
         });
     }
+    fn open(&mut self, text: String) {
+        self.ui.chat = Some(clip_to(text, 256));
+    }
 }
 impl mod_world::Host for State {
+    fn block_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Result<Option<String>, String> {
+        Ok(self.block_image(&dimension, pos)?.value)
+    }
+    fn set_block_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        machines::validate_block_data(data.as_deref())?;
+        let before = self.block_image(&dimension, pos)?;
+        if !channel_host::allowance(&mut self.storage_move_budget, self.snapshot.tick, 64) {
+            return Err("at most 64 storage moves/data writes per mod per tick".into());
+        }
+        self.out.push(Output::BlockDataWrite(BlockDataWrite {
+            mod_id: self.id.clone(),
+            dimension,
+            pos,
+            before,
+            value: data,
+        }));
+        Ok(())
+    }
+    fn destroy_block(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        tool: Option<String>,
+        collect: bool,
+    ) -> Result<Vec<MachineStack>, String> {
+        self.machine_destroy(dimension, pos, tool, collect)
+    }
+    fn set_break_progress(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        stage: i32,
+    ) -> Result<(), String> {
+        if !(-1..=9).contains(&stage) {
+            return Err("stage must be -1 or 0..=9".into());
+        }
+        self.machine_position(&dimension, pos)?;
+        if !channel_host::allowance(&mut self.machines.progress_budget, self.snapshot.tick, 64) {
+            return Err("at most 64 break progress requests per mod per tick".into());
+        }
+        self.out.push(Output::BreakProgress {
+            mod_id: self.id.clone(),
+            dimension,
+            pos: (pos.x, pos.y, pos.z),
+            stage,
+        });
+        Ok(())
+    }
+
+    fn player_stack_data(
+        &mut self,
+        player: String,
+        inv_slot: u32,
+    ) -> Result<Option<String>, String> {
+        self.read_data(self.storage_player(&player)?, inv_slot)
+    }
+    fn container_stack_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        slot: u32,
+    ) -> Result<Option<String>, String> {
+        self.read_data(storage_api::location(dimension, pos), slot)
+    }
+    fn player_held_data(&mut self, player: String) -> Result<Option<String>, String> {
+        let (location, slot) = self.data_slot(&player)?;
+        self.read_data(location, slot)
+    }
+    fn set_player_stack_data(
+        &mut self,
+        player: String,
+        inv_slot: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        self.write_data(self.storage_player(&player)?, inv_slot, false, data)
+    }
+    fn set_container_stack_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        slot: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        self.write_data(storage_api::location(dimension, pos), slot, false, data)
+    }
+    fn set_player_held_data(&mut self, player: String, data: Option<String>) -> Result<(), String> {
+        let (location, slot) = self.data_slot(&player)?;
+        self.write_data(location, slot, true, data)
+    }
+    fn player_stacks_with_data(
+        &mut self,
+        player: String,
+    ) -> Result<Vec<Option<mod_world::StackInfoWithData>>, String> {
+        self.stacks_with_data(self.storage_player(&player)?)
+    }
+    fn container_stacks_with_data(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Result<Vec<Option<mod_world::StackInfoWithData>>, String> {
+        self.stacks_with_data(storage_api::location(dimension, pos))
+    }
+    fn give_item_with_data(
+        &mut self,
+        player: String,
+        item: String,
+        count: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        storage_api::validate_data(data.as_deref())?;
+        self.data_budget()?;
+        if item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        let StorageLocation::Player(player) = self.storage_player(&player)? else {
+            unreachable!()
+        };
+        self.world
+            .lock()
+            .map_err(|_| "world unavailable")?
+            .as_ref()
+            .ok_or("world unavailable")?
+            .check_give_stack(&item, count)?;
+        self.out.push(Output::GiveItemWithData {
+            player,
+            item,
+            count,
+            mod_id: self.id.clone(),
+            data,
+        });
+        Ok(())
+    }
+
+    fn spawn_item_with_data(
+        &mut self,
+        dimension: String,
+        at: WorldPoint,
+        item: String,
+        count: u32,
+        data: Option<String>,
+    ) -> Result<(), String> {
+        storage_api::validate_data(data.as_deref())?;
+        if item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        self.data_budget()?;
+        self.spawn_item(dimension.clone(), at, item.clone(), count)?;
+        // spawn_item validates and appends exactly one output, sharing its budget.
+        self.out.pop();
+        self.out.push(Output::SpawnItemWithData {
+            dimension,
+            at: EntityPoint {
+                x: at.x,
+                y: at.y,
+                z: at.z,
+            },
+            item,
+            count,
+            mod_id: self.id.clone(),
+            data,
+        });
+        Ok(())
+    }
+    fn schedule_tick(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        delay_ticks: u32,
+    ) -> Result<(), String> {
+        self.schedule_behaviour_tick(dimension, pos, delay_ticks)
+    }
+    fn player_stacks(&mut self, player: String) -> Option<Vec<Option<StackInfo>>> {
+        self.storage_player_stacks(player)
+    }
+    fn container_stacks(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Option<Vec<Option<StackInfo>>> {
+        self.storage_stacks(dimension, pos)
+    }
+    fn container_move(
+        &mut self,
+        dimension: String,
+        from: BlockChangePos,
+        from_slot: u32,
+        to: BlockChangePos,
+        to_slot: Option<u32>,
+        count: u32,
+    ) -> Result<u32, String> {
+        self.storage_container_move(dimension, from, from_slot, to, to_slot, count)
+    }
+    fn container_to_player(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        slot: u32,
+        count: u32,
+        player: String,
+    ) -> Result<u32, String> {
+        self.storage_to_player(dimension, pos, slot, count, player)
+    }
+    fn player_to_container(
+        &mut self,
+        player: String,
+        inv_slot: u32,
+        dimension: String,
+        pos: BlockChangePos,
+        count: u32,
+    ) -> Result<u32, String> {
+        self.storage_from_player(player, inv_slot, dimension, pos, count)
+    }
+
+    fn spawn_point(&mut self) -> (String, WorldPoint, f32) {
+        self.snapshot.world_spawn.clone().unwrap_or_else(|| {
+            (
+                "minecraft:overworld".into(),
+                WorldPoint {
+                    x: 0.0,
+                    y: 64.0,
+                    z: 0.0,
+                },
+                0.0,
+            )
+        })
+    }
+    fn break_blocks_as(
+        &mut self,
+        player: String,
+        blocks: Vec<BlockChangePos>,
+        options: BreakOptions,
+    ) -> Result<(), String> {
+        let p = self
+            .snapshot
+            .players
+            .iter()
+            .find(|p| p.id == player)
+            .ok_or_else(|| format!("no online player {player}"))?;
+        if blocks.len() > 2048 {
+            return Err("at most 2048 blocks per call".into());
+        }
+        if !options.exhaustion.is_finite()
+            || !(0.0..=1.0).contains(&options.exhaustion)
+            || options
+                .drops_at
+                .as_ref()
+                .is_some_and(|p| ![p.x, p.y, p.z].iter().all(|v| v.is_finite()))
+        {
+            return Err("invalid break options".into());
+        }
+        let tick = Some(self.snapshot.tick);
+        let used = if self.break_budget.0 == tick {
+            self.break_budget.1
+        } else {
+            0
+        };
+        if used + blocks.len() > 4096 {
+            return Err("at most 4096 blocks per mod per tick".into());
+        }
+        self.break_budget = (tick, used + blocks.len());
+        if !blocks.is_empty() {
+            self.out.push(Output::BreakBlocksAs {
+                mod_id: self.id.clone(),
+                player,
+                dimension: p.dimension.clone(),
+                blocks,
+                options,
+            });
+        }
+        Ok(())
+    }
+    fn spawn_item(
+        &mut self,
+        dimension: String,
+        at: WorldPoint,
+        item: String,
+        count: u32,
+    ) -> Result<(), String> {
+        let at = EntityPoint {
+            x: at.x,
+            y: at.y,
+            z: at.z,
+        };
+        if !finite(&at) {
+            return Err("spawn-item needs a finite point".into());
+        }
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let view = view.as_ref().ok_or("world unavailable")?;
+        if !view.has_dimension(&dimension) {
+            return Err(format!("no dimension {dimension}"));
+        }
+        view.check_item_stack(&item, count)?;
+        let tick = self.snapshot.clock.as_ref().map(|c| c.game_time);
+        if self.item_spawn_budget.0 != tick {
+            self.item_spawn_budget = (tick, 0);
+        }
+        if self.item_spawn_budget.1 >= 16 {
+            return Err("at most 16 item spawns per tick per mod".into());
+        }
+        self.item_spawn_budget.1 += 1;
+        self.out.push(Output::SpawnItem {
+            dimension,
+            at,
+            item,
+            count,
+        });
+        Ok(())
+    }
+    fn spawn_particles(
+        &mut self,
+        dimension: String,
+        particles: ParticleBurst,
+    ) -> Result<(), String> {
+        {
+            let view = self.world.lock().map_err(|_| "world unavailable")?;
+            let view = view.as_ref().ok_or("world unavailable")?;
+            if !view.has_dimension(&dimension) {
+                return Err(format!("no dimension {dimension}"));
+            }
+            player_world::check_particles(&particles, &self.snapshot.entity_resources, |s| {
+                view.check_state(s)
+            })?;
+        }
+        let tick = self.snapshot.tick;
+        if !player_world::spend(
+            &mut self.player_world.particle_calls,
+            tick,
+            1,
+            player_world::PARTICLE_CALLS,
+        ) {
+            return Err("at most 64 particle calls per mod per tick".into());
+        }
+        if !player_world::spend(
+            &mut self.player_world.particles,
+            tick,
+            (particles.count as usize).max(1),
+            player_world::PARTICLES,
+        ) {
+            return Err("at most 4096 particles per mod per tick".into());
+        }
+        self.out.push(Output::SpawnParticles {
+            dimension,
+            particles,
+        });
+        Ok(())
+    }
+    fn explode(
+        &mut self,
+        dimension: String,
+        center: WorldPoint,
+        radius: f32,
+        fire: bool,
+        blast: BlastKind,
+    ) -> Result<(), String> {
+        {
+            let view = self.world.lock().map_err(|_| "world unavailable")?;
+            if !view
+                .as_ref()
+                .ok_or("world unavailable")?
+                .has_dimension(&dimension)
+            {
+                return Err(format!("no dimension {dimension}"));
+            }
+        }
+        player_world::check_blast(&center, radius)?;
+        if !player_world::spend(
+            &mut self.player_world.blasts,
+            self.snapshot.tick,
+            1,
+            player_world::BLASTS,
+        ) {
+            return Err("at most 4 explosions per mod per tick".into());
+        }
+        self.out.push(Output::Explode {
+            dimension,
+            center,
+            radius,
+            fire,
+            blast,
+        });
+        Ok(())
+    }
+    fn make_block_fall(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        expected_state: String,
+        velocity: WorldPoint,
+        hurts: bool,
+    ) -> Result<(), String> {
+        {
+            let view = self.world.lock().map_err(|_| "world unavailable")?;
+            let view = view.as_ref().ok_or("world unavailable")?;
+            if !view.has_dimension(&dimension) {
+                return Err(format!("no dimension {dimension}"));
+            }
+            player_world::check_fall(&expected_state, &velocity)?;
+            let now = view
+                .block(&dimension, pos.x, pos.y, pos.z)
+                .ok_or("not loaded")?;
+            if now != expected_state {
+                return Err("block changed".into());
+            }
+            if view.block_has_tag(&expected_state, "minecraft:wither_immune") {
+                return Err("unbreakable block".into());
+            }
+        }
+        if !player_world::spend(
+            &mut self.player_world.falls,
+            self.snapshot.tick,
+            1,
+            player_world::FALLS,
+        ) {
+            return Err("at most 16 falling blocks per mod per tick".into());
+        }
+        self.out.push(Output::MakeBlockFall {
+            dimension,
+            pos,
+            expected: expected_state,
+            velocity,
+            hurts,
+        });
+        Ok(())
+    }
+    fn fluid_flow(&mut self, dimension: String, pos: BlockChangePos) -> Option<WorldPoint> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?
+            .fluid_flow(&dimension, pos)
+            .map(|[x, y, z]| WorldPoint { x, y, z })
+    }
+    fn block_has_tag(&mut self, block: String, tag: String) -> bool {
+        self.world
+            .lock()
+            .ok()
+            .and_then(|v| v.as_ref().map(|v| v.block_has_tag(&block, &tag)))
+            .unwrap_or(false)
+    }
+    fn play_sound(
+        &mut self,
+        dimension: String,
+        at: WorldPoint,
+        name: String,
+        volume: f32,
+        pitch: f32,
+    ) -> Result<(), String> {
+        let at = EntityPoint {
+            x: at.x,
+            y: at.y,
+            z: at.z,
+        };
+        if !finite(&at) {
+            return Err("sound needs a finite point".into());
+        }
+        let sound = EntitySound {
+            name,
+            volume,
+            pitch,
+        };
+        let order = EntityOrder::Sound(sound.clone());
+        check_order(&order)?;
+        check_order_names(&order, &self.snapshot)?;
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        if !view
+            .as_ref()
+            .ok_or("world unavailable")?
+            .has_dimension(&dimension)
+        {
+            return Err(format!("no dimension {dimension}"));
+        }
+        self.out.push(Output::PlaySound {
+            dimension,
+            at,
+            sound,
+        });
+        Ok(())
+    }
+    fn container(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<Vec<Option<ContainerItemStack>>> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.container(&dimension, x, y, z)
+    }
+    fn set_container(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        slots: Vec<Option<ContainerItemStack>>,
+    ) -> Result<(), String> {
+        if slots.len() > CONTAINER_SLOTS {
+            return Err(format!("at most {CONTAINER_SLOTS} container slots"));
+        }
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let view = view.as_ref().ok_or("world unavailable")?;
+        if !view.has_dimension(&dimension) {
+            return Err(format!("no dimension {dimension}"));
+        }
+        if let Some(current) = view.container(&dimension, x, y, z)
+            && current.len() != slots.len()
+        {
+            return Err(format!(
+                "container has {} slots, got {}",
+                current.len(),
+                slots.len()
+            ));
+        }
+        for stack in slots.iter().flatten() {
+            view.check_item_stack(&stack.item, stack.count)?;
+        }
+        self.out.push(Output::SetContainer {
+            dimension,
+            pos: (x, y, z),
+            slots,
+        });
+        Ok(())
+    }
+    fn place_structure(
+        &mut self,
+        dimension: String,
+        id: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        rotation: u32,
+        mirror: bool,
+    ) -> Result<(), String> {
+        if rotation > 3 {
+            return Err("rotation is 0 to 3 quarter turns".into());
+        }
+        if !resource_id(&id) {
+            return Err(format!("{id:?} is not a structure template id"));
+        }
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let view = view.as_ref().ok_or("world unavailable")?;
+        if !view.has_dimension(&dimension) {
+            return Err(format!("no dimension {dimension}"));
+        }
+        view.check_structure(&id)?;
+        self.out.push(Output::PlaceStructure {
+            dimension,
+            id,
+            pos: (x, y, z),
+            rotation,
+            mirror,
+        });
+        Ok(())
+    }
+    fn set_spawner(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        entity: String,
+    ) -> Result<(), String> {
+        if !resource_id(&entity) {
+            return Err(format!("{entity:?} is not an entity type id"));
+        }
+        if let Some(view) = self.world.lock().ok().as_ref().and_then(|v| v.as_ref())
+            && !view.has_dimension(&dimension)
+        {
+            return Err(format!("no dimension {dimension}"));
+        }
+        self.out.push(Output::SetSpawner {
+            dimension,
+            pos: (x, y, z),
+            entity,
+        });
+        Ok(())
+    }
+    fn time(&mut self, dimension: String) -> WorldTime {
+        self.snapshot
+            .world_times
+            .get(&dimension)
+            .cloned()
+            .unwrap_or(WorldTime {
+                day_time: 0,
+                game_time: 0,
+                is_day: false,
+                raining: false,
+                thundering: false,
+            })
+    }
+    fn can_see_sky(&mut self, dimension: String, x: i32, y: i32, z: i32) -> bool {
+        self.world
+            .lock()
+            .ok()
+            .and_then(|v| v.as_ref().map(|v| v.can_see_sky(&dimension, x, y, z)))
+            .unwrap_or(false)
+    }
+    fn game_rule(&mut self, name: String) -> Option<String> {
+        let name = name.strip_prefix("minecraft:").unwrap_or(&name);
+        let name = if name == "mobGriefing" {
+            "mob_griefing"
+        } else {
+            name
+        };
+        self.snapshot.game_rules.get(name).cloned()
+    }
+    fn difficulty(&mut self) -> String {
+        self.snapshot.difficulty.clone()
+    }
     fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.block(&dimension, x, y, z)
+    }
+    fn heightmap(&mut self, dimension: String, x: i32, z: i32) -> Option<Vec<i32>> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.heightmap(&dimension, x, z)
+    }
+    fn generated_chunks(&mut self) -> Vec<ChunkPos> {
+        (self.snapshot.generated_chunks.iter())
+            .take(GENERATED_CHUNKS)
+            .cloned()
+            .collect()
+    }
+    fn set_loot_table(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+        table: String,
+    ) -> Result<(), String> {
+        let valid = table.split_once(':').is_some_and(|(ns, path)| {
+            !ns.is_empty()
+                && !path.is_empty()
+                && table
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-./:".contains(c))
+        });
+        if !valid {
+            return Err(format!("{table:?} is not a loot table id"));
+        }
+        if let Some(view) = self.world.lock().ok().as_ref().and_then(|v| v.as_ref())
+            && !view.has_dimension(&dimension)
+        {
+            return Err(format!("no dimension {dimension}"));
+        }
+        self.out.push(Output::SetLootTable {
+            dimension,
+            pos: (x, y, z),
+            table,
+        });
+        Ok(())
     }
     fn get_biome(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
@@ -1656,9 +3498,114 @@ impl mod_world::Host for State {
         Ok(())
     }
 }
+/// Decode self-describing component values without assuming a variant's
+/// numeric discriminants. The derived Rust records provide the field/type
+/// checks, while the normal host implementation validates names and bounds.
+fn decode_orders(params: &[Val]) -> Result<Vec<(u32, EntityOrder)>, String> {
+    let [Val::List(orders)] = params else {
+        return Err("give-orders expects a list of (mob id, order)".into());
+    };
+    if orders.len() > ORDERS_PER_CALL {
+        return Err(format!(
+            "{} orders: at most {ORDERS_PER_CALL} per call",
+            orders.len()
+        ));
+    }
+    let value = component_json(&params[0], 0)?;
+    serde_json::from_value(value).map_err(|error| format!("invalid entity orders: {error}"))
+}
+fn component_json(value: &Val, depth: usize) -> Result<serde_json::Value, String> {
+    use serde_json::Value as Json;
+    if depth > 16 {
+        return Err("entity order value is too deeply nested".into());
+    }
+    let child = |value: &Val| component_json(value, depth + 1);
+    let case_name = |name: &str| {
+        name.split('-')
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(chars).collect()
+                })
+            })
+            .collect::<String>()
+    };
+    Ok(match value {
+        Val::Bool(value) => Json::Bool(*value),
+        Val::U8(value) => (*value).into(),
+        Val::U32(value) => (*value).into(),
+        Val::Float32(value) if value.is_finite() => Json::from(*value),
+        Val::Float64(value) if value.is_finite() => Json::from(*value),
+        Val::String(value) => Json::String(value.clone()),
+        Val::List(values) | Val::Tuple(values) => {
+            Json::Array(values.iter().map(child).collect::<Result<_, _>>()?)
+        }
+        Val::Record(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(name, value)| child(value).map(|value| (name.replace('-', "_"), value)))
+                .collect::<Result<_, _>>()?,
+        ),
+        Val::Variant(name, None) | Val::Enum(name) => Json::String(case_name(name)),
+        Val::Variant(name, Some(value)) => {
+            Json::Object([(case_name(name), child(value)?)].into_iter().collect())
+        }
+        Val::Option(None) => Json::Null,
+        Val::Option(Some(value)) => child(value)?,
+        _ => return Err("invalid or nonfinite entity order value".into()),
+    })
+}
+
+/// A namespaced registry id with no path traversal or extra separators.
+fn resource_id(id: &str) -> bool {
+    id.len() <= 256
+        && id.split_once(':').is_some_and(|(namespace, path)| {
+            !namespace.is_empty()
+                && namespace != "."
+                && namespace != ".."
+                && !path.is_empty()
+                && namespace
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
+                && path
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_./-".contains(&b))
+                && path
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        })
+}
+fn check_effect(effect: &EffectChange, snapshot: &Snapshot) -> Result<(), String> {
+    if !snapshot.effect_ids.contains(&effect.id) {
+        return Err(format!("unknown status effect {}", effect.id));
+    }
+    // The game counts durations in signed ticks, twenty per second.
+    if effect.seconds > i32::MAX as u32 / 20 {
+        return Err("effect duration exceeds the game's tick range".into());
+    }
+    Ok(())
+}
 /// A content mod's kind: any namespace but vanilla's.
 fn own_kind(kind: &str) -> bool {
     !kind.starts_with("minecraft:")
+}
+impl From<EntityPoint> for WorldPoint {
+    fn from(p: EntityPoint) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
+impl From<EntityPoint> for PlayerPoint {
+    fn from(p: EntityPoint) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
 }
 fn finite(p: &EntityPoint) -> bool {
     p.x.is_finite() && p.y.is_finite() && p.z.is_finite()
@@ -1683,6 +3630,27 @@ fn check_data<'a>(
 /// Why `entities.give-orders` refuses an order, if it does.
 fn check_order(order: &EntityOrder) -> Result<(), String> {
     match order {
+        EntityOrder::Attribute(a)
+            if crate::content::TYPE_ONLY_ATTRIBUTES.contains(&a.name.as_str())
+                || !crate::content::ENTITY_ATTRIBUTES.contains(&a.name.as_str())
+                || !(0.0..=1024.0).contains(&a.value) =>
+        {
+            Err(
+                "attribute names an entity JSON attribute (except scale and the fall ones), with a base of 0 to 1024"
+                    .into(),
+            )
+        }
+        EntityOrder::Mount(m)
+            if m.player.is_empty()
+                || m.player.len() > 64
+                || !(-16.0..=64.0).contains(&m.height)
+                || !(-32.0..=32.0).contains(&m.forward) =>
+        {
+            Err("mount names a player UUID, a height of -16 to 64 and forward of -32 to 32".into())
+        }
+        EntityOrder::Heal(amount) if !amount.is_finite() => {
+            Err("heal needs a finite amount".into())
+        }
         EntityOrder::Scale(s) if !(0.0625..=16.0).contains(s) => {
             Err("scale is 0.0625 to 16".into())
         }
@@ -1695,6 +3663,26 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
         EntityOrder::LookAt(p) if !finite(p) => Err("look-at needs a point".into()),
         EntityOrder::Push(p) if ![p.x, p.y, p.z].iter().all(|v| (-4.0..=4.0).contains(v)) => {
             Err("push is -4 to 4 blocks per tick on each axis".into())
+        }
+        EntityOrder::Sound(s)
+            if !s.volume.is_finite() || s.volume < 0.0 || !s.pitch.is_finite() || s.pitch < 0.0 =>
+        {
+            Err("sound needs a finite, nonnegative volume and pitch".into())
+        }
+        EntityOrder::Particles(p)
+            if !finite(&p.at)
+                || !finite(&p.delta)
+                || ![p.delta.x, p.delta.y, p.delta.z]
+                    .iter()
+                    .all(|d| (*d as f32).is_finite())
+                || !p.speed.is_finite()
+                || p.speed < 0.0
+                || p.count > 256 =>
+        {
+            Err("particles need finite points and a nonnegative speed, count at most 256".into())
+        }
+        EntityOrder::Texture(Some(name)) if !crate::content::entity_texture(name) => {
+            Err("texture is <namespace>:entity/<path>".into())
         }
         EntityOrder::Animate(Some(name)) if name.is_empty() || name.len() > 256 => {
             Err("animate names an animation of 1 to 256 characters".into())
@@ -1710,7 +3698,100 @@ fn check_order(order: &EntityOrder) -> Result<(), String> {
         _ => Ok(()),
     }
 }
+fn check_order_names(order: &EntityOrder, snapshot: &Snapshot) -> Result<(), String> {
+    let resources = &snapshot.entity_resources;
+    match order {
+        EntityOrder::Effect(effect) => check_effect(effect, snapshot),
+        EntityOrder::Target(EntityTarget::Player(id))
+            if !snapshot.players.iter().any(|p| p.id == *id) =>
+        {
+            Err(format!("no online player {id}"))
+        }
+        EntityOrder::Texture(Some(name)) if !resources.textures.contains(name) => {
+            Err(format!("no loaded mod entity texture {name}"))
+        }
+        EntityOrder::Sound(s) if !resources.sounds.contains(&s.name) => {
+            Err(format!("unknown sound event {}", s.name))
+        }
+        EntityOrder::Particles(p) if !resources.particles.contains_key(&p.name) => {
+            Err(format!("unknown particle type without options {}", p.name))
+        }
+        _ => Ok(()),
+    }
+}
 impl entities::Host for State {
+    fn hurt_events(&mut self) -> Vec<HurtEvent> {
+        self.snapshot
+            .hurt_events
+            .iter()
+            .take(256)
+            .cloned()
+            .collect()
+    }
+    fn deaths(&mut self) -> Vec<Death> {
+        self.snapshot.deaths.iter().take(256).cloned().collect()
+    }
+    fn effect(&mut self, mob: u32, change: EffectChange) -> Result<(), String> {
+        if !self.snapshot.entities.iter().any(|e| e.id == mob) {
+            return Err(format!("no mob {mob} is loaded"));
+        }
+        check_effect(&change, &self.snapshot)?;
+        self.out.push(Output::MobEffect { mob, change });
+        Ok(())
+    }
+    fn push(&mut self, mob: u32, velocity: EntityPoint) -> Result<(), String> {
+        if !self.snapshot.entities.iter().any(|e| e.id == mob) {
+            return Err(format!("no mob {mob} is loaded"));
+        }
+        check_order(&EntityOrder::Push(velocity))?;
+        self.out.push(Output::MobPush { mob, velocity });
+        Ok(())
+    }
+    fn tame(&mut self, mob: u32, owner: Option<String>) -> Result<(), String> {
+        if !self.snapshot.entities.iter().any(|e| e.id == mob) {
+            return Err(format!("no mob {mob} is loaded"));
+        }
+        if !self.snapshot.tamable_mobs.contains(&mob) {
+            return Err(format!("mob {mob} cannot be tamed"));
+        }
+        if let Some(id) = &owner
+            && (id.len() != 36
+                || [8, 13, 18, 23].iter().any(|&i| id.as_bytes()[i] != b'-')
+                || u128::from_str_radix(&id.replace('-', ""), 16).is_err())
+        {
+            return Err("owner must be a UUID".into());
+        }
+        self.out.push(Output::Tame { mob, owner });
+        Ok(())
+    }
+    fn strike(&mut self, mob: u32, hit: StrikeHit) -> Result<(), String> {
+        let e = self
+            .snapshot
+            .entities
+            .iter()
+            .find(|e| e.id == mob)
+            .ok_or_else(|| format!("no mob {mob} is loaded"))?;
+        if !own_kind(&e.kind) {
+            return Err(format!("mob {mob} is not a content mod's"));
+        }
+        check_order(&EntityOrder::HurtArea(EntityArea {
+            center: hit.center,
+            radius: hit.radius,
+            amount: hit.amount,
+            fire: hit.fire,
+        }))?;
+        if !(0.0..=4.0).contains(&hit.knockback)
+            || hit.skip_kinds.len() > 256
+            || hit.skip_kinds.iter().any(|k| !resource_id(k))
+        {
+            return Err("strike needs knockback 0..4 and at most 256 entity type ids".into());
+        }
+        if let Some(id) = &hit.credit_player {
+            self.online_player(id)?;
+        }
+        self.out.push(Output::Strike { mob, hit });
+        Ok(())
+    }
     fn mobs(&mut self) -> Vec<ModEntity> {
         let own = self.snapshot.entities.iter().filter(|e| own_kind(&e.kind));
         own.take(OWN_ENTITIES).cloned().collect()
@@ -1759,7 +3840,11 @@ impl entities::Host for State {
                 Some(e) if !own_kind(&e.kind) => {
                     return Err(format!("mob {id} is {}, not a content mod's", e.kind));
                 }
-                Some(_) => check_order(order).map_err(|e| format!("mob {id}: {e}"))?,
+                Some(_) => {
+                    check_order(order).map_err(|e| format!("mob {id}: {e}"))?;
+                    check_order_names(order, &self.snapshot)
+                        .map_err(|e| format!("mob {id}: {e}"))?;
+                }
             }
         }
         if !orders.is_empty() {
@@ -1769,6 +3854,47 @@ impl entities::Host for State {
             });
         }
         Ok(())
+    }
+    fn ride(&mut self, rider: u32, vehicle: Option<u32>) -> Result<(), String> {
+        let find = |id: u32| self.snapshot.entities.iter().find(|e| e.id == id);
+        let r = find(rider).ok_or_else(|| format!("no mob {rider} is loaded"))?;
+        if !own_kind(&r.kind) {
+            return Err(format!("mob {rider} is {}, not a content mod's", r.kind));
+        }
+        if let Some(v) = vehicle {
+            if v == rider {
+                return Err("a mob cannot ride itself".into());
+            }
+            let ve = find(v).ok_or_else(|| format!("no mob {v} is loaded"))?;
+            let d = (r.x - ve.x).powi(2) + (r.y - ve.y).powi(2) + (r.z - ve.z).powi(2);
+            if ve.dimension != r.dimension || d > RIDE_RANGE * RIDE_RANGE {
+                return Err(format!(
+                    "mob {v} is not within {RIDE_RANGE} blocks of {rider}"
+                ));
+            }
+            // The vehicle's own chain of vehicles must not lead back to the rider.
+            let mut at = v;
+            for _ in 0..16 {
+                match self.snapshot.vehicles.iter().find(|(m, _)| *m == at) {
+                    Some(&(_, next)) if next == rider => {
+                        return Err(format!("mob {v} rides {rider}"));
+                    }
+                    Some(&(_, next)) => at = next,
+                    None => break,
+                }
+            }
+        }
+        let rides = self.out.iter().filter(|o| matches!(o, Output::Ride { .. }));
+        if rides.count() >= RIDES_PER_CALL {
+            return Err(format!("at most {RIDES_PER_CALL} rides per call"));
+        }
+        self.out.push(Output::Ride { rider, vehicle });
+        Ok(())
+    }
+    fn vehicle(&mut self, id: u32) -> Option<u32> {
+        (self.snapshot.vehicles.iter())
+            .find(|(m, _)| *m == id)
+            .map(|&(_, v)| v)
     }
     fn spawn(
         &mut self,
@@ -1803,9 +3929,313 @@ impl entities::Host for State {
         Ok(())
     }
 }
+impl State {
+    fn charge_player_change(&mut self) -> Result<(), String> {
+        if player_world::spend(
+            &mut self.player_world.changes,
+            self.snapshot.tick,
+            1,
+            player_world::PLAYER_CHANGES,
+        ) {
+            Ok(())
+        } else {
+            Err("at most 64 player changes per mod per tick".into())
+        }
+    }
+    fn online_player(&self, player: &str) -> Result<(), String> {
+        if self.snapshot.players.iter().any(|p| p.id == player) {
+            Ok(())
+        } else {
+            Err(format!("no online player {player}"))
+        }
+    }
+}
 impl players::Host for State {
+    fn teleport(&mut self, player: String, target: TeleportTarget) -> Result<(), String> {
+        self.online_player(&player)?;
+        let [min_x, min_z, max_x, max_z] = self
+            .snapshot
+            .teleport_borders
+            .get(&target.dimension)
+            .ok_or_else(|| format!("unknown dimension {}", target.dimension))?;
+        let at = &target.at;
+        if ![at.x, at.y, at.z].iter().all(|v| v.is_finite())
+            || target.yaw.is_some_and(|v| !v.is_finite())
+            || target.pitch.is_some_and(|v| !v.is_finite())
+        {
+            return Err("teleport needs finite coordinates and angles".into());
+        }
+        if at.x < *min_x || at.x >= *max_x || at.z < *min_z || at.z >= *max_z {
+            return Err("outside the world border".into());
+        }
+        if !(-30_000_000.0..30_000_000.0).contains(&at.x)
+            || !(-30_000_000.0..30_000_000.0).contains(&at.z)
+            || !(-20_000_000.0..20_000_000.0).contains(&at.y)
+        {
+            return Err("outside teleport coordinate bounds".into());
+        }
+        self.out.push(Output::PlayerTeleport { player, target });
+        Ok(())
+    }
+    fn permission_level(&mut self, player: String) -> Option<u8> {
+        self.online_player(&player).ok()?;
+        self.snapshot
+            .player_permissions
+            .iter()
+            .find(|(id, _)| *id == player)
+            .map(|(_, level)| *level)
+    }
+    fn damage_taken(&mut self) -> Vec<PlayerDamage> {
+        self.snapshot
+            .player_damage
+            .iter()
+            .take(256)
+            .cloned()
+            .collect()
+    }
+    fn deaths(&mut self) -> Vec<PlayerDeath> {
+        (self.snapshot.player_deaths.iter())
+            .take(player_world::EVENTS)
+            .cloned()
+            .collect()
+    }
+    fn respawns(&mut self) -> Vec<PlayerRespawn> {
+        (self.snapshot.player_respawns.iter())
+            .take(player_world::EVENTS)
+            .cloned()
+            .collect()
+    }
+    fn vitals(&mut self, player: String) -> Option<PlayerVitals> {
+        self.online_player(&player).ok()?;
+        (self.snapshot.player_vitals.iter())
+            .find(|(id, _, _)| *id == player)
+            .map(|(_, vitals, _)| *vitals)
+    }
+    fn effects(&mut self, player: String) -> Option<Vec<ActiveEffect>> {
+        self.online_player(&player).ok()?;
+        (self.snapshot.player_vitals.iter())
+            .find(|(id, _, _)| *id == player)
+            .map(|(_, _, effects)| {
+                effects
+                    .iter()
+                    .take(player_world::LISTED_EFFECTS)
+                    .cloned()
+                    .collect()
+            })
+    }
+    fn set_health(&mut self, player: String, health: f32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_health(health)?;
+        self.charge_player_change()?;
+        self.out.push(Output::PlayerSetHealth { player, health });
+        Ok(())
+    }
+    fn hurt(&mut self, player: String, amount: f32, damage_type: String) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_hurt(amount, &damage_type)?;
+        self.charge_player_change()?;
+        self.out.push(Output::PlayerHurt {
+            player,
+            amount,
+            damage_type,
+        });
+        Ok(())
+    }
+    fn set_food(&mut self, player: String, food: u32, saturation: f32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_food(food, saturation)?;
+        self.charge_player_change()?;
+        self.out.push(Output::PlayerSetFood {
+            player,
+            food,
+            saturation,
+        });
+        Ok(())
+    }
+    fn give_experience(&mut self, player: String, points: u32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_points(points)?;
+        self.charge_player_change()?;
+        if points > 0 {
+            self.out
+                .push(Output::PlayerGiveExperience { player, points });
+        }
+        Ok(())
+    }
+    fn give_levels(&mut self, player: String, levels: i32) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_levels(levels)?;
+        self.charge_player_change()?;
+        if levels != 0 {
+            self.out.push(Output::PlayerGiveLevels { player, levels });
+        }
+        Ok(())
+    }
+    fn clear_effects(&mut self, player: String) -> Result<(), String> {
+        self.online_player(&player)?;
+        self.charge_player_change()?;
+        let ids = (self.snapshot.player_vitals.iter())
+            .find(|(id, _, _)| *id == player)
+            .map(|(_, _, effects)| effects.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default();
+        self.out.push(Output::PlayerClearEffects { player, ids });
+        Ok(())
+    }
+    fn clear_items(&mut self, player: String, filter: ItemFilter, max: u32) -> Result<u32, String> {
+        self.online_player(&player)?;
+        match &filter {
+            ItemFilter::Item(id) | ItemFilter::Tag(id) if !resource_id(id) => {
+                return Err("invalid item or tag id".into());
+            }
+            ItemFilter::ModData(value) => storage_api::validate_data(value.as_deref())?,
+            _ => {}
+        }
+        if !player_world::spend(
+            &mut self.player_world.clears,
+            self.snapshot.tick,
+            1,
+            player_world::CLEARS,
+        ) {
+            return Err("at most 64 clear-items calls per mod per tick".into());
+        }
+        let mut slot = self
+            .inventories
+            .lock()
+            .map_err(|_| "inventories unavailable")?;
+        slot.as_mut()
+            .ok_or("inventories unavailable")?
+            .clear_items(&player, &filter, &self.id, max)
+    }
+    fn play_sound_to(
+        &mut self,
+        player: String,
+        name: String,
+        volume: f32,
+        pitch: f32,
+    ) -> Result<(), String> {
+        self.online_player(&player)?;
+        player_world::check_sound(volume, pitch)?;
+        if !self.snapshot.entity_resources.sounds.contains(&name) {
+            return Err("unknown sound event".into());
+        }
+        self.charge_player_change()?;
+        self.out.push(Output::PlaySoundTo {
+            player,
+            sound: EntitySound {
+                name,
+                volume,
+                pitch,
+            },
+        });
+        Ok(())
+    }
+    fn heal(&mut self, player: String, amount: f32) -> Result<(), String> {
+        self.online_player(&player)?;
+        if !(0.0..=1024.0).contains(&amount) {
+            return Err("heal amount is 0..1024".into());
+        }
+        self.out.push(Output::PlayerHeal { player, amount });
+        Ok(())
+    }
+    fn equipment(&mut self, player: String) -> Option<EquipmentSlots> {
+        self.inventories.lock().ok()?.as_ref()?.equipment(&player)
+    }
+    fn damage_item(&mut self, player: String, hand: String, amount: u32) -> Result<(), String> {
+        self.online_player(&player)?;
+        if !matches!(hand.as_str(), "main_hand" | "off_hand") {
+            return Err("hand is main_hand or off_hand".into());
+        }
+        self.out.push(Output::DamageItem {
+            player,
+            hand,
+            amount,
+        });
+        Ok(())
+    }
+    fn knockback(&mut self, player: String, strength: f32, dx: f64, dz: f64) -> Result<(), String> {
+        self.online_player(&player)?;
+        if !(0.0..=4.0).contains(&strength) || !dx.is_finite() || !dz.is_finite() {
+            return Err("knockback needs strength 0..4 and a finite direction".into());
+        }
+        self.out.push(Output::PlayerKnockback {
+            player,
+            strength,
+            dx,
+            dz,
+        });
+        Ok(())
+    }
+    fn push(&mut self, player: String, velocity: PlayerPoint) -> Result<(), String> {
+        self.online_player(&player)?;
+        let velocity = EntityPoint {
+            x: velocity.x,
+            y: velocity.y,
+            z: velocity.z,
+        };
+        check_order(&EntityOrder::Push(velocity))?;
+        self.out.push(Output::PlayerPush { player, velocity });
+        Ok(())
+    }
+    fn item_uses(&mut self) -> Vec<PlayerItemUse> {
+        self.snapshot
+            .item_uses
+            .iter()
+            .take(PLAYER_ACTIONS)
+            .cloned()
+            .collect()
+    }
+    fn attacks(&mut self) -> Vec<PlayerAttack> {
+        self.snapshot
+            .attacks
+            .iter()
+            .take(PLAYER_ACTIONS)
+            .cloned()
+            .collect()
+    }
+    fn add_effect(
+        &mut self,
+        player: String,
+        id: String,
+        seconds: u32,
+        amplifier: u8,
+    ) -> Result<(), String> {
+        if !self.snapshot.players.iter().any(|p| p.id == player) {
+            return Err(format!("no online player {player}"));
+        }
+        let effect = EffectChange {
+            id,
+            seconds,
+            amplifier,
+        };
+        check_effect(&effect, &self.snapshot)?;
+        self.out.push(Output::PlayerEffect { player, effect });
+        Ok(())
+    }
+    fn take_item(&mut self, player: String, item: String, count: u32) -> Result<u32, String> {
+        let mut slot = self
+            .inventories
+            .lock()
+            .map_err(|_| "inventories unavailable")?;
+        slot.as_mut()
+            .ok_or("inventories unavailable")?
+            .take_item(&player, &item, count)
+    }
+    fn give_item(&mut self, player: String, item: String, count: u32) -> Result<(), String> {
+        let mut slot = self
+            .inventories
+            .lock()
+            .map_err(|_| "inventories unavailable")?;
+        slot.as_mut()
+            .ok_or("inventories unavailable")?
+            .give_item(&player, &item, count)
+    }
     fn online(&mut self) -> Vec<ServerPlayer> {
         self.snapshot.players.clone()
+    }
+    fn facing(&mut self, player: String) -> Option<PlayerLook> {
+        (self.snapshot.player_looks.iter())
+            .find(|(id, _)| *id == player)
+            .map(|(_, look)| *look)
     }
     fn tell(&mut self, player: String, text: String) -> bool {
         self.snapshot.players.iter().any(|p| p.id == player)
@@ -1831,6 +4261,40 @@ pub struct ModKey {
     pub label: String,
     /// `key.keyboard.r`.
     pub key: String,
+    /// The key the mod registered it with, before the player's choice.
+    pub default_key: String,
+    /// API 24: its automatic touch button starts shown (`set-auto-button-shown`);
+    /// automatic buttons start hidden otherwise.
+    pub auto_shown: bool,
+    /// API 25: default visibility of either touch button.
+    pub touch_context: Option<TouchContext>,
+}
+
+fn touch_context_id(id: &str) -> bool {
+    id == "*"
+        || resource_id(id)
+        || id
+            .strip_suffix(":*")
+            .is_some_and(|ns| resource_id(&format!("{ns}:x")))
+}
+
+impl TouchContext {
+    /// Both lists constrain the default; an empty list imposes no condition.
+    pub fn matches(&self, riding: Option<&str>, holding: Option<&str>) -> bool {
+        fn matches(ids: &[String], actual: Option<&str>) -> bool {
+            ids.is_empty()
+                || actual.is_some_and(|actual| {
+                    ids.iter().any(|id| {
+                        id == "*"
+                            || id == actual
+                            || id
+                                .strip_suffix('*')
+                                .is_some_and(|ns| actual.starts_with(ns))
+                    })
+                })
+        }
+        matches(&self.riding, riding) && matches(&self.holding, holding)
+    }
 }
 
 /// What capability `input` holds for one mod.
@@ -1843,9 +4307,14 @@ struct InputState {
     down: Vec<String>,
     /// It holds the mouse wheel.
     wheel: bool,
+    aim_assist: Option<AimAssist>,
     /// The keys the player chose, `name → key`: they win over
     /// `register-key`'s.
     bindings: Vec<(String, String)>,
+    touch_buttons: Vec<(String, TouchButton)>,
+    touch_down: Vec<String>,
+    physical_down: Vec<String>,
+    controller_down: Vec<String>,
 }
 /// Events kept for `poll`, items claimed and keys, per mod.
 const INPUT_EVENTS: usize = 256;
@@ -1866,12 +4335,69 @@ fn key_ok(key: &str) -> bool {
 }
 
 impl InputState {
+    fn controller_key(&mut self, name: &str, pressed: bool) {
+        let was = self.controller_down.iter().any(|n| n == name);
+        if was == pressed {
+            return;
+        }
+        if pressed {
+            self.controller_down.push(name.to_owned());
+            if !self.down.iter().any(|n| n == name) {
+                self.down.push(name.to_owned());
+                self.push(InputEvent::KeyDown(name.to_owned()));
+            }
+        } else {
+            self.controller_down.retain(|n| n != name);
+            if self
+                .physical_down
+                .iter()
+                .chain(&self.touch_down)
+                .any(|n| n == name)
+            {
+                return;
+            }
+            if let Some(i) = self.down.iter().position(|n| n == name) {
+                let name = self.down.remove(i);
+                self.push(InputEvent::KeyUp(name));
+            }
+        }
+    }
+    fn touch_key(&mut self, name: &str, pressed: bool) {
+        let was = self.touch_down.iter().any(|n| n == name);
+        if was == pressed {
+            return;
+        }
+        if pressed {
+            self.touch_down.push(name.to_owned());
+            if !self.down.iter().any(|n| n == name) {
+                self.down.push(name.to_owned());
+                self.push(InputEvent::KeyDown(name.to_owned()));
+            }
+        } else {
+            self.touch_down.retain(|n| n != name);
+            if self
+                .physical_down
+                .iter()
+                .chain(&self.controller_down)
+                .any(|n| n == name)
+            {
+                return;
+            }
+            if let Some(i) = self.down.iter().position(|n| n == name) {
+                let name = self.down.remove(i);
+                self.push(InputEvent::KeyUp(name));
+            }
+        }
+    }
     /// Key `name` is `key` now; held, it lets go first.
     fn rebind(&mut self, name: &str, key: String) {
         let Some(k) = self.keys.iter_mut().find(|k| k.name == name) else {
             return;
         };
         k.key = key;
+        self.touch_down.retain(|n| n != name);
+        self.controller_down.retain(|n| n != name);
+        self.physical_down.retain(|n| n != name);
         if let Some(i) = self.down.iter().position(|n| n == name) {
             let name = self.down.swap_remove(i);
             self.push(InputEvent::KeyUp(name));
@@ -1885,7 +4411,115 @@ impl InputState {
     }
 }
 
+impl Default for LookDeviceKind {
+    fn default() -> Self {
+        Self::Mouse
+    }
+}
+
 impl input::Host for State {
+    fn set_aim_assist(&mut self, config: Option<AimAssist>) -> Result<(), String> {
+        let config = config
+            .map(|mut cfg| {
+                if cfg.targets.len() > 32 {
+                    return Err("aim assist accepts at most 32 targets".to_owned());
+                }
+                if cfg
+                    .targets
+                    .iter()
+                    .any(|id| id.is_empty() || id.chars().count() > 64)
+                {
+                    return Err("aim assist targets need 1..64 characters".to_owned());
+                }
+                if ![cfg.range, cfg.cone, cfg.slowdown, cfg.pull]
+                    .iter()
+                    .all(|v| v.is_finite())
+                {
+                    return Err("aim assist numbers must be finite".to_owned());
+                }
+                cfg.range = cfg.range.clamp(2.0, 32.0);
+                cfg.cone = cfg.cone.clamp(1.0, 20.0);
+                cfg.slowdown = cfg.slowdown.clamp(0.0, 0.9);
+                cfg.pull = cfg.pull.clamp(0.0, 60.0);
+                Ok(cfg)
+            })
+            .transpose()?;
+        self.input.aim_assist = config;
+        Ok(())
+    }
+    fn look_device(&mut self) -> LookDeviceKind {
+        self.snapshot.look_device
+    }
+
+    fn touch_active(&mut self) -> bool {
+        self.snapshot.touch_active
+    }
+    fn set_touch_button_context(
+        &mut self,
+        name: String,
+        context: Option<TouchContext>,
+    ) -> Result<(), String> {
+        let Some(key) = self.input.keys.iter_mut().find(|k| k.name == name) else {
+            return Err(format!("no registered key {name}"));
+        };
+        if let Some(context) = &context {
+            for ids in [&context.riding, &context.holding] {
+                if ids.len() > 32 || ids.iter().any(|id| !touch_context_id(id)) {
+                    return Err(
+                        "touch context needs at most 32 resource ids per list (or * / ns:*)".into(),
+                    );
+                }
+            }
+        }
+        key.touch_context = context;
+        Ok(())
+    }
+    fn set_auto_button_shown(&mut self, name: String, shown: bool) -> Result<(), String> {
+        let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) else {
+            return Err(format!("no registered key {name}"));
+        };
+        k.auto_shown = shown;
+        Ok(())
+    }
+    fn set_touch_button(
+        &mut self,
+        name: String,
+        button: Option<TouchButton>,
+    ) -> Result<(), String> {
+        if !self.input.keys.iter().any(|k| k.name == name) {
+            return Err(format!("no registered key {name}"));
+        }
+        if let Some(mut button) = button {
+            if ![button.dx, button.dy, button.size]
+                .iter()
+                .all(|v| v.is_finite())
+            {
+                return Err("non-finite touch button".into());
+            }
+            if button.icon.as_deref().is_some_and(|id| !resource_id(id)) {
+                return Err("touch button icon must be a namespaced item id".into());
+            }
+            button.label = button.label.chars().take(4).collect();
+            button.size = button.size.clamp(16.0, 64.0);
+            if let Some((_, old)) = self
+                .input
+                .touch_buttons
+                .iter_mut()
+                .find(|(n, _)| *n == name)
+            {
+                *old = button;
+            } else {
+                if self.input.touch_buttons.len() == 4 {
+                    return Err("at most four touch buttons per mod".into());
+                }
+                self.input.touch_buttons.push((name, button));
+            }
+        } else {
+            self.input.touch_buttons.retain(|(n, _)| *n != name);
+            self.input.touch_key(&name, false);
+        }
+        Ok(())
+    }
     fn claim_items(&mut self, ids: Vec<String>) {
         self.input.claimed = ids.into_iter().take(CLAIMS).map(clip).collect();
     }
@@ -1896,18 +4530,26 @@ impl input::Host for State {
             ));
         }
         let (name, label) = (clip(name), clip(label));
+        let default_key = key.clone();
         let key = match self.input.bindings.iter().find(|(n, _)| *n == name) {
             Some((_, chosen)) => chosen.clone(),
             None => key,
         };
         if let Some(k) = self.input.keys.iter_mut().find(|k| k.name == name) {
-            (k.label, k.key) = (label, key);
+            (k.label, k.key, k.default_key) = (label, key, default_key);
             return Ok(());
         }
         if self.input.keys.len() == KEYS {
             return Err(format!("a mod may register {KEYS} keys"));
         }
-        self.input.keys.push(ModKey { name, label, key });
+        self.input.keys.push(ModKey {
+            name,
+            label,
+            key,
+            default_key,
+            auto_shown: false,
+            touch_context: None,
+        });
         Ok(())
     }
     fn held(&mut self) -> Option<HeldItem> {
@@ -1983,7 +4625,29 @@ fn clip_shapes(shapes: Vec<Shape>) -> Vec<Shape> {
         .collect()
 }
 
+/// Persistent API 20 lines owned by one running mod.
+#[derive(Default)]
+pub struct ModWorldLines {
+    pub lines: Vec<WorldLine>,
+    pub color: u32,
+    pub hidden_color: u32,
+}
 impl render::Host for State {
+    fn set_world_lines(&mut self, lines: Vec<WorldLine>, color: u32, hidden_color: u32) {
+        self.world_lines = ModWorldLines {
+            lines: lines
+                .into_iter()
+                .take(4096)
+                .filter(|l| {
+                    [l.x1, l.y1, l.z1, l.x2, l.y2, l.z2]
+                        .iter()
+                        .all(|v| v.is_finite())
+                })
+                .collect(),
+            color,
+            hidden_color,
+        };
+    }
     fn set_hud(&mut self, shapes: Vec<Shape>) {
         self.shapes = clip_shapes(shapes);
     }
@@ -2064,6 +4728,26 @@ impl render::Host for State {
 }
 
 impl command::Host for State {
+    fn run_mod_quiet(&mut self, lines: Vec<String>) {
+        let tick = Some(self.snapshot.tick);
+        let used = if self.mod_command_budget.0 == tick {
+            self.mod_command_budget.1
+        } else {
+            0
+        };
+        let lines: Vec<_> = lines
+            .into_iter()
+            .take(16.min(64usize.saturating_sub(used)))
+            .map(clip)
+            .collect();
+        self.mod_command_budget = (tick, used + lines.len());
+        if !lines.is_empty() {
+            self.out.push(Output::ModQuietCommands {
+                mod_id: self.id.clone(),
+                lines,
+            });
+        }
+    }
     fn run(&mut self, line: String) {
         let queued = self
             .out
@@ -2112,17 +4796,66 @@ impl ui::Host for State {
     fn open_screen(&mut self, mut screen: ui::Screen) {
         screen.title = clip(screen.title);
         screen.widgets = clip_widgets(screen.widgets);
+        self.canvas.set_screen(None);
         self.ui.screen = Some(screen);
         self.ui.open = true;
+        self.ui.close = false;
     }
     fn close_screen(&mut self) {
         self.ui.screen = None;
+        self.canvas.set_screen(None);
         self.ui.close = true;
+        self.ui.open = false;
     }
     fn set_settings(&mut self, widgets: Vec<ui::Widget>) {
         self.ui.settings = clip_widgets(widgets);
     }
 }
+/// Seed once per load, then update only after successful writes/deletes.
+/// The map also supplies the key count and replaced value's size in O(1).
+struct StorageUsage {
+    quota: u64,
+    max_keys: usize,
+    bytes: u64,
+    keys: HashMap<std::ffi::OsString, u64>,
+}
+impl Default for StorageUsage {
+    fn default() -> Self {
+        Self {
+            quota: 4 << 20,
+            max_keys: 64,
+            bytes: 0,
+            keys: HashMap::new(),
+        }
+    }
+}
+impl StorageUsage {
+    fn load(dir: &Path, (quota, max_keys): (u64, usize)) -> Result<Self, String> {
+        let mut usage = Self {
+            quota,
+            max_keys,
+            ..Self::default()
+        };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(usage),
+            Err(e) => return Err(format!("storage: {e}")),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("storage: {e}"))?;
+            // A write interrupted before rename is not a stored key.
+            if entry.file_name() == "$pending" {
+                std::fs::remove_file(entry.path()).map_err(|e| format!("storage: {e}"))?;
+                continue;
+            }
+            let len = entry.metadata().map_err(|e| format!("storage: {e}"))?.len();
+            usage.bytes = usage.bytes.saturating_add(len);
+            usage.keys.insert(entry.file_name(), len);
+        }
+        Ok(usage)
+    }
+}
+
 impl storage::Host for State {
     fn get(&mut self, key: String) -> Option<Vec<u8>> {
         storage_key_ok(&key)
@@ -2137,35 +4870,48 @@ impl storage::Host for State {
         if len > self.storage_budget {
             return Err("too much storage traffic in one call".into());
         }
-        // Everything already on disk but the file this call replaces.
-        let existing: Vec<std::fs::DirEntry> = std::fs::read_dir(&self.data_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy() != key)
-            .collect();
-        if existing.len() >= STORAGE_MAX_KEYS {
-            return Err(format!("would hold over {STORAGE_MAX_KEYS} keys"));
+        let old = self
+            .storage
+            .keys
+            .get(std::ffi::OsStr::new(&key))
+            .copied()
+            .unwrap_or(0);
+        if self.storage.keys.len()
+            + usize::from(!self.storage.keys.contains_key(std::ffi::OsStr::new(&key)))
+            > self.storage.max_keys
+        {
+            return Err(format!("would hold over {} keys", self.storage.max_keys));
         }
-        let used: u64 = existing
-            .iter()
-            .filter_map(|e| e.metadata().ok())
-            .map(|m| m.len())
-            .sum();
-        if used + len > STORAGE_QUOTA {
+        let used = (self.storage.bytes - old).saturating_add(len);
+        if used > self.storage.quota {
             return Err(format!(
                 "would use over {} MiB of storage",
-                STORAGE_QUOTA >> 20
+                self.storage.quota >> 20
             ));
         }
         std::fs::create_dir_all(&self.data_dir).map_err(|e| e.to_string())?;
-        std::fs::write(self.data_dir.join(&key), value).map_err(|e| e.to_string())?;
+        // Replace atomically, so a failed/partial write cannot desynchronise
+        // the running total from the previous value. '$' is not a valid key.
+        let pending = self.data_dir.join("$pending");
+        if let Err(e) = std::fs::write(&pending, value)
+            .and_then(|()| std::fs::rename(&pending, self.data_dir.join(&key)))
+        {
+            let _ = std::fs::remove_file(pending);
+            return Err(e.to_string());
+        }
+        self.storage.bytes = used;
+        self.storage.keys.insert(key.into(), len);
         self.storage_budget -= len;
         Ok(())
     }
     fn delete(&mut self, key: String) {
         if storage_key_ok(&key) {
-            let _ = std::fs::remove_file(self.data_dir.join(&key));
+            let deleted = std::fs::remove_file(self.data_dir.join(&key));
+            if (deleted.is_ok() || deleted.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+                && let Some(len) = self.storage.keys.remove(std::ffi::OsStr::new(&key))
+            {
+                self.storage.bytes -= len;
+            }
         }
     }
 }
@@ -2181,30 +4927,1226 @@ fn storage_key_ok(key: &str) -> bool {
 }
 
 #[cfg(test)]
-mod entity_tests {
+mod storage_tests {
     use super::*;
 
     #[test]
-    fn interactions_read_the_snapshot_in_order_up_to_256() {
-        let mut state = State {
+    fn declared_key_limit_allows_replacing_and_deleting_at_capacity() {
+        let mut s = super::entity_tests::state();
+        let dir = std::env::temp_dir().join(format!("horizon-storage-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.data_dir = dir.clone();
+        let manifest =
+            Manifest::parse("id='s'\nname='S'\nversion='1'\napi='0.1'\nstorage-mb=1\n").unwrap();
+        s.storage = StorageUsage::load(&dir, manifest.storage_limits()).unwrap();
+        for i in 0..65536 {
+            storage::Host::set(&mut s, format!("k{i}"), Vec::new()).unwrap();
+        }
+        // Real zero-byte files still consume keys, including after a reload.
+        s.storage = StorageUsage::load(&dir, manifest.storage_limits()).unwrap();
+        assert!(
+            storage::Host::set(&mut s, "overflow".into(), Vec::new())
+                .unwrap_err()
+                .contains("65536 keys")
+        );
+        storage::Host::set(&mut s, "k0".into(), b"replaced".to_vec()).unwrap();
+        assert_eq!(
+            storage::Host::get(&mut s, "k0".into()).as_deref(),
+            Some(b"replaced".as_slice())
+        );
+        storage::Host::delete(&mut s, "k1".into());
+        storage::Host::delete(&mut s, "k1".into());
+        storage::Host::set(&mut s, "overflow".into(), Vec::new()).unwrap();
+        assert!(dir.join("overflow").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_storage_write_keeps_the_old_value_and_accounting() {
+        let mut s = super::entity_tests::state();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-storage-failure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        s.data_dir = dir.clone();
+        s.storage.quota = 3;
+        storage::Host::set(&mut s, "key".into(), b"old".to_vec()).unwrap();
+        // A directory at the staging path forces a real write failure.
+        std::fs::create_dir(dir.join("$pending")).unwrap();
+        assert!(storage::Host::set(&mut s, "key".into(), b"x".to_vec()).is_err());
+        std::fs::remove_dir(dir.join("$pending")).unwrap();
+        assert_eq!(
+            storage::Host::get(&mut s, "key".into()).as_deref(),
+            Some(b"old".as_slice())
+        );
+        assert!(storage::Host::set(&mut s, "extra".into(), vec![1]).is_err());
+        storage::Host::delete(&mut s, "key".into());
+        storage::Host::set(&mut s, "extra".into(), vec![1, 2, 3]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod entity_tests {
+    use super::*;
+
+    pub(super) fn state() -> State {
+        State {
+            call_budget: budget::CallBudget::default(),
+            player_world: Default::default(),
             name: "Mob Orders".into(),
             id: "mob_orders".into(),
             snapshot: Arc::new(Snapshot::default()),
             out: Vec::new(),
             panel: None,
             ui: UiState::default(),
+            container: ContainerData::default(),
             shapes: Vec::new(),
+            world_lines: ModWorldLines::default(),
             corner: None,
             zoom: None,
             minimap: None,
             far_terrain: None,
             input: InputState::default(),
             browser: BrowserState::default(),
+            browser_ext: BrowserExtState::default(),
             data_dir: PathBuf::new(),
+            storage: StorageUsage::default(),
+            see_through: Default::default(),
             storage_budget: STORAGE_WRITE_BUDGET,
+            item_spawn_budget: (None, 0),
+            break_budget: (None, 0),
+            mod_command_budget: (None, 0),
+            behaviour: Default::default(),
+            uses: (false, false),
+            use_budget: (None, 0),
+            channel_budget: (None, 0),
+            channel_receive_budget: (None, 0),
+            channel_callback: None,
+            atmosphere: Default::default(),
+            server: false,
+            storage_move_budget: (None, 0),
+            machines: Default::default(),
             limits: StoreLimitsBuilder::new().build(),
             world: WorldSlot::default(),
+            inventories: InventoriesSlot::default(),
+            canvas: canvas_host::CanvasState::new(Default::default()),
+            client_world: Default::default(),
+        }
+    }
+
+    #[test]
+    fn chat_prefill_is_bounded_and_drained_after_screen_requests() {
+        let mut s = state();
+        chat::Host::open(&mut s, "first".into());
+        chat::Host::open(&mut s, "é".repeat(257));
+        assert!(s.out.is_empty());
+        s.ui.open = true;
+        s.ui.drain(7, &mut s.out);
+        assert_eq!(
+            s.out,
+            [
+                Output::OpenScreen { owner: 7 },
+                Output::OpenChat {
+                    owner: 7,
+                    text: "é".repeat(256)
+                }
+            ]
+        );
+        s.out.clear();
+        s.ui.drain(7, &mut s.out);
+        assert!(s.out.is_empty());
+    }
+
+    #[test]
+    fn entity_raycast_respects_distance_blocks_and_live_snapshot() {
+        let mut s = state();
+        assert!(game::Host::raycast_entity(&mut s, 64.0).is_none());
+        let snapshot = Arc::make_mut(&mut s.snapshot);
+        snapshot.view_entity = Some((
+            4.0,
+            EntityHit {
+                kind: "ruby:golem".into(),
+                name: "Ruby Golem".into(),
+                health: 37.5,
+                max_health: 80.0,
+                x: 0.0,
+                y: 64.0,
+                z: 4.0,
+            },
+        ));
+        for distance in [-1.0, 3.9, f32::NAN] {
+            assert!(game::Host::raycast_entity(&mut s, distance).is_none());
+        }
+        let hit = game::Host::raycast_entity(&mut s, 4.0).unwrap();
+        assert_eq!((hit.health, hit.max_health), (37.5, 80.0));
+        Arc::make_mut(&mut s.snapshot).view_hit = Some((
+            3.0,
+            Hit {
+                block_x: 0,
+                block_y: 64,
+                block_z: 3,
+                x: 0.0,
+                y: 64.0,
+                z: 3.0,
+                block: "minecraft:stone".into(),
+            },
+        ));
+        assert!(game::Host::raycast_entity(&mut s, 64.0).is_none());
+        assert!(game::Host::raycast(&mut s, 64.0).is_some());
+        let snapshot = Arc::make_mut(&mut s.snapshot);
+        snapshot.view_hit = None;
+        snapshot.view_entity.as_mut().unwrap().1.health = 12.0;
+        assert_eq!(
+            game::Host::raycast_entity(&mut s, 64.0).unwrap().health,
+            12.0
+        );
+        Arc::make_mut(&mut s.snapshot)
+            .view_entity
+            .as_mut()
+            .unwrap()
+            .0 = RAYCAST_MAX + 1.0;
+        assert!(game::Host::raycast_entity(&mut s, f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn mod_quiet_commands_limit_each_call_and_share_a_tick_budget_across_hooks() {
+        let mut s = state();
+        let lines = vec!["beacon 4".to_owned(); 100];
+        for _ in 0..4 {
+            command::Host::run_mod_quiet(&mut s, lines.clone());
+            let out = std::mem::take(&mut s.out); // the host drains between hooks
+            assert!(
+                matches!(&out[..],[Output::ModQuietCommands {mod_id,lines}] if mod_id == "mob_orders" && lines.len()==16)
+            );
+        }
+        command::Host::run_mod_quiet(&mut s, lines.clone());
+        assert!(s.out.is_empty());
+        command::Host::run_quiet(&mut s, lines.clone());
+        assert!(matches!(&s.out[..],[Output::QuietCommands {lines,..}] if lines.len()==100));
+        s.out.clear();
+        Arc::make_mut(&mut s.snapshot).tick += 1;
+        command::Host::run_mod_quiet(&mut s, vec!["🌲".repeat(300)]);
+        assert!(
+            matches!(&s.out[..],[Output::ModQuietCommands {lines,..}] if lines[0].chars().count()==256)
+        );
+        let mut other = state();
+        command::Host::run_mod_quiet(&mut other, lines);
+        assert!(!other.out.is_empty());
+    }
+
+    #[test]
+    fn pre_level_20_components_still_link() {
+        older_components_still_link(20);
+    }
+
+    #[test]
+    fn pre_level_21_components_still_link() {
+        older_components_still_link(21);
+    }
+
+    fn older_components_still_link(level: u32) {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        for (world_name, wanted) in [
+            ("render-host", &["input", "render", "canvas"][..]),
+            ("world-read-host", &["client-world"][..]),
+            ("horizon-mod", &["command"][..]),
+            ("horizon-server-mod", &["world"][..]),
+        ] {
+            let mut resolve = Resolve::default();
+            let package = resolve
+                .push_str(
+                    "horizon.wit",
+                    include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+                )
+                .unwrap();
+            for (_, interface) in resolve.interfaces.iter_mut() {
+                let prefix = interface.name.clone().unwrap_or_default();
+                interface.functions.retain(|name, _| {
+                    crate::api_level::level_of(&format!("{prefix}.{name}"))
+                        .is_none_or(|l| l < level)
+                });
+            }
+            let world = resolve.select_world(&[package], Some(world_name)).unwrap();
+            resolve.worlds[world].exports.clear();
+            let interfaces = &resolve.interfaces;
+            resolve.worlds[world].imports.retain(|_,item| matches!(item,wit_parser::WorldItem::Interface { id,.. } if interfaces[*id].name.as_deref().is_some_and(|n| wanted.contains(&n))));
+            let mut module =
+                wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+            wit_component::embed_component_metadata(
+                &mut module,
+                &resolve,
+                world,
+                wit_component::StringEncoding::UTF8,
+            )
+            .unwrap();
+            let wasm = wit_component::ComponentEncoder::default()
+                .module(&module)
+                .unwrap()
+                .encode()
+                .unwrap();
+            assert!(
+                crate::api_level::needed(
+                    crate::api_level::imports(&wasm)
+                        .unwrap()
+                        .iter()
+                        .map(String::as_str)
+                )
+                .0 < level
+            );
+            let cache = engine::Cache::new(LimitMode::Fuel);
+            let engine::Compiled {
+                engine,
+                linker,
+                component,
+            } = cache.compile_env(&wasm).unwrap();
+            let mut store = Store::new(engine, state());
+            LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
+            linker.instantiate(&mut store, &component).unwrap();
+        }
+    }
+
+    #[test]
+    fn api20_lines_bound_replace_filter_and_clear() {
+        let mut s = state();
+        let line = WorldLine {
+            x1: 1.0,
+            y1: 2.0,
+            z1: 3.0,
+            x2: 4.0,
+            y2: 5.0,
+            z2: 6.0,
         };
+        render::Host::set_world_lines(&mut s, vec![line; 4097], 0xFF112233, 0x80112233);
+        assert_eq!(s.world_lines.lines.len(), 4096);
+        assert_eq!(
+            (s.world_lines.color, s.world_lines.hidden_color),
+            (0xFF112233, 0x80112233)
+        );
+        render::Host::set_world_lines(
+            &mut s,
+            vec![WorldLine {
+                x1: f64::NAN,
+                ..line
+            }],
+            0,
+            0,
+        );
+        assert!(s.world_lines.lines.is_empty());
+        render::Host::set_world_lines(&mut s, vec![line], 1, 2);
+        render::Host::set_world_lines(&mut s, vec![], 3, 4);
+        assert!(s.world_lines.lines.is_empty());
+    }
+
+    #[test]
+    fn api25_context_validation_is_atomic_and_matches_both_conditions() {
+        let mut s = state();
+        assert!(input::Host::set_touch_button_context(&mut s, "missing".into(), None).is_err());
+        input::Host::register_key(
+            &mut s,
+            "mount".into(),
+            "Mount".into(),
+            "key.keyboard.r".into(),
+        )
+        .unwrap();
+        let context = TouchContext {
+            riding: vec!["iceandfire:*".into(), "minecraft:horse".into()],
+            holding: vec!["minecraft:carrot".into()],
+        };
+        input::Host::set_touch_button_context(&mut s, "mount".into(), Some(context.clone()))
+            .unwrap();
+        assert!(context.matches(Some("iceandfire:fire_dragon"), Some("minecraft:carrot")));
+        assert!(context.matches(Some("minecraft:horse"), Some("minecraft:carrot")));
+        assert!(!context.matches(Some("minecraft:pig"), Some("minecraft:carrot")));
+        assert!(!context.matches(None, Some("minecraft:carrot")));
+        assert!(!context.matches(Some("minecraft:horse"), Some("minecraft:stick")));
+        for bad in [
+            "minecraft:",
+            "bad",
+            "Minecraft:horse",
+            "mine*:horse",
+            "minecraft:foo*",
+            "minecraft:../horse",
+            ":*",
+            "..:*",
+        ] {
+            for holding in [false, true] {
+                let mut invalid = context.clone();
+                if holding {
+                    invalid.holding = vec![bad.into()];
+                } else {
+                    invalid.riding = vec![bad.into()];
+                }
+                assert!(
+                    input::Host::set_touch_button_context(&mut s, "mount".into(), Some(invalid))
+                        .is_err(),
+                    "{bad}"
+                );
+                assert_eq!(s.input.keys[0].touch_context.as_ref(), Some(&context));
+            }
+        }
+        for holding in [false, true] {
+            let mut boundary = context.clone();
+            if holding {
+                boundary.holding = vec!["*".into(); 32];
+            } else {
+                boundary.riding = vec!["*".into(); 32];
+            }
+            input::Host::set_touch_button_context(&mut s, "mount".into(), Some(boundary.clone()))
+                .unwrap();
+            if holding {
+                boundary.holding.push("*".into());
+            } else {
+                boundary.riding.push("*".into());
+            }
+            assert!(
+                input::Host::set_touch_button_context(&mut s, "mount".into(), Some(boundary))
+                    .is_err()
+            );
+        }
+        let any = TouchContext {
+            riding: vec!["*".into()],
+            holding: vec!["*".into()],
+        };
+        assert!(any.matches(Some("minecraft:boat"), Some("anything:item")));
+        assert!(!any.matches(Some("minecraft:boat"), None));
+        let empty = TouchContext {
+            riding: vec![],
+            holding: vec![],
+        };
+        assert!(empty.matches(None, None));
+        input::Host::set_touch_button_context(&mut s, "mount".into(), Some(context.clone()))
+            .unwrap();
+        input::Host::register_key(
+            &mut s,
+            "mount".into(),
+            "Renamed".into(),
+            "key.keyboard.t".into(),
+        )
+        .unwrap();
+        assert_eq!(s.input.keys[0].touch_context, Some(context));
+        input::Host::set_touch_button_context(&mut s, "mount".into(), None).unwrap();
+        assert!(s.input.keys[0].touch_context.is_none());
+    }
+
+    #[test]
+    fn pre_level_28_components_still_link() {
+        older_components_still_link(28);
+    }
+
+    #[test]
+    fn pre_level_25_components_still_link() {
+        older_components_still_link(25);
+    }
+
+    #[test]
+    fn api20_touch_buttons_validate_replace_remove_and_deliver_keys() {
+        let mut s = state();
+        let button = TouchButton {
+            label: "🌲éabc".into(),
+            icon: Some("minecraft:diamond_pickaxe".into()),
+            anchor: RenderCorner::BottomRight,
+            dx: 1.0,
+            dy: 2.0,
+            size: 100.0,
+            lit: true,
+        };
+        assert!(
+            input::Host::set_touch_button(&mut s, "mine".into(), Some(button.clone())).is_err()
+        );
+        for n in 0..5 {
+            let name = format!("key{n}");
+            input::Host::register_key(&mut s, name.clone(), name.clone(), "key.keyboard.r".into())
+                .unwrap();
+            assert_eq!(
+                input::Host::set_touch_button(&mut s, name, Some(button.clone())).is_ok(),
+                n < 4
+            );
+        }
+        assert_eq!(s.input.touch_buttons[0].1.label, "🌲éab");
+        assert_eq!(s.input.touch_buttons[0].1.size, 64.0);
+        assert_eq!(
+            s.input.touch_buttons[0].1.icon.as_deref(),
+            Some("minecraft:diamond_pickaxe")
+        );
+        for id in [
+            "diamond_pickaxe",
+            "Minecraft:stone",
+            "minecraft:../stone",
+            "minecraft:",
+            "",
+        ] {
+            assert!(
+                input::Host::set_touch_button(
+                    &mut s,
+                    "key0".into(),
+                    Some(TouchButton {
+                        icon: Some(id.into()),
+                        ..button.clone()
+                    })
+                )
+                .is_err()
+            );
+            assert_eq!(
+                s.input.touch_buttons[0].1.icon.as_deref(),
+                Some("minecraft:diamond_pickaxe")
+            );
+        }
+        // Unknown but well-formed ids reach the client, which falls back to the label.
+        input::Host::set_touch_button(
+            &mut s,
+            "key0".into(),
+            Some(TouchButton {
+                icon: Some("unknown:item".into()),
+                ..button.clone()
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            s.input.touch_buttons[0].1.icon.as_deref(),
+            Some("unknown:item")
+        );
+        input::Host::set_touch_button(
+            &mut s,
+            "key0".into(),
+            Some(TouchButton {
+                size: 1.0,
+                icon: None,
+                ..button.clone()
+            }),
+        )
+        .unwrap();
+        assert_eq!(s.input.touch_buttons[0].1.size, 16.0);
+        assert!(s.input.touch_buttons[0].1.icon.is_none());
+        assert!(
+            input::Host::set_touch_button(
+                &mut s,
+                "key0".into(),
+                Some(TouchButton {
+                    dx: f32::NAN,
+                    ..button
+                })
+            )
+            .is_err()
+        );
+        s.input.touch_key("key0", true);
+        s.input.touch_key("key0", true);
+        input::Host::set_touch_button(&mut s, "key0".into(), None).unwrap();
+        assert!(
+            matches!(input::Host::poll(&mut s).as_slice(),[InputEvent::KeyDown(n),InputEvent::KeyUp(up)] if n == "key0" && up == n)
+        );
+        assert!(!input::Host::touch_active(&mut s));
+        s.snapshot = Arc::new(Snapshot {
+            touch_active: true,
+            ..Default::default()
+        });
+        assert!(input::Host::touch_active(&mut s));
+    }
+
+    #[test]
+    fn api20_break_requests_validate_atomically_and_budget_spans_hooks() {
+        let mut s = state();
+        s.snapshot = Arc::new(Snapshot {
+            players: vec![ServerPlayer {
+                id: "alice".into(),
+                name: "Alex".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            tick: 7,
+            ..Default::default()
+        });
+        let options = BreakOptions {
+            keep_tool: true,
+            drops_at: Some(WorldPoint {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }),
+            exhaustion: 0.25,
+        };
+        let positions = vec![BlockChangePos { x: 1, y: 64, z: 0 }; 2048];
+        assert!(
+            mod_world::Host::break_blocks_as(&mut s, "offline".into(), positions.clone(), options)
+                .is_err()
+        );
+        assert!(
+            mod_world::Host::break_blocks_as(
+                &mut s,
+                "alice".into(),
+                vec![positions[0]; 2049],
+                options
+            )
+            .is_err()
+        );
+        assert!(
+            mod_world::Host::break_blocks_as(
+                &mut s,
+                "alice".into(),
+                positions.clone(),
+                BreakOptions {
+                    exhaustion: f32::NAN,
+                    ..options
+                }
+            )
+            .is_err()
+        );
+        assert!(s.out.is_empty());
+        for _ in 0..2 {
+            mod_world::Host::break_blocks_as(&mut s, "alice".into(), positions.clone(), options)
+                .unwrap();
+        }
+        assert!(
+            mod_world::Host::break_blocks_as(&mut s, "alice".into(), vec![positions[0]], options)
+                .is_err()
+        );
+        assert_eq!(s.out.len(), 2);
+        assert!(
+            matches!(&s.out[0],Output::BreakBlocksAs {mod_id,player,dimension,blocks,options:o} if mod_id == &s.id && player == "alice" && dimension == "minecraft:overworld" && blocks.len()==2048 && o == &options)
+        );
+        Arc::make_mut(&mut s.snapshot).tick += 1;
+        mod_world::Host::break_blocks_as(&mut s, "alice".into(), positions, options).unwrap();
+        assert_eq!(s.out.len(), 3);
+    }
+
+    #[test]
+    fn level_17_canvas_components_still_link() {
+        canvas_component_shape_compatibility(false);
+    }
+
+    #[test]
+    fn changing_canvas_variant_cases_breaks_component_linking() {
+        canvas_component_shape_compatibility(true);
+    }
+
+    fn canvas_component_shape_compatibility(remove_case: bool) {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        let mut resolve = Resolve::default();
+        let package = resolve
+            .push_str(
+                "horizon.wit",
+                include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+            )
+            .unwrap();
+        for (_, interface) in resolve.interfaces.iter_mut() {
+            if interface.name.as_deref() == Some("render") {
+                interface
+                    .functions
+                    .retain(|name, _| name != "set-world-lines");
+            }
+            if interface.name.as_deref() == Some("canvas") {
+                interface.functions.retain(|name, _| {
+                    !matches!(
+                        name.as_str(),
+                        "set-placed"
+                            | "set-screen-items"
+                            | "set-box-items"
+                            | "open-canvas-screen"
+                            | "set-canvas-screen"
+                            | "close-canvas-screen"
+                            | "set-box-key"
+                    )
+                });
+            }
+        }
+        // Model a host that has added a variant case since the guest was
+        // compiled. Wasmtime's typed host requires the exact same case set.
+        if remove_case {
+            let canvas = resolve.packages[package].interfaces["canvas"];
+            let shape = resolve.interfaces[canvas].types["shape"];
+            let wit_parser::TypeDefKind::Variant(variant) = &mut resolve.types[shape].kind else {
+                panic!("canvas.shape must be a variant");
+            };
+            variant.cases.pop();
+        }
+        let world = resolve
+            .select_world(&[package], Some("render-host"))
+            .unwrap();
+        resolve.worlds[world].exports.clear();
+        let interfaces = &resolve.interfaces;
+        resolve.worlds[world].imports.retain(|_, item| matches!(item, wit_parser::WorldItem::Interface { id, .. } if matches!(interfaces[*id].name.as_deref(), Some("canvas" | "render"))));
+        let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
+        let wasm = wit_component::ComponentEncoder::default()
+            .module(&module)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let functions = crate::api_level::imports(&wasm).unwrap();
+        assert_eq!(
+            crate::api_level::needed(functions.iter().map(String::as_str)).0,
+            17
+        );
+        let cache = engine::Cache::new(LimitMode::Fuel);
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = cache.compile_env(&wasm).unwrap();
+        let mut store = Store::new(engine, state());
+        LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
+        let result = linker.instantiate(&mut store, &component);
+        if remove_case {
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains("expected variant of 5 cases, found 4 cases"),
+                "{error}"
+            );
+        } else {
+            result.unwrap();
+        }
+    }
+
+    #[test]
+    fn pre_level_16_game_components_still_link() {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        let mut resolve = Resolve::default();
+        let package = resolve
+            .push_str(
+                "horizon.wit",
+                include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+            )
+            .unwrap();
+        for (_, interface) in resolve.interfaces.iter_mut() {
+            if interface.name.as_deref() == Some("game") {
+                interface
+                    .functions
+                    .retain(|name, _| name != "raycast-entity" && name != "world-id");
+            }
+        }
+        let world = resolve
+            .select_world(&[package], Some("horizon-mod"))
+            .unwrap();
+        resolve.worlds[world].exports.clear();
+        let interfaces = &resolve.interfaces;
+        resolve.worlds[world].imports.retain(|_, item| matches!(item, wit_parser::WorldItem::Interface { id, .. } if interfaces[*id].name.as_deref() == Some("game")));
+        let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
+        let wasm = wit_component::ComponentEncoder::default()
+            .module(&module)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let functions = crate::api_level::imports(&wasm).unwrap();
+        assert_eq!(
+            crate::api_level::needed(functions.iter().map(String::as_str)).0,
+            2
+        );
+        let cache = engine::Cache::new(LimitMode::Fuel);
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = cache.compile_env(&wasm).unwrap();
+        let mut store = Store::new(engine, state());
+        LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
+        linker.instantiate(&mut store, &component).unwrap();
+    }
+
+    #[test]
+    fn inventory_imports_share_mutations_between_mods_and_return_errors() {
+        let mut first = state();
+        let mut second = state();
+        let fixture = crate::testing::InventoryFixture {
+            players: [("alice".into(), false), ("creative".into(), true)].into(),
+            ..Default::default()
+        };
+        *first.inventories.lock().unwrap() = Some(Box::new(fixture));
+        second.inventories = first.inventories.clone();
+        players::Host::give_item(&mut first, "alice".into(), "minecraft:beef".into(), 2).unwrap();
+        assert_eq!(
+            players::Host::take_item(&mut first, "alice".into(), "minecraft:beef".into(), 1)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            players::Host::take_item(&mut second, "alice".into(), "minecraft:beef".into(), 2)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            players::Host::take_item(&mut first, "alice".into(), "minecraft:beef".into(), 1)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            players::Host::take_item(&mut first, "creative".into(), "minecraft:beef".into(), 50)
+                .unwrap(),
+            50
+        );
+        assert!(
+            players::Host::take_item(&mut first, "offline".into(), "minecraft:beef".into(), 1)
+                .is_err()
+        );
+        assert!(players::Host::give_item(&mut first, "alice".into(), "bad id".into(), 1).is_err());
+        first.inventories.lock().unwrap().take();
+        assert!(
+            players::Host::take_item(&mut second, "alice".into(), "minecraft:beef".into(), 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_targets_are_checked_against_online_players() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let order = EntityOrder::Target(EntityTarget::Player(id.into()));
+        assert!(check_order_names(&order, &Snapshot::default()).is_err());
+        let snapshot = Snapshot {
+            players: vec![ServerPlayer {
+                id: id.into(),
+                name: "Alex".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            ..Default::default()
+        };
+        assert!(check_order_names(&order, &snapshot).is_ok());
+        assert!(
+            check_order_names(
+                &EntityOrder::Target(EntityTarget::Player("offline".into())),
+                &snapshot
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pre_level_12_server_components_still_link() {
+        use wit_parser::{ManglingAndAbi, Resolve, TypeDefKind};
+        let wit = include_str!("../../horizon-mod-sdk/wit/horizon.wit");
+        let mut resolve = Resolve::default();
+        let package = resolve.push_str("horizon.wit", wit).unwrap();
+        // Reconstruct the previous imported interfaces: no API-12 functions
+        // and the old order variant, including its original mount discriminant.
+        for (_, interface) in resolve.interfaces.iter_mut() {
+            let additions: &[&str] = match interface.name.as_deref() {
+                Some("players") => &["item-uses", "attacks", "add-effect"],
+                Some("world") => &["container", "set-container", "place-structure"],
+                _ => &[],
+            };
+            let prefix = interface.name.clone().unwrap_or_default();
+            interface.functions.retain(|name, _| {
+                !additions.contains(&name.as_str())
+                    && crate::api_level::level_of(&format!("{prefix}.{name}"))
+                        .is_none_or(|l| l < 12)
+            });
+        }
+        for (_, ty) in resolve.types.iter_mut() {
+            if ty.name.as_deref() == Some("order")
+                && let TypeDefKind::Variant(variant) = &mut ty.kind
+            {
+                variant.cases.retain(|case| case.name != "effect");
+            }
+        }
+        let world = resolve
+            .select_world(&[package], Some("horizon-server-mod"))
+            .unwrap();
+        let mut module = wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+        wit_component::embed_component_metadata(
+            &mut module,
+            &resolve,
+            world,
+            wit_component::StringEncoding::UTF8,
+        )
+        .unwrap();
+        let wasm = wit_component::ComponentEncoder::default()
+            .module(&module)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let cache = engine::Cache::new(LimitMode::Fuel);
+        let engine::Compiled {
+            engine,
+            linker,
+            component,
+        } = cache.compile_env(&wasm).unwrap();
+        let mut store = Store::new(engine, state());
+        LimitMode::Fuel.start(&mut store, FUEL_INIT).unwrap();
+        let instance = linker.instantiate(&mut store, &component).unwrap();
+        // Dummy exports trap if called; binding them still checks every old
+        // server-events signature against the current generated bindings.
+        HorizonServerMod::new(&mut store, &instance).unwrap();
+    }
+
+    #[test]
+    fn dynamic_orders_decode_case_names_and_preserve_payloads() {
+        let record = |fields: Vec<(&str, Val)>| {
+            Val::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, value)| (name.into(), value))
+                    .collect(),
+            )
+        };
+        let variant =
+            |name: &str, payload: Option<Val>| Val::Variant(name.into(), payload.map(Box::new));
+        let order = |value| Val::Tuple(vec![Val::U32(7), value]);
+        let values = Val::List(vec![
+            order(variant(
+                "mount",
+                Some(record(vec![
+                    ("player", Val::String("alice".into())),
+                    ("height", Val::Float32(2.0)),
+                    ("forward", Val::Float32(-0.5)),
+                ])),
+            )),
+            order(variant("dismount", None)),
+            order(variant(
+                "set-data",
+                Some(Val::List(vec![
+                    Val::Tuple(vec![
+                        Val::String("owner".into()),
+                        Val::Option(Some(Box::new(Val::String("alice".into())))),
+                    ]),
+                    Val::Tuple(vec![Val::String("old".into()), Val::Option(None)]),
+                ])),
+            )),
+            order(variant(
+                "effect",
+                Some(record(vec![
+                    ("id", Val::String("minecraft:wither".into())),
+                    ("seconds", Val::U32(10)),
+                    ("amplifier", Val::U8(2)),
+                ])),
+            )),
+            order(variant("target", Some(variant("nearest-player", None)))),
+            order(variant("animate", Some(Val::Option(None)))),
+        ]);
+        let got = decode_orders(&[values]).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    7,
+                    EntityOrder::Mount(EntityMount {
+                        player: "alice".into(),
+                        height: 2.0,
+                        forward: -0.5
+                    })
+                ),
+                (7, EntityOrder::Dismount),
+                (
+                    7,
+                    EntityOrder::SetData(vec![
+                        ("owner".into(), Some("alice".into())),
+                        ("old".into(), None)
+                    ])
+                ),
+                (
+                    7,
+                    EntityOrder::Effect(EffectChange {
+                        id: "minecraft:wither".into(),
+                        seconds: 10,
+                        amplifier: 2
+                    })
+                ),
+                (7, EntityOrder::Target(EntityTarget::NearestPlayer)),
+                (7, EntityOrder::Animate(None)),
+            ]
+        );
+        assert!(decode_orders(&[Val::List(vec![order(variant("unknown", None))])]).is_err());
+        assert!(
+            decode_orders(&[Val::List(vec![order(variant(
+                "heal",
+                Some(Val::Float32(f32::NAN))
+            ))])])
+            .is_err()
+        );
+        assert!(
+            decode_orders(&[Val::List(vec![
+                order(variant("halt", None));
+                ORDERS_PER_CALL + 1
+            ])])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_ids_reject_namespace_and_path_traversal() {
+        for bad in [
+            ".:template",
+            "..:template",
+            "minecraft:../template",
+            "minecraft:./template",
+            "minecraft:a//b",
+            "minecraft:a:b",
+        ] {
+            assert!(!resource_id(bad), "{bad}");
+        }
+        for good in ["minecraft:igloo/top", "ruby_mod:temple.v2/test-1"] {
+            assert!(resource_id(good), "{good}");
+        }
+    }
+
+    #[test]
+    fn player_action_lists_are_ordered_bounded_and_repeatable() {
+        let mut state = state();
+        for count in [0, 2, 256, 300] {
+            let item_uses = (0..count)
+                .map(|i| PlayerItemUse {
+                    player: i.to_string(),
+                    item: "minecraft:stick".into(),
+                    hand: "off_hand".into(),
+                    sneaking: i % 2 == 0,
+                    target: Some(PlayerBlockHit {
+                        x: i,
+                        y: 64,
+                        z: 0,
+                        face: "up".into(),
+                    }),
+                })
+                .collect::<Vec<_>>();
+            let attacks = (0..count)
+                .map(|i| PlayerAttack {
+                    player: i.to_string(),
+                    item: None,
+                    mob: Some(i as u32),
+                    target_player: None,
+                    damage: i as f32,
+                })
+                .collect::<Vec<_>>();
+            state.snapshot = Arc::new(Snapshot {
+                item_uses: item_uses.into(),
+                attacks: attacks.into(),
+                ..Default::default()
+            });
+            for _ in 0..2 {
+                let uses = players::Host::item_uses(&mut state);
+                let attacks = players::Host::attacks(&mut state);
+                assert_eq!(
+                    uses,
+                    state.snapshot.item_uses[..(count as usize).min(PLAYER_ACTIONS)]
+                );
+                assert_eq!(
+                    attacks,
+                    state.snapshot.attacks[..(count as usize).min(PLAYER_ACTIONS)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn status_effects_require_registry_ids_online_players_and_safe_durations() {
+        let mut state = state();
+        state.snapshot = Arc::new(Snapshot {
+            players: vec![ServerPlayer {
+                id: "alice".into(),
+                name: "Alice".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            effect_ids: Arc::new(["minecraft:slowness".into()].into()),
+            ..Default::default()
+        });
+        let effect = |id: &str, seconds| EffectChange {
+            id: id.into(),
+            seconds,
+            amplifier: 255,
+        };
+        assert!(
+            check_order_names(
+                &EntityOrder::Effect(effect("minecraft:slowness", 0)),
+                &state.snapshot
+            )
+            .is_ok()
+        );
+        assert!(
+            check_order_names(
+                &EntityOrder::Effect(effect("minecraft:unknown", 2)),
+                &state.snapshot
+            )
+            .is_err()
+        );
+        assert!(
+            check_order_names(
+                &EntityOrder::Effect(effect("minecraft:slowness", u32::MAX)),
+                &state.snapshot
+            )
+            .is_err()
+        );
+        assert!(
+            players::Host::add_effect(
+                &mut state,
+                "offline".into(),
+                "minecraft:slowness".into(),
+                2,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            players::Host::add_effect(&mut state, "alice".into(), "minecraft:unknown".into(), 2, 0)
+                .is_err()
+        );
+        assert!(state.out.is_empty());
+        for seconds in [0, 20] {
+            players::Host::add_effect(
+                &mut state,
+                "alice".into(),
+                "minecraft:slowness".into(),
+                seconds,
+                255,
+            )
+            .unwrap();
+            assert_eq!(
+                state.out.last(),
+                Some(&Output::PlayerEffect {
+                    player: "alice".into(),
+                    effect: effect("minecraft:slowness", seconds)
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn container_and_template_validation_queues_only_valid_changes() {
+        struct Templates;
+        impl WorldView for Templates {
+            fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn has_dimension(&self, dimension: &str) -> bool {
+                dimension == "minecraft:overworld"
+            }
+            fn check_state(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn container(
+                &self,
+                _: &str,
+                x: i32,
+                _: i32,
+                _: i32,
+            ) -> Option<Vec<Option<ContainerItemStack>>> {
+                (x == 0).then(|| vec![None; 3])
+            }
+            fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+                (item == "minecraft:stick" && (1..=64).contains(&count))
+                    .then_some(())
+                    .ok_or("invalid stack".into())
+            }
+            fn check_structure(&self, id: &str) -> Result<(), String> {
+                (id == "minecraft:igloo/top")
+                    .then_some(())
+                    .ok_or("unknown template".into())
+            }
+        }
+        let mut state = state();
+        *state.world.lock().unwrap() = Some(Box::new(Templates));
+        let dimension = "minecraft:overworld";
+        assert_eq!(
+            mod_world::Host::container(&mut state, dimension.into(), 0, 64, 0),
+            Some(vec![None; 3])
+        );
+        assert_eq!(
+            mod_world::Host::container(&mut state, dimension.into(), 1, 64, 0),
+            None
+        );
+        let stack = |item: &str, count| {
+            Some(ContainerItemStack {
+                item: item.into(),
+                count,
+            })
+        };
+        for slots in [
+            vec![None; 2],
+            vec![None; CONTAINER_SLOTS + 1],
+            vec![stack("unknown:item", 1), None, None],
+            vec![stack("minecraft:stick", 0), None, None],
+            vec![stack("minecraft:stick", 65), None, None],
+        ] {
+            assert!(
+                mod_world::Host::set_container(&mut state, dimension.into(), 0, 64, 0, slots)
+                    .is_err()
+            );
+        }
+        assert!(
+            mod_world::Host::set_container(
+                &mut state,
+                "unknown:dimension".into(),
+                0,
+                64,
+                0,
+                vec![None; 3]
+            )
+            .is_err()
+        );
+        for (id, rotation) in [
+            ("minecraft:igloo/top", 4),
+            ("minecraft:unknown", 0),
+            ("minecraft:../igloo/top", 0),
+            ("minecraft:igloo:top", 0),
+        ] {
+            assert!(
+                mod_world::Host::place_structure(
+                    &mut state,
+                    dimension.into(),
+                    id.into(),
+                    0,
+                    64,
+                    0,
+                    rotation,
+                    false
+                )
+                .is_err()
+            );
+        }
+        assert!(state.out.is_empty());
+        mod_world::Host::set_container(
+            &mut state,
+            dimension.into(),
+            0,
+            64,
+            0,
+            vec![stack("minecraft:stick", 64), None, None],
+        )
+        .unwrap();
+        // A container placed by this tick's block writes is validated again on apply.
+        mod_world::Host::set_container(&mut state, dimension.into(), 1, 64, 0, vec![None; 3])
+            .unwrap();
+        mod_world::Host::place_structure(
+            &mut state,
+            dimension.into(),
+            "minecraft:igloo/top".into(),
+            0,
+            64,
+            0,
+            3,
+            true,
+        )
+        .unwrap();
+        assert_eq!(state.out.len(), 3);
+    }
+
+    #[test]
+    fn interactions_read_the_snapshot_in_order_up_to_256() {
+        let mut state = state();
         for count in [0, 2, 256, 300] {
             let clicks: Vec<_> = (0..count)
                 .map(|mob| EntityInteraction {
@@ -2212,6 +6154,13 @@ mod entity_tests {
                     mob,
                     kind: "ruby:golem".into(),
                     item: (mob % 2 == 0).then(|| "minecraft:bone".into()),
+                    sneaking: mob % 3 == 0,
+                    hand: if mob % 2 == 0 {
+                        "main_hand"
+                    } else {
+                        "off_hand"
+                    }
+                    .into(),
                 })
                 .collect();
             state.snapshot = Arc::new(Snapshot {
@@ -2227,13 +6176,822 @@ mod entity_tests {
                     assert_eq!(click.mob, expected.mob);
                     assert_eq!(click.kind, expected.kind);
                     assert_eq!(click.item, expected.item);
+                    assert_eq!(click.sneaking, expected.sneaking);
+                    assert_eq!(click.hand, expected.hand);
                 }
             }
         }
     }
 
+    struct Api15World;
+    impl WorldView for Api15World {
+        fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
+            (item == "minecraft:stick" && (1..=64).contains(&count))
+                .then_some(())
+                .ok_or("invalid stack".into())
+        }
+        fn block_has_tag(&self, block: &str, tag: &str) -> bool {
+            block == "minecraft:stone" && tag == "minecraft:stone_ore_replaceables"
+        }
+
+        fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+            None
+        }
+        fn has_dimension(&self, d: &str) -> bool {
+            d == "minecraft:overworld"
+        }
+        fn check_state(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn api15_sound_checks_registry_dimension_and_finite_values() {
+        let mut s = api15_state();
+        *s.world.lock().unwrap() = Some(Box::new(Api15World));
+        for (d, name, v, pitch, x) in [
+            ("missing", "ruby:roar", 1.0, 1.0, 0.0),
+            ("minecraft:overworld", "ruby:missing", 1.0, 1.0, 0.0),
+            ("minecraft:overworld", "ruby:roar", -1.0, 1.0, 0.0),
+            ("minecraft:overworld", "ruby:roar", 1.0, f32::NAN, 0.0),
+            ("minecraft:overworld", "ruby:roar", 1.0, 1.0, f64::INFINITY),
+        ] {
+            assert!(
+                mod_world::Host::play_sound(
+                    &mut s,
+                    d.into(),
+                    point(x, 64.0, 0.0).into(),
+                    name.into(),
+                    v,
+                    pitch
+                )
+                .is_err()
+            );
+        }
+        assert!(s.out.is_empty());
+        for name in ["ruby:roar", "minecraft:entity.zombie.ambient"] {
+            mod_world::Host::play_sound(
+                &mut s,
+                "minecraft:overworld".into(),
+                point(0.0, 64.0, 0.0).into(),
+                name.into(),
+                1.0,
+                2.0,
+            )
+            .unwrap();
+        }
+        assert_eq!(s.out.len(), 2);
+    }
+
+    fn api15_state() -> State {
+        let mut s = state();
+        let mob = |id, kind: &str| ModEntity {
+            id,
+            kind: kind.into(),
+            dimension: "minecraft:overworld".into(),
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+            on_ground: true,
+            target: None,
+            target_player: false,
+            scale: 1.0,
+            data: vec![],
+            age: 0,
+            animation: None,
+            texture: None,
+            rider: None,
+        };
+        s.snapshot = Arc::new(Snapshot {
+            players: vec![ServerPlayer {
+                id: "alice".into(),
+                name: "Alice".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                dimension: "minecraft:overworld".into(),
+                game_mode: GameMode::Survival,
+                health: 20.0,
+            }],
+            tamable_mobs: vec![2].into(),
+            entities: vec![
+                mob(1, "ruby:knight"),
+                mob(2, "minecraft:horse"),
+                mob(3, "minecraft:zombie"),
+            ]
+            .into(),
+            entity_resources: Arc::new(EntityResources {
+                sounds: ["ruby:roar".into(), "minecraft:entity.zombie.ambient".into()].into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        s
+    }
+
+    #[test]
+    fn api15_tame_and_damage_item_validate_before_queueing() {
+        let mut s = api15_state();
+        for mob in [1, 3, 999] {
+            assert!(entities::Host::tame(&mut s, mob, None).is_err());
+        }
+        assert!(entities::Host::tame(&mut s, 2, Some("bad owner".into())).is_err());
+        assert!(
+            players::Host::damage_item(&mut s, "offline".into(), "main_hand".into(), 1).is_err()
+        );
+        assert!(players::Host::damage_item(&mut s, "alice".into(), "head".into(), 1).is_err());
+        assert!(s.out.is_empty());
+        entities::Host::tame(&mut s, 2, None).unwrap();
+        entities::Host::tame(
+            &mut s,
+            2,
+            Some("01234567-89ab-cdef-0123-456789abcdef".into()),
+        )
+        .unwrap();
+        for hand in ["main_hand", "off_hand"] {
+            players::Host::damage_item(&mut s, "alice".into(), hand.into(), u32::MAX).unwrap();
+        }
+        assert_eq!(s.out.len(), 4);
+        assert!(matches!(
+            &s.out[0],
+            Output::Tame {
+                mob: 2,
+                owner: None
+            }
+        ));
+    }
+
+    #[test]
+    fn api15_block_tags_require_a_world_and_use_its_tables() {
+        let mut s = api15_state();
+        assert!(!mod_world::Host::block_has_tag(
+            &mut s,
+            "minecraft:stone".into(),
+            "minecraft:stone_ore_replaceables".into()
+        ));
+        *s.world.lock().unwrap() = Some(Box::new(Api15World));
+        assert!(mod_world::Host::block_has_tag(
+            &mut s,
+            "minecraft:stone".into(),
+            "minecraft:stone_ore_replaceables".into()
+        ));
+        assert!(!mod_world::Host::block_has_tag(
+            &mut s,
+            "missing".into(),
+            "minecraft:stone_ore_replaceables".into()
+        ));
+        assert!(!mod_world::Host::block_has_tag(
+            &mut s,
+            "minecraft:stone".into(),
+            "#minecraft:stone_ore_replaceables".into()
+        ));
+    }
+
+    #[test]
+    fn api15_item_spawns_validate_stacks_and_budget_across_hooks() {
+        let mut s = api15_state();
+        *s.world.lock().unwrap() = Some(Box::new(Api15World));
+        let spawn = |s: &mut State, d: &str, item: &str, count| {
+            mod_world::Host::spawn_item(
+                s,
+                d.into(),
+                point(0.0, 64.0, 0.0).into(),
+                item.into(),
+                count,
+            )
+        };
+        assert!(spawn(&mut s, "missing", "minecraft:stick", 1).is_err());
+        for (item, count) in [
+            ("missing", 1),
+            ("minecraft:stick", 0),
+            ("minecraft:stick", 65),
+        ] {
+            assert!(spawn(&mut s, "minecraft:overworld", item, count).is_err());
+        }
+        assert!(s.out.is_empty());
+        for _ in 0..16 {
+            spawn(&mut s, "minecraft:overworld", "minecraft:stick", 64).unwrap();
+        }
+        // Draining output between hooks must not reset a per-tick budget.
+        s.out.clear();
+        assert!(spawn(&mut s, "minecraft:overworld", "minecraft:stick", 1).is_err());
+        Arc::make_mut(&mut s.snapshot).clock = Some(Clock {
+            game_time: 1,
+            day_time: 1,
+        });
+        spawn(&mut s, "minecraft:overworld", "minecraft:stick", 1).unwrap();
+        assert_eq!(s.out.len(), 1);
+    }
+    #[test]
+    fn api15_equipment_reads_the_lent_server_inventory() {
+        struct Gear;
+        impl PlayerInventories for Gear {
+            fn take_item(&mut self, _: &str, _: &str, _: u32) -> Result<u32, String> {
+                Ok(0)
+            }
+            fn give_item(&mut self, _: &str, _: &str, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn equipment(&self, p: &str) -> Option<EquipmentSlots> {
+                (p == "alice").then(|| EquipmentSlots {
+                    head: Some("ruby:helmet".into()),
+                    chest: None,
+                    legs: None,
+                    feet: None,
+                    main_hand: None,
+                    off_hand: None,
+                    hotbar: vec![None; 9],
+                })
+            }
+        }
+        let mut s = api15_state();
+        assert!(players::Host::equipment(&mut s, "alice".into()).is_none());
+        *s.inventories.lock().unwrap() = Some(Box::new(Gear));
+        assert_eq!(
+            players::Host::equipment(&mut s, "alice".into())
+                .unwrap()
+                .head
+                .as_deref(),
+            Some("ruby:helmet")
+        );
+        assert!(players::Host::equipment(&mut s, "offline".into()).is_none());
+        assert!(s.out.is_empty());
+    }
+
+    #[test]
+    fn api15_effect_push_and_heal_validate_and_include_vanilla_mobs() {
+        let mut s = api15_state();
+        Arc::make_mut(&mut s.snapshot).effect_ids = Arc::new(["minecraft:poison".into()].into());
+        let effect = EffectChange {
+            id: "minecraft:poison".into(),
+            seconds: 10,
+            amplifier: 1,
+        };
+        assert!(entities::Host::effect(&mut s, 999, effect.clone()).is_err());
+        assert!(
+            entities::Host::effect(
+                &mut s,
+                2,
+                EffectChange {
+                    id: "missing".into(),
+                    ..effect.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            entities::Host::effect(
+                &mut s,
+                2,
+                EffectChange {
+                    seconds: u32::MAX,
+                    ..effect.clone()
+                }
+            )
+            .is_err()
+        );
+        assert!(entities::Host::push(&mut s, 999, point(0.0, 0.0, 0.0)).is_err());
+        assert!(entities::Host::push(&mut s, 2, point(0.0, f64::NAN, 0.0)).is_err());
+        for amount in [-1.0, f32::NAN, 1025.0] {
+            assert!(players::Host::heal(&mut s, "alice".into(), amount).is_err());
+        }
+        assert!(players::Host::heal(&mut s, "offline".into(), 1.0).is_err());
+        assert!(s.out.is_empty());
+        for mob in [1, 2, 3] {
+            entities::Host::effect(&mut s, mob, effect.clone()).unwrap();
+            entities::Host::push(&mut s, mob, point(0.0, 1.0, 0.0)).unwrap();
+        }
+        players::Host::heal(&mut s, "alice".into(), 1024.0).unwrap();
+        assert_eq!(s.out.len(), 7);
+    }
+    #[test]
+    fn api15_damage_lists_are_bounded_shared_and_replaced_each_tick() {
+        let mut s = api15_state();
+        let snapshot = Arc::make_mut(&mut s.snapshot);
+        snapshot.hurt_events = (0..300)
+            .map(|i| HurtEvent {
+                victim: i,
+                kind: "ruby:knight".into(),
+                attacker_mob: Some(7),
+                attacker_player: None,
+                amount: 2.0,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        snapshot.deaths = (0..300)
+            .map(|id| Death {
+                id,
+                kind: "ruby:knight".into(),
+                x: 1.0,
+                y: 64.0,
+                z: 2.0,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        snapshot.player_damage = (0..300)
+            .map(|_| PlayerDamage {
+                player: "alice".into(),
+                amount: 2.0,
+                source_kind: "minecraft:arrow".into(),
+                attacker_mob: Some(7),
+            })
+            .collect::<Vec<_>>()
+            .into();
+        for _ in 0..2 {
+            let hurts = entities::Host::hurt_events(&mut s);
+            assert_eq!(hurts.len(), 256);
+            assert_eq!(hurts[255].victim, 255);
+            assert_eq!(hurts[0].attacker_mob, Some(7));
+            assert_eq!(entities::Host::deaths(&mut s).len(), 256);
+            let damage = players::Host::damage_taken(&mut s);
+            assert_eq!(damage.len(), 256);
+            assert_eq!(damage[0].source_kind, "minecraft:arrow");
+        }
+        s.snapshot = Arc::new(Snapshot::default());
+        assert!(entities::Host::hurt_events(&mut s).is_empty());
+        assert!(entities::Host::deaths(&mut s).is_empty());
+        assert!(players::Host::damage_taken(&mut s).is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "pack")]
+    fn api15_players_and_world_imports_do_not_require_entities_capability() {
+        use wit_parser::{ManglingAndAbi, Resolve};
+        for interface in ["players", "world"] {
+            let mut resolve = Resolve::default();
+            let package = resolve
+                .push_str(
+                    "horizon.wit",
+                    include_str!("../../horizon-mod-sdk/wit/horizon.wit"),
+                )
+                .unwrap();
+            let world = resolve
+                .select_world(&[package], Some("horizon-server-mod"))
+                .unwrap();
+            resolve.worlds[world].exports.clear();
+            let interfaces = &resolve.interfaces;
+            resolve.worlds[world].imports.retain(|_, item| matches!(item, wit_parser::WorldItem::Interface { id, .. } if interfaces[*id].name.as_deref() == Some(interface)));
+            let mut module =
+                wit_component::dummy_module(&resolve, world, ManglingAndAbi::Standard32);
+            wit_component::embed_component_metadata(
+                &mut module,
+                &resolve,
+                world,
+                wit_component::StringEncoding::UTF8,
+            )
+            .unwrap();
+            let wasm = wit_component::ComponentEncoder::default()
+                .module(&module)
+                .unwrap()
+                .encode()
+                .unwrap();
+            let imports = crate::manifest::component_imports(&wasm).unwrap();
+            assert!(
+                imports
+                    .iter()
+                    .all(|i| i.starts_with(&format!("horizon:mods/{interface}@"))),
+                "{imports:?}"
+            );
+            let manifest = Manifest::parse(&format!("id = \"api15\"\nname = \"Api15\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"{interface}\"]\n")).unwrap();
+            manifest
+                .check_imports(imports.iter().map(String::as_str))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn api15_strike_validates_before_queueing() {
+        let mut s = api15_state();
+        let hit = StrikeHit {
+            center: point(0.0, 64.0, 0.0),
+            radius: 16.0,
+            amount: 1024.0,
+            fire: 30,
+            skip_kinds: vec!["ruby:knight".into()],
+            knockback: 0.25,
+            credit_player: Some("alice".into()),
+        };
+        for mob in [2, 999] {
+            assert!(entities::Host::strike(&mut s, mob, hit.clone()).is_err());
+        }
+        for bad in [
+            StrikeHit {
+                radius: f64::NAN,
+                ..hit.clone()
+            },
+            StrikeHit {
+                amount: 1025.0,
+                ..hit.clone()
+            },
+            StrikeHit {
+                fire: 31,
+                ..hit.clone()
+            },
+            StrikeHit {
+                knockback: f32::INFINITY,
+                ..hit.clone()
+            },
+            StrikeHit {
+                skip_kinds: vec!["bad id".into()],
+                ..hit.clone()
+            },
+            StrikeHit {
+                credit_player: Some("offline".into()),
+                ..hit.clone()
+            },
+        ] {
+            assert!(entities::Host::strike(&mut s, 1, bad).is_err());
+        }
+        assert!(s.out.is_empty());
+        entities::Host::strike(&mut s, 1, hit.clone()).unwrap();
+        assert_eq!(s.out, vec![Output::Strike { mob: 1, hit }]);
+    }
+
+    #[test]
+    fn api15_player_motion_requires_online_finite_bounded_inputs() {
+        let mut s = api15_state();
+        assert!(
+            players::Host::push(&mut s, "offline".into(), point(0.0, 0.0, 0.0).into()).is_err()
+        );
+        assert!(
+            players::Host::push(&mut s, "alice".into(), point(f64::NAN, 0.0, 0.0).into()).is_err()
+        );
+        assert!(players::Host::push(&mut s, "alice".into(), point(4.1, 0.0, 0.0).into()).is_err());
+        assert!(players::Host::knockback(&mut s, "alice".into(), -1.0, 1.0, 0.0).is_err());
+        assert!(
+            players::Host::knockback(&mut s, "alice".into(), 0.25, f64::INFINITY, 0.0).is_err()
+        );
+        assert!(s.out.is_empty());
+        players::Host::push(&mut s, "alice".into(), point(1.0, 0.5, 0.0).into()).unwrap();
+        players::Host::knockback(&mut s, "alice".into(), 0.25, 1.0, 0.0).unwrap();
+        assert!(matches!(
+            &s.out[..],
+            [Output::PlayerPush { .. }, Output::PlayerKnockback { .. }]
+        ));
+    }
+
+    #[test]
+    fn ride_checks_kinds_range_and_loops_and_vehicle_reads_the_snapshot() {
+        let mob = |id: u32, kind: &str, x: f64| ModEntity {
+            id,
+            kind: kind.into(),
+            dimension: "minecraft:overworld".into(),
+            x,
+            y: 64.0,
+            z: 0.0,
+            yaw: 0.0,
+            health: 20.0,
+            max_health: 20.0,
+            on_ground: true,
+            target: None,
+            target_player: false,
+            scale: 1.0,
+            data: vec![],
+            age: 0,
+            animation: None,
+            texture: None,
+            rider: None,
+        };
+        let mut state = state();
+        state.snapshot = Arc::new(Snapshot {
+            entities: vec![
+                mob(1, "ruby:knight", 0.0),
+                mob(2, "ruby:horse", 2.0),
+                mob(3, "minecraft:horse", 4.0),
+                mob(4, "ruby:far", 40.0),
+            ]
+            .into(),
+            // 2 already rides 1: 1 onto 2 would loop.
+            vehicles: vec![(2, 1)].into(),
+            ..Snapshot::default()
+        });
+        let ride = |state: &mut State, r, v| entities::Host::ride(state, r, v);
+        assert!(ride(&mut state, 1, Some(3)).is_ok());
+        assert!(ride(&mut state, 1, None).is_ok());
+        assert!(ride(&mut state, 3, Some(2)).is_err(), "a vanilla rider");
+        assert!(ride(&mut state, 1, Some(1)).is_err());
+        assert!(ride(&mut state, 1, Some(4)).is_err(), "out of range");
+        assert!(ride(&mut state, 1, Some(9)).is_err(), "not loaded");
+        assert!(ride(&mut state, 1, Some(2)).is_err(), "a loop");
+        let queued: Vec<_> = (state.out.iter())
+            .filter_map(|o| match o {
+                Output::Ride { rider, vehicle } => Some((*rider, *vehicle)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(queued, [(1, Some(3)), (1, None)]);
+        assert_eq!(entities::Host::vehicle(&mut state, 2), Some(1));
+        assert_eq!(entities::Host::vehicle(&mut state, 1), None);
+    }
+
+    #[test]
+    fn texture_orders_need_safe_loaded_mod_textures() {
+        let name = "ruby:entity/dragon/blue_stage3";
+        let order = EntityOrder::Texture(Some(name.into()));
+        let snapshot = Snapshot {
+            entity_resources: Arc::new(EntityResources {
+                textures: [name.to_string()].into(),
+                ..EntityResources::default()
+            }),
+            ..Snapshot::default()
+        };
+        assert!(check_order(&order).is_ok());
+        assert!(check_order_names(&order, &snapshot).is_ok());
+        assert!(check_order_names(&order, &Snapshot::default()).is_err());
+        assert!(check_order_names(&EntityOrder::Texture(None), &snapshot).is_ok());
+        for bad in [
+            "",
+            "entity/blue",
+            "minecraft:entity/pig",
+            "ruby:block/blue",
+            "ruby:entity/../blue",
+            "ruby:entity/",
+            "Ruby:entity/blue",
+        ] {
+            assert!(
+                check_order(&EntityOrder::Texture(Some(bad.into()))).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn effects_validate_names_bounds_and_queue_batches_atomically() {
+        let sound = |name: &str, volume, pitch| {
+            EntityOrder::Sound(EntitySound {
+                name: name.into(),
+                volume,
+                pitch,
+            })
+        };
+        let particles = |name: &str, speed, count| {
+            EntityOrder::Particles(EntityParticles {
+                name: name.into(),
+                at: point(1.0, 64.0, 2.0),
+                delta: point(0.5, 0.5, 0.5),
+                speed,
+                count,
+            })
+        };
+        let roar = sound("ruby:roar", 2.0, 0.5);
+        let flame = particles("minecraft:flame", 0.1, 256);
+        let mut state = state();
+        state.snapshot = Arc::new(Snapshot {
+            entities: vec![ModEntity {
+                id: 1,
+                kind: "ruby:dragon".into(),
+                dimension: "minecraft:overworld".into(),
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+                yaw: 0.0,
+                health: 20.0,
+                max_health: 20.0,
+                on_ground: true,
+                target: None,
+                target_player: false,
+                scale: 1.0,
+                data: vec![],
+                age: 0,
+                animation: None,
+                texture: None,
+                rider: None,
+            }]
+            .into(),
+            entity_resources: Arc::new(EntityResources {
+                sounds: [
+                    "ruby:roar".into(),
+                    "minecraft:entity.ender_dragon.growl".into(),
+                ]
+                .into(),
+                particles: [("minecraft:flame".into(), 32)].into(),
+                ..EntityResources::default()
+            }),
+            ..Snapshot::default()
+        });
+        for valid in [
+            roar.clone(),
+            flame.clone(),
+            particles("minecraft:flame", 0.0, 0),
+            sound("minecraft:entity.ender_dragon.growl", 0.0, 0.0),
+        ] {
+            assert!(check_order(&valid).is_ok());
+            assert!(check_order_names(&valid, &state.snapshot).is_ok());
+        }
+        for bad in [
+            EntityOrder::Attribute(EntityAttributeChange {
+                name: "max_health".into(),
+                value: f64::NAN,
+            }),
+            EntityOrder::Target(EntityTarget::Player("offline".into())),
+            EntityOrder::Attribute(EntityAttributeChange {
+                name: "not_an_attribute".into(),
+                value: 500.0,
+            }),
+            EntityOrder::Heal(f32::INFINITY),
+            sound("ruby:missing", 1.0, 1.0),
+            particles("minecraft:missing", 0.0, 1),
+            particles("minecraft:dust", 0.0, 1),
+            particles("minecraft:dragon_breath", 0.0, 1),
+            sound("ruby:roar", f32::NAN, 1.0),
+            sound("ruby:roar", 1.0, f32::INFINITY),
+            sound("ruby:roar", -1.0, 1.0),
+            sound("ruby:roar", 1.0, -1.0),
+            particles("minecraft:flame", -1.0, 1),
+            particles("minecraft:flame", f32::NAN, 1),
+            particles("minecraft:flame", 0.0, 257),
+            EntityOrder::Particles(EntityParticles {
+                name: "minecraft:flame".into(),
+                at: point(f64::NAN, 0.0, 0.0),
+                delta: point(0.0, 0.0, 0.0),
+                speed: 0.0,
+                count: 1,
+            }),
+            EntityOrder::Particles(EntityParticles {
+                name: "minecraft:flame".into(),
+                at: point(0.0, 0.0, 0.0),
+                delta: point(f64::MAX, 0.0, 0.0),
+                speed: 0.0,
+                count: 1,
+            }),
+        ] {
+            assert!(
+                entities::Host::give_orders(&mut state, vec![(1, roar.clone()), (1, bad)]).is_err()
+            );
+            assert!(state.out.is_empty());
+        }
+        entities::Host::give_orders(&mut state, vec![(1, roar), (1, flame)]).unwrap();
+        assert!(matches!(&state.out[..], [Output::Orders { orders, .. }] if orders.len() == 2));
+    }
+
+    #[test]
+    fn world_queries_read_current_rules_and_difficulty() {
+        let mut state = state();
+        assert_eq!(
+            mod_world::Host::game_rule(&mut state, "unknown".into()),
+            None
+        );
+        for (griefing, difficulty) in [("true", "normal"), ("false", "hard")] {
+            state.snapshot = Arc::new(Snapshot {
+                game_rules: [
+                    ("mob_griefing".into(), griefing.into()),
+                    ("random_tick_speed".into(), "9".into()),
+                ]
+                .into(),
+                difficulty: difficulty.into(),
+                ..Snapshot::default()
+            });
+            for name in ["mobGriefing", "mob_griefing", "minecraft:mob_griefing"] {
+                assert_eq!(
+                    mod_world::Host::game_rule(&mut state, name.into()).as_deref(),
+                    Some(griefing)
+                );
+            }
+            assert_eq!(
+                mod_world::Host::game_rule(&mut state, "random_tick_speed".into()).as_deref(),
+                Some("9")
+            );
+            assert_eq!(mod_world::Host::difficulty(&mut state), difficulty);
+        }
+    }
+
+    #[test]
+    fn time_is_dimension_specific_and_sky_reads_the_lent_world() {
+        let mut state = state();
+        assert!(!mod_world::Host::time(&mut state, "missing".into()).is_day);
+        assert!(!mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:overworld".into(),
+            1,
+            65,
+            -1
+        ));
+        for day in [true, false] {
+            state.snapshot = Arc::new(Snapshot {
+                world_times: [
+                    (
+                        "minecraft:overworld".into(),
+                        WorldTime {
+                            day_time: 25000,
+                            game_time: 100000,
+                            is_day: day,
+                            raining: !day,
+                            thundering: !day,
+                        },
+                    ),
+                    (
+                        "minecraft:the_nether".into(),
+                        WorldTime {
+                            day_time: 25000,
+                            game_time: 100000,
+                            is_day: false,
+                            raining: !day,
+                            thundering: false,
+                        },
+                    ),
+                ]
+                .into(),
+                ..Snapshot::default()
+            });
+            let time = mod_world::Host::time(&mut state, "minecraft:overworld".into());
+            assert_eq!(
+                (
+                    time.day_time,
+                    time.game_time,
+                    time.is_day,
+                    time.raining,
+                    time.thundering
+                ),
+                (25000, 100000, day, !day, !day)
+            );
+            assert!(!mod_world::Host::time(&mut state, "minecraft:the_nether".into()).is_day);
+            assert_eq!(
+                mod_world::Host::time(&mut state, "missing".into()).game_time,
+                0
+            );
+        }
+        struct Sky;
+        impl WorldView for Sky {
+            fn block(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
+                None
+            }
+            fn has_dimension(&self, _: &str) -> bool {
+                true
+            }
+            fn check_state(&self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn can_see_sky(&self, dim: &str, x: i32, y: i32, z: i32) -> bool {
+                dim == "minecraft:overworld" && [x, y, z] == [1, 65, -1]
+            }
+        }
+        *state.world.lock().unwrap() = Some(Box::new(Sky));
+        assert!(mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:overworld".into(),
+            1,
+            65,
+            -1
+        ));
+        assert!(!mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:the_end".into(),
+            1,
+            65,
+            -1
+        ));
+        assert!(!mod_world::Host::can_see_sky(
+            &mut state,
+            "minecraft:overworld".into(),
+            1,
+            64,
+            -1
+        ));
+    }
+
     fn point(x: f64, y: f64, z: f64) -> EntityPoint {
         EntityPoint { x, y, z }
+    }
+
+    #[test]
+    fn attributes_and_heal_validate_names_and_finite_values() {
+        let attribute = |name: &str, value| {
+            EntityOrder::Attribute(EntityAttributeChange {
+                name: name.into(),
+                value,
+            })
+        };
+        for name in crate::content::ENTITY_ATTRIBUTES
+            .into_iter()
+            .filter(|n| !crate::content::TYPE_ONLY_ATTRIBUTES.contains(n))
+        {
+            for value in [0.0, 500.0, 1024.0] {
+                assert!(
+                    check_order(&attribute(name, value)).is_ok(),
+                    "{name}={value}"
+                );
+            }
+        }
+        for name in ["", "scale", "minecraft:max_health", "luck", "unknown"] {
+            assert!(check_order(&attribute(name, 10.0)).is_err(), "{name}");
+        }
+        for value in [-0.1, 1024.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(check_order(&attribute("max_health", value)).is_err());
+        }
+        for value in [0.0, 1.0, -1.0, f32::MAX] {
+            assert!(check_order(&EntityOrder::Heal(value)).is_ok());
+        }
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(check_order(&EntityOrder::Heal(value)).is_err());
+        }
     }
 
     #[test]
