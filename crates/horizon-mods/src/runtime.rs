@@ -484,6 +484,8 @@ pub enum Output {
         data: Option<String>,
     },
     Menu(MenuOperation),
+    /// API 37: a preimage-checked machine slot write, applied after hooks.
+    MachineStackWrite(MachineStackWrite),
     BlockDataWrite(BlockDataWrite),
     BreakProgress {
         mod_id: String,
@@ -716,6 +718,15 @@ pub trait WorldView: std::any::Any + Send {
     ) -> Option<Vec<Option<ContainerItemStack>>> {
         None
     }
+    /// API 37: one loaded block's real slots with full component patches, for
+    /// preimage-checked machine writes. None when absent or unloaded.
+    fn machine_stacks(
+        &self,
+        _dimension: &str,
+        _pos: BlockChangePos,
+    ) -> Option<Vec<Option<MachineStack>>> {
+        None
+    }
     /// API 28: shared reservation view; never exposes components to the guest.
     fn storage(&mut self) -> Option<&mut StorageView> {
         None
@@ -847,6 +858,8 @@ struct Running {
     stack_data_api: bool,
     block_data_api: bool,
     machine_api: bool,
+    /// It imports either API 37 machine-stack function.
+    machine_stack_api: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -1531,6 +1544,9 @@ impl Mods {
                             | "browser-ext.recipe-count"
                             | "browser-ext.recipes-page"
                     )
+            }),
+            machine_stack_api: functions.iter().any(|f| {
+                f == "world.machine-stacks" || f == "world.set-machine-stacks"
             }),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
@@ -2886,6 +2902,81 @@ impl mod_world::Host for State {
                 result_count: r.results.first().map_or(0, |s| s.count),
             })
             .collect())
+    }
+    fn machine_stacks(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+    ) -> Option<Vec<Option<MachineStack>>> {
+        if !self.server {
+            return None;
+        }
+        self.machine_position(&dimension, pos).ok()?;
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.machine_stacks(&dimension, pos)
+    }
+    fn set_machine_stacks(
+        &mut self,
+        dimension: String,
+        pos: BlockChangePos,
+        changes: Vec<mod_world::MachineSlotChange>,
+    ) -> Result<(), String> {
+        self.machine_position(&dimension, pos)?;
+        if !channel_host::allowance(
+            &mut self.machines.machine_write_budget,
+            self.snapshot.tick,
+            64,
+        ) {
+            return Err("at most 64 machine writes per mod per tick".into());
+        }
+        if changes.len() > 256 {
+            return Err("at most 256 changed slots per call".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0usize;
+        let mut convert = |s: mod_world::Stack| -> Result<MachineStack, String> {
+            self.world
+                .lock()
+                .map_err(|_| "world unavailable")?
+                .as_ref()
+                .ok_or("world unavailable")?
+                .check_item_stack(&s.item, s.count)?;
+            let bytes = s.components.unwrap_or_default();
+            if bytes.len() > 65536 {
+                return Err("machine component patch exceeds 65536 bytes".into());
+            }
+            total += bytes.len() + s.item.len() + 8;
+            Ok(MachineStack {
+                item: s.item,
+                count: s.count,
+                components: (!bytes.is_empty()).then_some(bytes),
+            })
+        };
+        let mut out = Vec::with_capacity(changes.len());
+        for change in changes {
+            if !seen.insert(change.slot) {
+                return Err("duplicate machine slot".into());
+            }
+            let expect = match change.expect {
+                Some(s) => Some(convert(s)?),
+                None => None,
+            };
+            let write = match change.write {
+                Some(s) => Some(convert(s)?),
+                None => None,
+            };
+            out.push((change.slot, expect, write));
+        }
+        if total > 1 << 20 {
+            return Err("machine component patches exceed 1 MiB per call".into());
+        }
+        self.out.push(Output::MachineStackWrite(MachineStackWrite {
+            mod_id: self.id.clone(),
+            dimension,
+            pos,
+            changes: out,
+        }));
+        Ok(())
     }
     fn block_data(
         &mut self,

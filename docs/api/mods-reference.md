@@ -1434,6 +1434,16 @@ API 30: a collected real stack, including its full saved component patch. Compon
 | `count` | `u32` |  |
 | `components` | `option<list<u8>>` |  |
 
+### record `machine-slot-change`
+
+API 37: one preimage-checked slot change to a loaded machine. `expect` must equal the slot's item, count and full component bytes now (none expects an empty slot); a mismatch drops the entire write. `write` replaces the slot (none empties it).
+
+| Field | Type | |
+| --- | --- | --- |
+| `slot` | `u32` |  |
+| `expect` | `option<stack>` |  |
+| `write` | `option<stack>` |  |
+
 ### record `stack-info`
 
 API level 28: one slot, including the identity of all saved components.
@@ -1533,6 +1543,8 @@ A plain item stack; components are not carried by this API.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `recipes-for-item` | `func(item: string, start: u32, count: u32) -> result<list<machine-recipe>, string>` | API 36: at most `count` (<= 128) crafting recipes whose result is `item`, from index `start` in a stable order; fewer at the end, none past it. Capability `world`, server mods only. An unknown item id is an error. |
+| `machine-stacks` | `func(dimension: string, pos: block-change-pos) -> option<list<option<stack>>>` | API 37: read a loaded block's real slots, including their full saved component patches (lossless network NBT bytes, as API 30's collected drops). None when the block has no container or is unloaded; at most 256 slots. |
+| `set-machine-stacks` | `func(dimension: string, pos: block-change-pos, changes: list<machine-slot-change>) -> result<_, string>` | API 37: queue a preimage-checked slot write to a loaded machine, applied after this hook batch. Unrelated slots and their components are left untouched. At most 64 calls and 256 changed slots per mod per tick; `ok` means queued, not applied. Capability `world`, server mods only. |
 | `spawn-particles` | `func(dimension: string, particles: particle-burst) -> result<_, string>` | API 31: 64 calls and 4096 particles/mod/tick, sent to players near `at`. Deferred. |
 | `explode` | `func(dimension: string, center: point, radius: f32, fire: bool, blast: blast-kind) -> result<_, string>` | API 31: Level.explode with no source, 0 < radius <= 8, 4/mod/tick; mob_griefing off keeps blocks and fire. Deferred. |
 | `make-block-fall` | `func(dimension: string, pos: block-change-pos, expected-state: string, velocity: point, hurts: bool) -> result<_, string>` | API 31: turn an existing block into a falling block. expected-state must equal get-block now and when applied; velocity each axis \|v\| <= 3.9; 16/mod/tick. Deferred. |

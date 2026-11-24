@@ -193,6 +193,7 @@ pub(super) mod run {
         biomes: std::sync::Arc<horizon_client::biome::Biomes>,
         dims: Vec<(&'static str, ChunkMap)>,
         containers: super::super::server_mod_world::ContainerSnapshot,
+        machine_stacks: super::super::server_mod_world::MachineStackSnapshot,
         storage: horizon_mods::StorageView,
         block_data: std::collections::HashMap<
             (String, (i32, i32, i32), String),
@@ -239,6 +240,15 @@ pub(super) mod run {
         ) -> Option<Vec<Option<horizon_mods::ContainerItemStack>>> {
             self.containers
                 .get(&(dimension.to_owned(), (x, y, z)))
+                .cloned()
+        }
+        fn machine_stacks(
+            &self,
+            dimension: &str,
+            pos: horizon_mods::BlockChangePos,
+        ) -> Option<Vec<Option<horizon_mods::MachineStack>>> {
+            self.machine_stacks
+                .get(&(dimension.to_owned(), (pos.x, pos.y, pos.z)))
                 .cloned()
         }
         fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
@@ -910,6 +920,11 @@ pub(super) mod run {
                 return;
             }
             let containers = self.mod_container_snapshot();
+            let machine_stacks = if self.mods.mods.wants_machine_stacks() {
+                self.mod_machine_stack_snapshot()
+            } else {
+                Default::default()
+            };
             let storage = if self.mods.mods.wants_storage() {
                 self.mod_storage_snapshot(host)
             } else {
@@ -948,6 +963,7 @@ pub(super) mod run {
                 block_data,
                 dims,
                 containers,
+                machine_stacks,
                 storage,
                 items,
                 resources: self.options.resources.clone(),
@@ -1755,6 +1771,7 @@ pub(super) mod run {
                         })
                     }
                     Output::BlockDataWrite(plan) => plan.dimension == dim,
+                    Output::MachineStackWrite(plan) => plan.dimension == dim,
                     Output::BreakProgress { dimension, .. }
                     | Output::SetContainer { dimension, .. }
                     | Output::PlaceStructure { dimension, .. }
@@ -1840,6 +1857,9 @@ pub(super) mod run {
                         self.apply_mod_storage_move(plan, host.as_deref_mut())
                     }
                     Output::BlockDataWrite(plan) => self.apply_mod_block_data(plan),
+                    Output::MachineStackWrite(plan) => {
+                        self.apply_mod_machine_stacks(plan, host.as_deref_mut())
+                    }
                     Output::BreakProgress {
                         mod_id, pos, stage, ..
                     } => {
@@ -2338,6 +2358,7 @@ pub(super) mod run {
                     self.apply_mod_sound_to(host, &player, &sound);
                 }
                 operation @ (Output::BlockDataWrite(_)
+                | Output::MachineStackWrite(_)
                 | Output::BreakProgress { .. }
                 | Output::GiveItemWithData { .. }
                 | Output::StorageDataWrite(_)

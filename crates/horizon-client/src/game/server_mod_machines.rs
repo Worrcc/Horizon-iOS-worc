@@ -10,7 +10,10 @@ use horizon_client::{
     items::ItemStack,
     text::Text,
 };
-use horizon_mods::{BlockDataImage, BlockDataWrite, DestroyRequest, MenuLease, MenuOperation};
+use horizon_mods::{
+    BlockDataImage, BlockDataWrite, DestroyRequest, MachineStack, MachineStackWrite, MenuLease,
+    MenuOperation,
+};
 use std::collections::HashMap;
 type BlockDataSnapshot = HashMap<(String, (i32, i32, i32), String), Result<BlockDataImage, String>>;
 
@@ -359,9 +362,132 @@ fn encode_collected(drops: &[ItemStack]) -> Result<Vec<horizon_mods::MachineStac
         .collect()
 }
 
+/// API 37: rebuild a real stack from a guest-supplied component patch. The
+/// bytes are lossless network NBT from `encode_components`, as collected drops.
+fn decode_machine_stack(stack: &MachineStack) -> Result<ItemStack, String> {
+    let components = stack
+        .components
+        .as_ref()
+        .map(|bytes| -> Result<horizon_world::nbt::Tag, String> {
+            let (tag, used) = horizon_world::nbt::read_network(bytes, Default::default())
+                .map_err(|_| "invalid machine component patch".to_owned())?;
+            if used != bytes.len() {
+                return Err("trailing bytes in machine component patch".into());
+            }
+            Ok(tag)
+        })
+        .transpose()?;
+    let mut entries = vec![
+        ("id", horizon_client_core::nbt_value::string(&stack.item)),
+        ("count", horizon_world::nbt::Tag::Int(stack.count as i32)),
+    ];
+    if let Some(tag) = components {
+        entries.push(("components", tag));
+    }
+    horizon_items::item_nbt::item_from_nbt(&horizon_world::nbt::Tag::compound(entries))
+        .ok_or_else(|| "invalid machine stack".into())
+}
+
+impl Game<'_> {
+    /// API 37: apply a guest's preimage-checked slot write to the live machine.
+    pub(super) fn apply_mod_machine_stacks(
+        &mut self,
+        plan: MachineStackWrite,
+        host: Option<&mut LanHost>,
+    ) -> Result<(), String> {
+        let p = plan.pos;
+        if plan.dimension != self.dim.id()
+            || !self.world.chunks.contains_key(&(p.x >> 4, p.z >> 4))
+        {
+            return Err("machine unloaded".into());
+        }
+        let entity = self
+            .world
+            .block_entities
+            .get(&(p.x, p.y, p.z))
+            .ok_or("machine missing")?;
+        let live = super::server_mod_world::slots(entity);
+        if live.is_empty() {
+            return Err("no machine container".into());
+        }
+        let encoded: Vec<Option<MachineStack>> = live
+            .iter()
+            .map(|slot| slot.as_ref().and_then(super::server_mod_world::encode_machine_stack))
+            .collect();
+        for (slot, expect, _) in &plan.changes {
+            let index = *slot as usize;
+            if encoded.get(index) != Some(expect) {
+                return Err("machine slot changed; write cancelled".into());
+            }
+        }
+        // Decode before touching the container: a bad patch cancels everything.
+        let mut writes = Vec::with_capacity(plan.changes.len());
+        for (_, _, write) in &plan.changes {
+            let stack = write.as_ref().map(decode_machine_stack).transpose()?;
+            if let Some(stack) = &stack
+                && self.res.items().get(stack.item.as_ref()).is_none()
+            {
+                return Err(format!("unknown item {}", stack.item));
+            }
+            writes.push(stack);
+        }
+        let entity = self
+            .world
+            .block_entities
+            .get_mut(&(p.x, p.y, p.z))
+            .ok_or("machine missing")?;
+        let slots = super::server_mod_world::slots_mut(entity);
+        for ((slot, _, _), write) in plan.changes.iter().zip(writes) {
+            slots[*slot as usize] = write;
+        }
+        self.container_changed((p.x, p.y, p.z));
+        if let Some(host) = host.or(self.lan.as_mut()) {
+            host.hub.sync_containers(&self.world);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn api37_machine_stack_components_round_trip() {
+        let mut stack = ItemStack::new("minecraft:diamond", 7);
+        stack
+            .set_mod_data("one", Some("saved one"))
+            .unwrap();
+        let encoded = super::super::server_mod_world::encode_machine_stack(&stack).unwrap();
+        assert_eq!(encoded.item, "minecraft:diamond");
+        assert_eq!(encoded.count, 7);
+        let bytes = encoded.components.as_ref().unwrap();
+        assert_eq!(
+            horizon_world::nbt::read_network(bytes, Default::default())
+                .unwrap()
+                .1,
+            bytes.len()
+        );
+        let back = decode_machine_stack(&encoded).unwrap();
+        assert_eq!(back.item, stack.item);
+        assert_eq!(back.count, stack.count);
+        assert_eq!(
+            horizon_client::item_data::encode_components(&back),
+            horizon_client::item_data::encode_components(&stack)
+        );
+        // A plain stack has no component patch, and a corrupt one is refused.
+        let plain = super::super::server_mod_world::encode_machine_stack(&ItemStack::new(
+            "minecraft:stick",
+            1,
+        ))
+        .unwrap();
+        assert!(plain.components.is_none());
+        assert!(decode_machine_stack(&MachineStack {
+            components: Some(vec![0; 8]),
+            ..plain
+        })
+        .is_err());
+    }
+
     #[test]
     fn api30_collected_stacks_keep_all_saved_components_and_bound_output() {
         let mut stack = ItemStack::new("minecraft:diamond", 7);

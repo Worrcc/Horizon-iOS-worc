@@ -3,11 +3,33 @@
 use super::Game;
 use horizon_client::furnace::FurnaceCooking;
 use horizon_client::{containers::BlockEntity, items::ItemStack, world::World};
-use horizon_mods::ContainerItemStack;
+use horizon_mods::{ContainerItemStack, MachineStack};
 use std::{collections::HashMap, path::Path};
 
 type Pos = (i32, i32, i32);
 pub(super) type ContainerSnapshot = HashMap<(String, Pos), Vec<Option<ContainerItemStack>>>;
+pub(super) type MachineStackSnapshot = HashMap<(String, Pos), Vec<Option<MachineStack>>>;
+
+/// API 37: a real slot with its full component patch as lossless network NBT.
+pub(super) fn encode_machine_stack(stack: &ItemStack) -> Option<MachineStack> {
+    let components = horizon_client::item_data::encode_components(stack)
+        .and_then(|tag| {
+            horizon_world::nbt::write_network(
+                &tag,
+                horizon_world::nbt::Limits {
+                    max_bytes: 65536,
+                    ..Default::default()
+                },
+            )
+            .ok()
+        })
+        .filter(|bytes| !bytes.is_empty());
+    Some(MachineStack {
+        item: stack.item.to_string(),
+        count: stack.count,
+        components,
+    })
+}
 
 pub(super) fn slots(entity: &BlockEntity) -> &[Option<ItemStack>] {
     match entity {
@@ -16,7 +38,7 @@ pub(super) fn slots(entity: &BlockEntity) -> &[Option<ItemStack>] {
     }
 }
 
-fn slots_mut(entity: &mut BlockEntity) -> &mut [Option<ItemStack>] {
+pub(super) fn slots_mut(entity: &mut BlockEntity) -> &mut [Option<ItemStack>] {
     match entity {
         BlockEntity::Lectern(l) => std::slice::from_mut(&mut l.book),
         _ => entity.slots_mut(),
@@ -73,6 +95,33 @@ impl Game<'_> {
                                 count: stack.count,
                             })
                         })
+                        .collect(),
+                );
+            }
+        };
+        add(self.dim.id(), &self.world);
+        for (dimension, world) in self.levels.all_parked_worlds() {
+            add(dimension.id(), world);
+        }
+        out
+    }
+
+    /// API 37: the same loaded containers, with full component patches. Only
+    /// built while a running mod imports `world.machine-stacks` or
+    /// `world.set-machine-stacks`.
+    pub(super) fn mod_machine_stack_snapshot(&self) -> MachineStackSnapshot {
+        let mut out = HashMap::new();
+        let mut add = |dimension: &str, world: &World| {
+            for (&pos, entity) in &world.block_entities {
+                let slots = slots(entity);
+                if slots.is_empty() || !world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4)) {
+                    continue;
+                }
+                out.insert(
+                    (dimension.to_owned(), pos),
+                    slots
+                        .iter()
+                        .map(|slot| slot.as_ref().and_then(encode_machine_stack))
                         .collect(),
                 );
             }

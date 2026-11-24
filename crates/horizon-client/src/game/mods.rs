@@ -1490,6 +1490,7 @@ impl Game<'_> {
                 | Output::SetLootTable { .. }
                 | Output::GiveItemWithData { .. }
                 | Output::Menu(_)
+                | Output::MachineStackWrite(_)
                 | Output::BlockDataWrite(_)
                 | Output::BreakProgress { .. }
                 | Output::StorageDataWrite(_)

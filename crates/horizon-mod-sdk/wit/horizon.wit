@@ -1430,6 +1430,24 @@ interface %world {
     /// from index `start` in a stable order; fewer at the end, none past it.
     /// Capability `world`, server mods only. An unknown item id is an error.
     recipes-for-item: func(item: string, start: u32, count: u32) -> result<list<machine-recipe>, string>;
+    /// API 37: one preimage-checked slot change to a loaded machine. `expect`
+    /// must equal the slot's item, count and full component bytes now (none
+    /// expects an empty slot); a mismatch drops the entire write. `write`
+    /// replaces the slot (none empties it).
+    record machine-slot-change {
+        slot: u32,
+        expect: option<stack>,
+        write: option<stack>,
+    }
+    /// API 37: read a loaded block's real slots, including their full saved
+    /// component patches (lossless network NBT bytes, as API 30's collected
+    /// drops). None when the block has no container or is unloaded; at most 256 slots.
+    machine-stacks: func(dimension: string, pos: block-change-pos) -> option<list<option<stack>>>;
+    /// API 37: queue a preimage-checked slot write to a loaded machine, applied
+    /// after this hook batch. Unrelated slots and their components are left
+    /// untouched. At most 64 calls and 256 changed slots per mod per tick;
+    /// `ok` means queued, not applied. Capability `world`, server mods only.
+    set-machine-stacks: func(dimension: string, pos: block-change-pos, changes: list<machine-slot-change>) -> result<_, string>;
     /// API 31: particle options: rgb 0xRRGGBB and scale 0.01..4.
     record dust-color { rgb: u32, scale: f32 }
     /// API 31: a vanilla particle burst. `block` is required for minecraft:block, block_marker,

@@ -3742,10 +3742,10 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     ] {
         assert!(imports.iter().any(|i| i == name), "{name}");
     }
-    // The server guest also exercises API 36's paged recipe queries.
+    // The server guest also exercises API 36 recipe queries and API 37 machine writes.
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        36
+        37
     );
 }
 

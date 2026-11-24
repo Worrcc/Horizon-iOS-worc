@@ -1,7 +1,8 @@
-//! API 36: server recipe queries (`world.recipes-for-item`).
+//! API 36/37: server recipe queries and component-safe machine writes.
 use super::*;
 use horizon_mods::{
-    GameMode, Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes, ServerPlayer, WorldView,
+    BlockChangePos, GameMode, MachineStack, Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes,
+    ServerPlayer, WorldView,
 };
 use std::sync::Arc;
 
@@ -19,6 +20,22 @@ impl WorldView for View {
     }
     fn check_state(&self, _: &str) -> Result<(), String> {
         Ok(())
+    }
+    fn machine_stacks(
+        &self,
+        dim: &str,
+        pos: BlockChangePos,
+    ) -> Option<Vec<Option<MachineStack>>> {
+        (dim == "minecraft:overworld" && pos.x == 0 && pos.y == 64 && pos.z == 0).then(|| {
+            vec![
+                Some(MachineStack {
+                    item: "minecraft:stick".into(),
+                    count: 4,
+                    components: Some(vec![1, 2, 3]),
+                }),
+                None,
+            ]
+        })
     }
 }
 
@@ -143,16 +160,21 @@ fn api36_recipes_for_item_pages_and_resolves_ids() {
 }
 
 #[test]
-fn api36_recipe_query_is_level_36_and_needs_world() {
+fn api36_recipe_query_is_available_and_needs_world() {
     let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
         .unwrap()
         .wasm
         .unwrap();
     let imports = horizon_mods::api_level::imports(&wasm).unwrap();
     assert!(imports.iter().any(|f| f == "world.recipes-for-item"));
+    // The guest also imports API 37; the recipe query itself is level 36.
+    assert_eq!(
+        horizon_mods::api_level::level_of("world.recipes-for-item"),
+        Some(36)
+    );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        36
+        37
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -168,4 +190,60 @@ fn api36_recipe_query_is_level_36_and_needs_world() {
     assert!(no_world
         .check_imports(["horizon:mods/world@0.1.0"])
         .is_err());
+}
+
+#[test]
+fn api37_machine_stacks_read_components_and_queue_checked_writes() {
+    let (mut m, p) = setup();
+    assert_eq!(
+        run(&mut m, &p, "machine37 read"),
+        ["machine [minecraft:stickx4+,_]"]
+    );
+    // A matching preimage queues a deferred write.
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "machine37 write"));
+        m.drain()
+    };
+    assert!(out.iter().any(|o| matches!(o, Output::Tell { text, .. } if text == "machine queued")));
+    let writes: Vec<_> = out
+        .iter()
+        .filter_map(|o| match o {
+            Output::MachineStackWrite(plan) => Some(plan),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].mod_id, "test_api20_server");
+    assert_eq!(writes[0].pos.x, 0);
+    assert_eq!(writes[0].changes.len(), 1);
+    let (slot, expect, write) = &writes[0].changes[0];
+    assert_eq!(*slot, 0);
+    assert_eq!(expect.as_ref().unwrap().count, 4);
+    assert_eq!(write.as_ref().unwrap().count, 5);
+    // A wrong preimage is refused in the sandbox before a write is queued.
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "machine37 bad"));
+        m.drain()
+    };
+    assert!(!out
+        .iter()
+        .any(|o| matches!(o, Output::MachineStackWrite(_))));
+    assert!(out.iter().any(|o| matches!(o, Output::Reply { error: true, .. })));
+}
+
+#[test]
+fn api37_machine_write_level_and_capability() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "world.machine-stacks"));
+    assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        37
+    );
 }

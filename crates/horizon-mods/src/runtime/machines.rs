@@ -42,6 +42,15 @@ pub enum MenuOperation {
     },
 }
 pub(super) type MenuLeases = Arc<Mutex<HashMap<String, MenuLease>>>;
+/// API 37: a preimage-checked write to a loaded machine's slots.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MachineStackWrite {
+    pub mod_id: String,
+    pub dimension: String,
+    pub pos: BlockChangePos,
+    /// (slot, expected stack, replacement stack); `None` means an empty slot.
+    pub changes: Vec<(u32, Option<MachineStack>, Option<MachineStack>)>,
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct DestroyRequest {
     pub mod_id: String,
@@ -60,6 +69,7 @@ pub(super) struct MachineState {
     menu_budget: (Option<u64>, usize),
     click_budget: (Option<u64>, usize),
     destroy_budget: (Option<u64>, usize),
+    pub machine_write_budget: (Option<u64>, usize),
     pub progress_budget: (Option<u64>, usize),
     pub anchor: Option<(String, BlockPos)>,
 }
@@ -398,6 +408,13 @@ impl Mods {
         self.entries
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.machine_api))
+    }
+    /// Some running mod reads or writes machine stacks with full components
+    /// (API 37): the lent world needs the component-bearing snapshot.
+    pub fn wants_machine_stacks(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.machine_stack_api))
     }
     pub fn block_data_mods(&self) -> Vec<String> {
         self.entries
