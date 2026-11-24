@@ -248,6 +248,9 @@ pub(super) struct ModsState {
     /// Capability `recipes`'s tables, made once a mod reads them.
     #[cfg(feature = "mods")]
     pub(super) recipes: Option<std::sync::Arc<horizon_mods::Recipes>>,
+    /// API 38: deaths whose drops a claimant kept, polled next tick.
+    #[cfg(feature = "mods")]
+    pub(super) claimed_death_drops: Vec<horizon_mods::PlayerDeathDrops>,
     /// Extras that are official mods now, being installed.
     #[cfg(feature = "mods")]
     pub(super) moved: super::moved_extras::MovedState,
@@ -1172,6 +1175,8 @@ impl Game<'_> {
             player_damage: self.mods.last_player_damage.clone(),
             player_deaths: self.mods.last_player_deaths.clone(),
             player_respawns: self.mods.last_player_respawns.clone(),
+            player_death_drops: self.mods.claimed_death_drops.clone().into(),
+            death_drop_claimant: self.mods.mods.death_drop_claimant(),
             player_vitals: Default::default(),
             effect_ids: horizon_client::brewing::EFFECTS
                 .iter()

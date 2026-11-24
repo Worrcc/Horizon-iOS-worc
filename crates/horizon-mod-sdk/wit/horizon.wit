@@ -1212,6 +1212,24 @@ interface browser-ext {
 /// Capability `players`, server mods only (manifest `api = "0.3"`,
 /// experimental): the players on the server, and messages to them.
 interface players {
+    /// API 38: a real stack with its full component patch, as collected drops.
+    record claimed-stack {
+        item: string,
+        count: u32,
+        components: option<list<u8>>,
+    }
+    /// API 38: a death whose drops a mod kept with `server-hooks.set-death-drops`.
+    record claimed-death {
+        player: string,
+        dimension: string,
+        at: point,
+        /// The stacks as the game saw them, with full component patches.
+        drops: list<claimed-stack>,
+    }
+    /// API 38: the deaths this mod claimed, oldest first, at most 256. Reading
+    /// does not consume them; the game clears the queue after each server tick.
+    /// Empty for every mod except the death-drop claimant.
+    claimed-deaths: func() -> list<claimed-death>;
     record player-damage {
         player: string,
         /// Health plus absorption actually lost, after armor/effects.
@@ -1951,6 +1969,17 @@ interface menus {
 }
 
 interface server-events {
+    /// API 38: a position in blocks, with finite components.
+    record death-point { x: f64, y: f64, z: f64 }
+    /// API 38: a real stack with its full component patch, as collected drops.
+    record death-stack { item: string, count: u32, components: option<list<u8>> }
+    /// API 38: a player died. `drops` are the stacks vanilla would drop, after
+    /// vanishing-curse removal and native loot hooks, in slot order. Only the
+    /// first mod to opt in through `server-hooks.set-death-drops` is called.
+    /// Returning true keeps all drops out of the world; the mod can then read
+    /// them once with `players.claimed-deaths`. Returning false (or failing)
+    /// leaves vanilla drops untouched, so no items are lost.
+    player-died: func(player: player, dimension: string, at: death-point, drops: list<death-stack>) -> bool;
     /// API 30: optional exports, routed only to the menu's owner; 64 clicks/tick.
     menu-clicked: func(player: player, slot: s32, button: s32, mode: s32);
     /// The owned display menu closed, including replacement, death or leave.
@@ -2082,6 +2111,10 @@ interface server-events {
 /// API level 28: additive server hook opt-in, capability `world`.
 /// Leaves the original server-events.registration record unchanged.
 interface server-hooks {
+    /// API 38: opt in to receiving the dying player's actual drops. The first
+    /// running mod to opt in claims them; the rest are not called. Disabled by
+    /// default, so vanilla drops are unchanged. May be set during init.
+    set-death-drops: func(enabled: bool);
     /// Disabled initially. Sneaking with a nonempty main hand bypasses the hook
     /// unless including-sneaking-item is true. May be set during init.
     set-block-uses: func(enabled: bool, including-sneaking-item: bool);

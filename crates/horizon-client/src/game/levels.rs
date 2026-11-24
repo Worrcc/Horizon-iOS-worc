@@ -459,6 +459,11 @@ impl Game<'_> {
         // `ServerTickStart` before that level work, where NeoForge fires
         // `ServerTickEvent.Pre`. A paused pass and a held server tick nothing.
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
+        // API 38: drops claimed last tick were readable through its snapshots;
+        // this tick starts with a fresh queue. Do this before any level tick,
+        // where a death can stage a new claim.
+        #[cfg(feature = "mods")]
+        self.mods.claimed_death_drops.clear();
         let server = self.serving.is_some() || self.options.dedicated.is_some();
         // A config edited while the server is paused (empty) still reloads.
         if server {

@@ -39,6 +39,9 @@ pub(super) struct ServerCallbacks {
     pub breaking: Option<TypedFunc<(ServerPlayer, BlockPos, String), (Decision,)>>,
     pub placing: Option<TypedFunc<(ServerPlayer, BlockPos, String, String), (Decision,)>>,
     pub used: Option<TypedFunc<(ServerPlayer, BlockPos, String, bool), (bool,)>>,
+    /// API 38: claim a dying player's drops; true keeps them out of the world.
+    pub player_died:
+        Option<TypedFunc<(ServerPlayer, String, DeathPoint, Vec<DeathStack>), (bool,)>>,
     pub menu_clicked: Option<TypedFunc<(ServerPlayer, i32, i32, i32), ()>>,
     pub menu_closed: Option<TypedFunc<(ServerPlayer,), ()>>,
     pub channel: Option<TypedFunc<(ServerPlayer, String, Vec<u8>), ()>>,
@@ -83,6 +86,7 @@ impl ServerCallbacks {
             breaking: get!("block-breaking"),
             placing: get!("block-placing"),
             used: get!("block-used"),
+            player_died: get!("player-died"),
             channel: get!("channel-message"),
             menu_clicked: get!("menu-clicked"),
             menu_closed: get!("menu-closed"),

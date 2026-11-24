@@ -1194,6 +1194,16 @@ Access: capability `players`.
 
 Capability `players`, server mods only (manifest `api = "0.3"`, experimental): the players on the server, and messages to them.
 
+### record `claimed-stack`
+
+API 38: a real stack with its full component patch, as collected drops.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+| `components` | `option<list<u8>>` |  |
+
 ### record `player-damage`
 
 | Field | Type | |
@@ -1212,6 +1222,17 @@ A vector or position in blocks, with finite components.
 | `x` | `f64` |  |
 | `y` | `f64` |  |
 | `z` | `f64` |  |
+
+### record `claimed-death`
+
+API 38: a death whose drops a mod kept with `server-hooks.set-death-drops`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `player` | `string` |  |
+| `dimension` | `string` |  |
+| `at` | `point` |  |
+| `drops` | `list<claimed-stack>` | The stacks as the game saw them, with full component patches. |
 
 ### record `equipment-slots`
 
@@ -1355,6 +1376,7 @@ API 31: which stacks clear-items removes.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `claimed-deaths` | `func() -> list<claimed-death>` | API 38: the deaths this mod claimed, oldest first, at most 256. Reading does not consume them; the game clears the queue after each server tick. Empty for every mod except the death-drop claimant. |
 | `damage-taken` | `func() -> list<player-damage>` | Last tick's accepted damage, at most 256. Reading does not consume it. |
 | `heal` | `func(player: string, amount: f32) -> result<_, string>` | Restore health (0..1024), capped by max health; never revive a dead player. |
 | `equipment` | `func(player: string) -> option<equipment-slots>` | The online player's authoritative equipment, including changes by inventory calls. |
@@ -1831,6 +1853,26 @@ Access: exported by the mod: the game calls it.
 
 `type player = player`
 
+### record `death-point`
+
+API 38: a position in blocks, with finite components.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+
+### record `death-stack`
+
+API 38: a real stack with its full component patch, as collected drops.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` |  |
+| `count` | `u32` |  |
+| `components` | `option<list<u8>>` |  |
+
 ### record `block-pos`
 
 | Field | Type | |
@@ -1918,6 +1960,7 @@ API 29: before a player changes a watched block. Cancel keeps block and item.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `player-died` | `func(player: player, dimension: string, at: death-point, drops: list<death-stack>) -> bool` | API 38: a player died. `drops` are the stacks vanilla would drop, after vanishing-curse removal and native loot hooks, in slot order. Only the first mod to opt in through `server-hooks.set-death-drops` is called. Returning true keeps all drops out of the world; the mod can then read them once with `players.claimed-deaths`. Returning false (or failing) leaves vanilla drops untouched, so no items are lost. |
 | `menu-clicked` | `func(player: player, slot: s32, button: s32, mode: s32)` | API 30: optional exports, routed only to the menu's owner; 64 clicks/tick. |
 | `menu-closed` | `func(player: player)` | The owned display menu closed, including replacement, death or leave. |
 | `init` | `func() -> result<registration, string>` | Once, after loading. An error keeps the mod off and is logged. |
@@ -1970,6 +2013,7 @@ API 29: all flags default false. Each family has 32 calls/mod/server tick.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `set-death-drops` | `func(enabled: bool)` | API 38: opt in to receiving the dying player's actual drops. The first running mod to opt in claims them; the rest are not called. Disabled by default, so vanilla drops are unchanged. May be set during init. |
 | `set-block-uses` | `func(enabled: bool, including-sneaking-item: bool)` | Disabled initially. Sneaking with a nonempty main hand bypasses the hook unless including-sneaking-item is true. May be set during init. |
 | `set-behaviour-hooks` | `func(config: behaviour-config)` | API 29: replace the opt-in flags; disabled flags cost no guest calls. |
 | `watch-blocks` | `func(ids: list<string>) -> result<_, string>` | Exact resource ids or namespace:*, at most 64. No global wildcard. Replaces the list atomically; invalid input leaves the previous list intact. |

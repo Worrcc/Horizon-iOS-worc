@@ -3,6 +3,7 @@ use horizon_mod_sdk::server::{
     Args, BlockChangePos, BlockPos, BreakOptions, Player, PlayerPoint, Registration, ServerMod,
     TeleportTarget, channel, players, server_hooks, world,
 };
+mod death38;
 mod machines30;
 mod machine37;
 mod player_world31;
@@ -21,6 +22,7 @@ impl ServerMod for Guest {
                 .command("machines30")
                 .command("recipes36")
                 .command("machine37")
+                .command("death38")
                 .command("pw31")
                 .command("behaviour29")
                 .command("schedule29")
@@ -151,6 +153,9 @@ impl ServerMod for Guest {
         }
         if name == "machine37" {
             return machine37::run(player, args);
+        }
+        if name == "death38" {
+            return death38::run(player, args);
         }
         if name == "data29" {
             let pos = BlockChangePos { x: 0, y: 64, z: 0 };
@@ -557,6 +562,15 @@ impl ServerMod for Guest {
     ) -> bool {
         players::tell(&player.id, "heard use");
         state == "test:terminal"
+    }
+    fn player_died(
+        &mut self,
+        player: &Player,
+        dimension: &str,
+        at: horizon_mod_sdk::server::DeathPoint,
+        drops: &[horizon_mod_sdk::server::DeathStack],
+    ) -> bool {
+        death38::died(player, dimension, at, drops)
     }
     fn channel_message(&mut self, player: &Player, name: &str, data: &[u8]) {
         channel::send_to_player(&player.id, name, data).unwrap();

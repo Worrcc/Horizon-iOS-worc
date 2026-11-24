@@ -515,8 +515,8 @@ pub mod server {
     });
 
     pub use exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, Decision, Guest as __Guest,
-        Hand as BehaviourHand, Registration, ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, DeathPoint, DeathStack,
+        Decision, Guest as __Guest, Hand as BehaviourHand, Registration, ServerCommand,
     };
     pub use horizon::mods::entities::{
         self, Area, AttributeChange, Death, EffectChange, Entity, HurtEvent, Mount, Order,
@@ -661,6 +661,19 @@ pub mod server {
             _item: &str,
         ) -> Decision {
             Decision::Allow
+        }
+        /// API 38: a player died with these drops. Only the first mod to call
+        /// `server_hooks::set_death_drops(true)` is asked. True keeps the drops
+        /// out of the world; read them with `players::claimed_deaths`. False
+        /// leaves vanilla drops untouched.
+        fn player_died(
+            &mut self,
+            _player: &Player,
+            _dimension: &str,
+            _at: DeathPoint,
+            _drops: &[DeathStack],
+        ) -> bool {
+            false
         }
         fn channel_message(&mut self, _player: &Player, _name: &str, _data: &[u8]) {}
     }
@@ -973,6 +986,16 @@ macro_rules! export_server_mod {
                     let mut answer = $crate::server::Decision::Allow;
                     with(|m| answer = m.block_placing(&player, pos, &state, &item));
                     answer
+                }
+                fn player_died(
+                    player: Player,
+                    dimension: String,
+                    at: $crate::server::DeathPoint,
+                    drops: Vec<$crate::server::DeathStack>,
+                ) -> bool {
+                    let mut claimed = false;
+                    with(|m| claimed = m.player_died(&player, &dimension, at, &drops));
+                    claimed
                 }
                 fn channel_message(player: Player, name: String, data: Vec<u8>) {
                     with(|m| m.channel_message(&player, &name, &data))

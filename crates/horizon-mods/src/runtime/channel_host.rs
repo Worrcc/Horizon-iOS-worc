@@ -39,6 +39,11 @@ pub(super) fn allowance(budget: &mut (Option<u64>, usize), tick: u64, limit: usi
     true
 }
 impl server_hooks::Host for State {
+    fn set_death_drops(&mut self, enabled: bool) {
+        if self.server {
+            self.death_drops = enabled;
+        }
+    }
     fn set_behaviour_hooks(&mut self, config: BehaviourConfig) {
         if self.server {
             self.behaviour.config = config;

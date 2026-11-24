@@ -1051,6 +1051,77 @@ pub(super) mod run {
 
         /// The snapshot server mods read: the game's, the players, and the loaded mobs when a
         /// running mod has capability `entities`.
+        /// API 38: offer a dying player's drops to the claimant. True means the
+        /// mod kept them, so the caller must not spawn vanilla item entities.
+        pub(in crate::game) fn mod_death_drops(
+            &mut self,
+            who: (u128, i32),
+            at: [f64; 3],
+            stacks: &[horizon_client::items::ItemStack],
+        ) -> bool {
+            let Some(claimant) = self.mods.mods.death_drop_claimant() else {
+                return false;
+            };
+            if stacks.is_empty() {
+                return false;
+            }
+            let encoded: Vec<_> = stacks
+                .iter()
+                .filter_map(super::super::server_mod_world::encode_machine_stack)
+                .collect();
+            if encoded.is_empty() {
+                return false;
+            }
+            let offered: Vec<_> = encoded
+                .iter()
+                .map(|s| horizon_mods::DeathStack {
+                    item: s.item.clone(),
+                    count: s.count,
+                    components: s.components.clone(),
+                })
+                .collect();
+            let id = uuid_string(who.0);
+            let players = self.server_players(self.lan.as_ref());
+            let Some(player) = players.iter().find(|p| p.id == id).cloned() else {
+                return false;
+            };
+            let snapshot = self.server_snapshot(players, None);
+            self.mods.mods.set_snapshot(snapshot);
+            self.lend_world(None);
+            self.lend_mod_inventories(None);
+            let point = horizon_mods::DeathPoint {
+                x: at[0],
+                y: at[1],
+                z: at[2],
+            };
+            let dimension = self.dim.id().to_owned();
+            let claimed = self.mods.mods.player_died(
+                &player,
+                &dimension,
+                point,
+                offered,
+                &claimant,
+            );
+            self.return_world();
+            self.return_mod_inventories(None);
+            self.show_mod_output();
+            if claimed && self.mods.claimed_death_drops.len() < 256 {
+                self.mods
+                    .claimed_death_drops
+                    .push(horizon_mods::PlayerDeathDrops {
+                        player: id,
+                        dimension,
+                        at: horizon_mods::PlayerPoint {
+                            x: at[0],
+                            y: at[1],
+                            z: at[2],
+                        },
+                        drops: encoded,
+                    });
+            }
+            claimed
+        }
+
         fn server_snapshot(
             &mut self,
             players: Vec<ServerPlayer>,

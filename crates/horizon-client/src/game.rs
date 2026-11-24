@@ -4136,6 +4136,14 @@ impl Game<'_> {
         };
         self.native_loot_drops(&context, &mut stacks);
         stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
+        // API 38: a mod may keep the drops out of the world and claim them by
+        // polling players.claimed-deaths. No claimant means vanilla is unchanged.
+        #[cfg(feature = "mods")]
+        if self.mods.mods.death_drop_claimant().is_some()
+            && self.mod_death_drops(who, at, &stacks)
+        {
+            return;
+        }
         for stack in stacks {
             let r = &mut self.world.random;
             let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, true);

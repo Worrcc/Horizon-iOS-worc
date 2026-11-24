@@ -63,8 +63,8 @@ use bindings::{
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, Decision,
-        Hand as BehaviourHand, ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, DeathPoint, DeathStack,
+        Decision, Hand as BehaviourHand, ServerCommand,
     },
     horizon::mods::entities::{
         Area as EntityArea, AttributeChange as EntityAttributeChange, Death, EffectChange,
@@ -267,6 +267,15 @@ pub struct EntityResources {
     pub particles: std::collections::HashMap<String, i32>,
 }
 
+/// API 38: one death whose drops the claimant kept, staged by the game.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerDeathDrops {
+    pub player: String,
+    pub dimension: String,
+    pub at: PlayerPoint,
+    pub drops: Vec<MachineStack>,
+}
+
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -331,6 +340,10 @@ pub struct Snapshot {
     /// API 31: last tick's player deaths and respawns, at most 256 each.
     pub player_deaths: Arc<[PlayerDeath]>,
     pub player_respawns: Arc<[PlayerRespawn]>,
+    /// API 38: deaths whose drops the claimant kept, at most 256.
+    pub player_death_drops: Arc<[PlayerDeathDrops]>,
+    /// API 38: the only mod allowed to read [`Snapshot::player_death_drops`].
+    pub death_drop_claimant: Option<String>,
     /// API 31: (uuid, vitals, effects <= 64), filled only while a running mod has capability players.
     pub player_vitals: Arc<[(String, PlayerVitals, Vec<ActiveEffect>)]>,
     /// Status effects from the game registry, including for players-only mods.
@@ -1074,6 +1087,8 @@ struct State {
     /// Capability `atmosphere`'s profiles and mix (API 33).
     atmosphere: atmosphere_host::AtmosphereState,
     server: bool,
+    /// API 38: this server mod opted in to claiming player death drops.
+    death_drops: bool,
     storage_move_budget: (Option<u64>, usize),
     machines: machines::MachineState,
     limits: StoreLimits,
@@ -1223,6 +1238,59 @@ impl Mods {
                     .as_ref()
                     .is_some_and(|m| m.capabilities.contains(&crate::Capability::Players))
         })
+    }
+    /// API 38: the first running mod that opted in to claiming death drops and
+    /// exports the `player-died` hook. No one else is called, so vanilla drops
+    /// are untouched unless a capable mod is present.
+    pub fn death_drop_claimant(&self) -> Option<String> {
+        self.entries.iter().find_map(|e| {
+            let run = e.run.as_ref()?;
+            (run.store.data().death_drops
+                && matches!(&run.hooks, Hooks::Server(m, _) if m.player_died.is_some()))
+            .then(|| run.store.data().id.clone())
+        })
+    }
+    /// API 38: offer a death's drops to the claimant. True means it kept them.
+    pub fn player_died(
+        &mut self,
+        player: &ServerPlayer,
+        dimension: &str,
+        at: DeathPoint,
+        drops: Vec<DeathStack>,
+        claimant: &str,
+    ) -> bool {
+        let Some(i) = self.entries.iter().position(|e| {
+            e.run.as_ref().is_some_and(|r| r.store.data().id == claimant)
+        }) else {
+            return false;
+        };
+        if !channel_host::allowance(
+            &mut self.entries[i]
+                .run
+                .as_mut()
+                .unwrap()
+                .store
+                .data_mut()
+                .storage_move_budget,
+            self.snapshot.tick,
+            32,
+        ) {
+            return false;
+        }
+        let result = self.call(i, FUEL_EVENT, |r| {
+            if let Hooks::Server(m, _) = &r.hooks
+                && let Some(f) = m.player_died
+            {
+                let (claimed,) = f.call(
+                    &mut r.store,
+                    (player.clone(), dimension.to_owned(), at, drops),
+                )?;
+                Ok(claimed)
+            } else {
+                Ok(false)
+            }
+        });
+        result == Some(true)
     }
     pub fn lend_inventories(&mut self, inventories: Box<dyn PlayerInventories>) {
         *self
@@ -1448,6 +1516,7 @@ impl Mods {
             channel_callback: None,
             atmosphere: atmosphere_host::AtmosphereState::new(m.namespaces.clone()),
             server,
+            death_drops: false,
             storage_move_budget: (None, 0),
             machines: machines::MachineState::new(
                 self.machine_bridge.clone(),
@@ -4168,6 +4237,28 @@ impl players::Host for State {
             .cloned()
             .collect()
     }
+    fn claimed_deaths(&mut self) -> Vec<players::ClaimedDeath> {
+        if self.snapshot.death_drop_claimant.as_deref() != Some(self.id.as_str()) {
+            return Vec::new();
+        }
+        (self.snapshot.player_death_drops.iter())
+            .take(player_world::EVENTS)
+            .map(|death| players::ClaimedDeath {
+                player: death.player.clone(),
+                dimension: death.dimension.clone(),
+                at: death.at.clone(),
+                drops: death
+                    .drops
+                    .iter()
+                    .map(|s| players::ClaimedStack {
+                        item: s.item.clone(),
+                        count: s.count,
+                        components: s.components.clone(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
     fn respawns(&mut self) -> Vec<PlayerRespawn> {
         (self.snapshot.player_respawns.iter())
             .take(player_world::EVENTS)
@@ -5193,6 +5284,7 @@ mod entity_tests {
             channel_callback: None,
             atmosphere: Default::default(),
             server: false,
+            death_drops: false,
             storage_move_budget: (None, 0),
             machines: Default::default(),
             limits: StoreLimitsBuilder::new().build(),

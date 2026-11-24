@@ -1,8 +1,8 @@
 //! API 36/37: server recipe queries and component-safe machine writes.
 use super::*;
 use horizon_mods::{
-    BlockChangePos, GameMode, MachineStack, Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes,
-    ServerPlayer, WorldView,
+    BlockChangePos, DeathPoint, DeathStack, GameMode, MachineStack, PlayerDeathDrops, PlayerPoint,
+    Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes, ServerPlayer, WorldView,
 };
 use std::sync::Arc;
 
@@ -174,7 +174,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        37
+        38
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -244,6 +244,119 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        37
+        38
+    );
+}
+
+#[test]
+fn api38_claimant_keeps_death_drops_and_only_it_can_read_them() {
+    let (mut m, p) = setup();
+    run(&mut m, &p, "death38 on");
+    run(&mut m, &p, "death38 claim");
+    assert_eq!(
+        m.death_drop_claimant(),
+        Some("test_api20_server".to_owned())
+    );
+    let at = PlayerPoint {
+        x: 1.0,
+        y: 64.0,
+        z: 2.0,
+    };
+    let drops = vec![MachineStack {
+        item: "minecraft:diamond".into(),
+        count: 2,
+        components: None,
+    }];
+    assert!(m.player_died(
+        &p,
+        "minecraft:overworld",
+        DeathPoint {
+            x: at.x,
+            y: at.y,
+            z: at.z,
+        },
+        drops
+            .iter()
+            .map(|s| DeathStack {
+                item: s.item.clone(),
+                count: s.count,
+                components: s.components.clone(),
+            })
+            .collect(),
+        "test_api20_server"
+    ));
+    m.drain();
+    // The game stages a claimed death; the next snapshot carries it.
+    m.set_snapshot(Snapshot {
+        tick: 2,
+        players: vec![p.clone()],
+        death_drop_claimant: Some("test_api20_server".into()),
+        player_death_drops: vec![PlayerDeathDrops {
+            player: p.id.clone(),
+            dimension: "minecraft:overworld".into(),
+            at: at.clone(),
+            drops: drops.clone(),
+        }]
+        .into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        run(&mut m, &p, "death38 read"),
+        ["claimed [alice:minecraft:overworld:minecraft:diamond]"]
+    );
+    // Another mod's snapshot never sees them.
+    m.set_snapshot(Snapshot {
+        tick: 3,
+        players: vec![p.clone()],
+        death_drop_claimant: Some("someone_else".into()),
+        player_death_drops: vec![PlayerDeathDrops {
+            player: p.id.clone(),
+            dimension: "minecraft:overworld".into(),
+            at,
+            drops,
+        }]
+        .into(),
+        ..Default::default()
+    });
+    assert_eq!(run(&mut m, &p, "death38 read"), ["claimed []"]);
+}
+
+#[test]
+fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
+    let (mut m, p) = setup();
+    run(&mut m, &p, "death38 on");
+    run(&mut m, &p, "death38 skip");
+    assert!(!m.player_died(
+        &p,
+        "minecraft:overworld",
+        DeathPoint {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        vec![DeathStack {
+            item: "minecraft:stick".into(),
+            count: 1,
+            components: None,
+        }],
+        "test_api20_server"
+    ));
+    m.drain();
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "players.claimed-deaths"));
+    assert!(imports
+        .iter()
+        .any(|f| f == "server-hooks.set-death-drops"));
+    assert_eq!(
+        horizon_mods::api_level::level_of("players.claimed-deaths"),
+        Some(38)
+    );
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        38
     );
 }
