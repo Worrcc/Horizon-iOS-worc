@@ -416,6 +416,12 @@ impl Mods {
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.machine_stack_api))
     }
+    /// Some running mod reads or changes shared energy (API 39).
+    pub fn wants_energy(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.energy_api))
+    }
     pub fn block_data_mods(&self) -> Vec<String> {
         self.entries
             .iter()

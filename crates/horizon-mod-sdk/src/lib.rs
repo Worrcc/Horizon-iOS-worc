@@ -532,7 +532,9 @@ pub mod server {
         ParticleBurst, Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData,
         WorldTime,
     };
-    pub use horizon::mods::{channel, menus, server_hooks};
+    pub use horizon::mods::{channel, energy, lookup, menus, server_hooks};
+    pub use energy::EnergyPos;
+    pub use lookup::TargetKind;
     pub use menus::MenuItem;
     pub use server_hooks::BehaviourConfig;
     // The generated WIT type cannot carry a per-type derive here.

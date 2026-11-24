@@ -1686,6 +1686,50 @@ interface %world {
     difficulty: func() -> string;
 }
 
+/// API 39: shared energy storage, capability `energy`, server mods only.
+/// Energy lives on a content mod's block entity as a saved `horizon:energy`
+/// compound, so it survives reloads and is visible to every mod with this
+/// capability. No vanilla block stores energy.
+interface energy {
+    /// A block position in the server's world.
+    record energy-pos { x: s32, y: s32, z: s32 }
+    /// The energy in one side of a loaded block, if it has storage.
+    record energy-stats { amount: u64, capacity: u64 }
+    /// Read the storage on a side of a loaded block (sides are vanilla's
+    /// 0..5, any other value reads the whole block). None when the block has
+    /// no energy storage or is unloaded. Reading does not consume energy.
+    energy-side: func(dimension: string, pos: energy-pos, face: s32) -> option<energy-stats>;
+    /// Give a loaded block's storage a capacity, 1..1,000,000,000. Only the
+    /// first call succeeds; later ones with a different capacity error, so
+    /// two mods cannot resize each other's machines. Capability `energy`.
+    set-energy-capacity: func(dimension: string, pos: energy-pos, capacity: u64) -> result<_, string>;
+    /// Queue insertion of at most `amount` energy into a side. Returns the
+    /// amount actually queued; space is rechecked when applied, so a
+    /// concurrent change can only reduce it, never create energy.
+    insert-energy: func(dimension: string, pos: energy-pos, face: s32, amount: u64) -> result<u64, string>;
+    /// Queue extraction of at most `amount` energy from a side. Returns the
+    /// amount actually queued; rechecked on apply, so another extractor can
+    /// only reduce it, never create energy.
+    extract-energy: func(dimension: string, pos: energy-pos, face: s32, amount: u64) -> result<u64, string>;
+}
+
+/// API 39: shared capability lookup, capability `lookup`, server mods only.
+/// Lets mods discover which provider owns an API for a game object. Calls
+/// themselves stay in the typed interfaces that own the data; this is a
+/// directory, not dynamic dispatch.
+interface lookup {
+    /// What a provider attaches to.
+    enum target-kind { block, item, entity }
+    /// Register this mod as the provider of `api` for `id` (a resource id).
+    /// At most 64 registrations per mod; a later call for the same triple
+    /// replaces the earlier one. `provider` is a short label for players.
+    register: func(kind: target-kind, id: string, api: string, provider: string) -> result<_, string>;
+    /// Remove this mod's registration for the triple, if it has one.
+    unregister: func(kind: target-kind, id: string, api: string) -> result<_, string>;
+    /// The registered provider's mod id and label, when one is registered.
+    find: func(kind: target-kind, id: string, api: string) -> option<tuple<string, string>>;
+}
+
 /// Capability `entities`, server mods only (manifest `api = "0.3"`,
 /// experimental): the mobs on the server, and orders to the content mods'
 /// own (docs/modpacks.md, entities): where to walk, where to look, how to
@@ -2504,6 +2548,8 @@ world horizon-server-mod {
     import %world;
     import menus;
     import entities;
+    import energy;
+    import lookup;
     import server-hooks;
     import channel;
     export server-events;

@@ -9,6 +9,15 @@ use std::{collections::HashMap, path::Path};
 type Pos = (i32, i32, i32);
 pub(super) type ContainerSnapshot = HashMap<(String, Pos), Vec<Option<ContainerItemStack>>>;
 pub(super) type MachineStackSnapshot = HashMap<(String, Pos), Vec<Option<MachineStack>>>;
+pub(super) type EnergySnapshot = HashMap<(String, Pos), (u64, u64)>;
+
+/// API 39: energy state of every loaded content block that stores it.
+pub(super) fn energy_of(entity: &BlockEntity) -> Option<(u64, u64)> {
+    match entity {
+        BlockEntity::Mod(m) => m.energy(),
+        _ => None,
+    }
+}
 
 /// API 37: a real slot with its full component patch as lossless network NBT.
 pub(super) fn encode_machine_stack(stack: &ItemStack) -> Option<MachineStack> {
@@ -124,6 +133,26 @@ impl Game<'_> {
                         .map(|slot| slot.as_ref().and_then(encode_machine_stack))
                         .collect(),
                 );
+            }
+        };
+        add(self.dim.id(), &self.world);
+        for (dimension, world) in self.levels.all_parked_worlds() {
+            add(dimension.id(), world);
+        }
+        out
+    }
+
+    /// API 39: energy of loaded content blocks, built only while a mod reads it.
+    pub(super) fn mod_energy_snapshot(&self) -> EnergySnapshot {
+        let mut out = HashMap::new();
+        let mut add = |dimension: &str, world: &World| {
+            for (&pos, entity) in &world.block_entities {
+                if !world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4)) {
+                    continue;
+                }
+                if let Some(energy) = energy_of(entity) {
+                    out.insert((dimension.to_owned(), pos), energy);
+                }
             }
         };
         add(self.dim.id(), &self.world);

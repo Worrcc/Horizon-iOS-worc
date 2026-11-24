@@ -21,6 +21,16 @@ impl WorldView for View {
     fn check_state(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
+    fn energy_side(
+        &self,
+        dim: &str,
+        x: i32,
+        y: i32,
+        z: i32,
+        _face: i32,
+    ) -> Option<(u64, u64)> {
+        (dim == "minecraft:overworld" && x == 0 && y == 64 && z == 0).then_some((5, 10))
+    }
     fn machine_stacks(
         &self,
         dim: &str,
@@ -174,7 +184,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        38
+        39
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -244,7 +254,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        38
+        39
     );
 }
 
@@ -357,6 +367,69 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        38
+        39
     );
+}
+
+#[test]
+fn api39_lookup_registers_discovers_and_removes() {
+    let (mut m, p) = setup();
+    assert_eq!(
+        run(&mut m, &p, "interop39 lookup register"),
+        ["lookup register [test_api20_server:Chest energy]"]
+    );
+    assert_eq!(
+        run(&mut m, &p, "interop39 lookup unregister"),
+        ["lookup unregister [none]"]
+    );
+}
+
+#[test]
+fn api39_energy_reads_and_queues_checked_changes() {
+    let (mut m, p) = setup();
+    assert_eq!(run(&mut m, &p, "interop39 energy read"), ["energy read [5:10]"]);
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "interop39 energy insert"));
+        m.drain()
+    };
+    assert!(out.iter().any(|o| matches!(o, Output::Tell { text, .. } if text == "energy insert [4]")));
+    let changes: Vec<_> = out.iter().filter_map(|o| match o {
+        Output::EnergyChange(plan) => Some(plan),
+        _ => None,
+    }).collect();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].before, (5, 10));
+    assert_eq!(changes[0].amount, 4);
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "interop39 energy extract"));
+        m.drain()
+    };
+    assert!(out.iter().any(|o| matches!(o, Output::EnergyChange(plan) if plan.amount == 3)));
+}
+
+#[test]
+fn api39_functions_are_level_39_and_need_capabilities() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "energy.energy-side"));
+    assert!(imports.iter().any(|f| f == "lookup.find"));
+    assert_eq!(
+        horizon_mods::api_level::level_of("energy.insert-energy"),
+        Some(39)
+    );
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        39
+    );
+    let manifest = horizon_mods::Manifest::parse(
+        "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
+    )
+    .unwrap();
+    assert!(manifest.check_imports(["horizon:mods/energy@0.1.0"]).is_ok());
+    assert!(manifest.check_imports(["horizon:mods/lookup@0.1.0"]).is_ok());
 }

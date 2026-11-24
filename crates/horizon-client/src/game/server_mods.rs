@@ -194,6 +194,7 @@ pub(super) mod run {
         dims: Vec<(&'static str, ChunkMap)>,
         containers: super::super::server_mod_world::ContainerSnapshot,
         machine_stacks: super::super::server_mod_world::MachineStackSnapshot,
+        energy: super::super::server_mod_world::EnergySnapshot,
         storage: horizon_mods::StorageView,
         block_data: std::collections::HashMap<
             (String, (i32, i32, i32), String),
@@ -250,6 +251,18 @@ pub(super) mod run {
             self.machine_stacks
                 .get(&(dimension.to_owned(), (pos.x, pos.y, pos.z)))
                 .cloned()
+        }
+        fn energy_side(
+            &self,
+            dimension: &str,
+            x: i32,
+            y: i32,
+            z: i32,
+            _face: i32,
+        ) -> Option<(u64, u64)> {
+            self.energy
+                .get(&(dimension.to_owned(), (x, y, z)))
+                .copied()
         }
         fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
             let max = self
@@ -925,6 +938,11 @@ pub(super) mod run {
             } else {
                 Default::default()
             };
+            let energy = if self.mods.mods.wants_energy() {
+                self.mod_energy_snapshot()
+            } else {
+                Default::default()
+            };
             let storage = if self.mods.mods.wants_storage() {
                 self.mod_storage_snapshot(host)
             } else {
@@ -964,6 +982,7 @@ pub(super) mod run {
                 dims,
                 containers,
                 machine_stacks,
+                energy,
                 storage,
                 items,
                 resources: self.options.resources.clone(),
@@ -1844,6 +1863,7 @@ pub(super) mod run {
                     }
                     Output::BlockDataWrite(plan) => plan.dimension == dim,
                     Output::MachineStackWrite(plan) => plan.dimension == dim,
+                    Output::EnergyChange(plan) => plan.dimension == dim,
                     Output::BreakProgress { dimension, .. }
                     | Output::SetContainer { dimension, .. }
                     | Output::PlaceStructure { dimension, .. }
@@ -1935,6 +1955,7 @@ pub(super) mod run {
                     Output::MachineStackWrite(plan) => {
                         self.apply_mod_machine_stacks(plan, host.as_deref_mut())
                     }
+                    Output::EnergyChange(plan) => self.apply_mod_energy(plan),
                     Output::BreakProgress {
                         mod_id, pos, stage, ..
                     } => {
@@ -2434,6 +2455,7 @@ pub(super) mod run {
                 }
                 operation @ (Output::BlockDataWrite(_)
                 | Output::MachineStackWrite(_)
+                | Output::EnergyChange(_)
                 | Output::BreakProgress { .. }
                 | Output::GiveItemWithData { .. }
                 | Output::GiveItemWithComponents { .. }

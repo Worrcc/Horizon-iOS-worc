@@ -94,6 +94,9 @@ mod storage_api;
 pub use storage_api::*;
 mod machines;
 pub use machines::*;
+mod energy_host;
+mod lookup_host;
+use lookup_host::LookupDirectory;
 mod behaviour;
 mod player_world;
 pub use behaviour::*;
@@ -268,6 +271,25 @@ pub struct EntityResources {
 }
 
 /// API 38: one death whose drops the claimant kept, staged by the game.
+/// API 39: one queued energy change with the state it was planned against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnergyChange {
+    pub mod_id: String,
+    pub dimension: String,
+    pub pos: (i32, i32, i32),
+    pub face: i32,
+    pub before: (u64, u64),
+    pub kind: EnergyKind,
+    pub amount: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnergyKind {
+    Capacity,
+    Insert,
+    Extract,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerDeathDrops {
     pub player: String,
@@ -504,6 +526,8 @@ pub enum Output {
     Menu(MenuOperation),
     /// API 37: a preimage-checked machine slot write, applied after hooks.
     MachineStackWrite(MachineStackWrite),
+    /// API 39: a preimage-checked energy change, applied after hooks.
+    EnergyChange(EnergyChange),
     BlockDataWrite(BlockDataWrite),
     BreakProgress {
         mod_id: String,
@@ -745,6 +769,17 @@ pub trait WorldView: std::any::Any + Send {
     ) -> Option<Vec<Option<MachineStack>>> {
         None
     }
+    /// API 39: a loaded block's (amount, capacity), when it stores energy.
+    fn energy_side(
+        &self,
+        _dimension: &str,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+        _face: i32,
+    ) -> Option<(u64, u64)> {
+        None
+    }
     /// API 28: shared reservation view; never exposes components to the guest.
     fn storage(&mut self) -> Option<&mut StorageView> {
         None
@@ -886,6 +921,8 @@ struct Running {
     machine_api: bool,
     /// It imports either API 37 machine-stack function.
     machine_stack_api: bool,
+    /// It imports an API 39 energy function.
+    energy_api: bool,
 }
 
 /// A running mod's exports and the hooks its `init` asked for.
@@ -1102,6 +1139,10 @@ struct State {
     server: bool,
     /// API 38: this server mod opted in to claiming player death drops.
     death_drops: bool,
+    /// API 39: energy operations allowed this tick (64).
+    energy_budget: (Option<u64>, usize),
+    /// API 39: the shared provider directory.
+    lookup: LookupDirectory,
     storage_move_budget: (Option<u64>, usize),
     machines: machines::MachineState,
     limits: StoreLimits,
@@ -1120,6 +1161,8 @@ pub struct Mods {
     container_bridge: container_host::Bridge,
     machine_bridge: machines::Bridge,
     menu_leases: machines::MenuLeases,
+    /// API 39: the provider directory shared by every running mod.
+    lookup: LookupDirectory,
     container_shift: ContainerShift,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
@@ -1530,6 +1573,8 @@ impl Mods {
             atmosphere: atmosphere_host::AtmosphereState::new(m.namespaces.clone()),
             server,
             death_drops: false,
+            energy_budget: (None, 0),
+            lookup: self.lookup.clone(),
             storage_move_budget: (None, 0),
             machines: machines::MachineState::new(
                 self.machine_bridge.clone(),
@@ -1630,6 +1675,7 @@ impl Mods {
             machine_stack_api: functions.iter().any(|f| {
                 f == "world.machine-stacks" || f == "world.set-machine-stacks"
             }),
+            energy_api: functions.iter().any(|f| f.starts_with("energy.")),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
             block_data_api: functions
@@ -2472,6 +2518,16 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
         .map_err(|e| e.to_string())?;
     entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
         .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::energy::add_to_linker::<State, HasSelf<State>>(
+        &mut linker,
+        |s| s,
+    )
+    .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::lookup::add_to_linker::<State, HasSelf<State>>(
+        &mut linker,
+        |s| s,
+    )
+    .map_err(|e| e.to_string())?;
     // Orders are imported by mods. Their variant grows over time, but
     // Wasmtime's typed bindings require an identical case list. Decode
     // by case name so components built against earlier subsets keep
@@ -5322,6 +5378,8 @@ mod entity_tests {
             atmosphere: Default::default(),
             server: false,
             death_drops: false,
+            energy_budget: (None, 0),
+            lookup: Default::default(),
             storage_move_budget: (None, 0),
             machines: Default::default(),
             limits: StoreLimitsBuilder::new().build(),

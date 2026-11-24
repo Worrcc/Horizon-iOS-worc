@@ -179,6 +179,41 @@ impl ModBlockEntity {
         Ok(())
     }
 
+    /// API 39: the saved energy state on this block, as (amount, capacity).
+    /// The compound is shared by every mod with capability `energy`.
+    pub fn energy(&self) -> Option<(u64, u64)> {
+        use horizon_world::nbt::{JavaString, Tag};
+        let Tag::Compound(values) = self.nbt.get(&JavaString::from("horizon:energy"))? else {
+            return None;
+        };
+        let (Some(Tag::Long(amount)), Some(Tag::Long(capacity))) = (
+            values.get(&JavaString::from("amount")),
+            values.get(&JavaString::from("capacity")),
+        ) else {
+            return None;
+        };
+        if *amount < 0 || *capacity < 0 {
+            return None;
+        }
+        Some((*amount as u64, *capacity as u64))
+    }
+    /// API 39: replace the saved energy state. Going through DerefMut gives
+    /// the entity a new revision, so clients and mods see the change.
+    pub fn set_energy(&mut self, amount: u64, capacity: u64) -> Result<(), String> {
+        use horizon_world::nbt::{JavaString, Tag};
+        if capacity > 1_000_000_000 || amount > capacity {
+            return Err("energy outside its bounds".into());
+        }
+        self.nbt.insert(
+            JavaString::from("horizon:energy"),
+            Tag::compound([
+                ("amount", Tag::Long(amount as i64)),
+                ("capacity", Tag::Long(capacity as i64)),
+            ]),
+        );
+        Ok(())
+    }
+
     pub fn new(fields: ModBlockEntityFields) -> Self {
         Self {
             fields,

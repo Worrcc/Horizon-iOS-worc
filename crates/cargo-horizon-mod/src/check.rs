@@ -350,6 +350,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::MachineStackWrite(plan) => {
                 format!("queued {} machine slot write(s)", plan.changes.len())
             }
+            Output::EnergyChange(plan) => {
+                format!("queued {:?} of {} energy", plan.kind, plan.amount)
+            }
             Output::SpawnItemWithData { item, count, .. } => {
                 format!("queued dropping {count} {item} with data")
             }

@@ -126,9 +126,15 @@ pub enum Capability {
     /// Fog and sky colours blended in by the game (client mods; interface
     /// `atmosphere`, API level 33, experimental).
     Atmosphere,
+    /// Shared energy storage on content blocks (server mods; interface
+    /// `energy`, API level 39, experimental).
+    Energy,
+    /// A directory of which mod provides an API for a block, item or entity
+    /// (server mods; interface `lookup`, API level 39, experimental).
+    Lookup,
 }
 impl Capability {
-    pub const ALL: [Capability; 17] = [
+    pub const ALL: [Capability; 19] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -146,6 +152,8 @@ impl Capability {
         Capability::Container,
         Capability::Channel,
         Capability::Atmosphere,
+        Capability::Energy,
+        Capability::Lookup,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -156,6 +164,8 @@ impl Capability {
                 | Capability::World
                 | Capability::Entities
                 | Capability::Channel
+                | Capability::Energy
+                | Capability::Lookup
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -178,6 +188,8 @@ impl Capability {
             Capability::Container => "container",
             Capability::Channel => "channel",
             Capability::Atmosphere => "atmosphere",
+            Capability::Energy => "energy",
+            Capability::Lookup => "lookup",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -194,6 +206,8 @@ impl Capability {
                 | Capability::Container
                 | Capability::Channel
                 | Capability::Atmosphere
+                | Capability::Energy
+                | Capability::Lookup
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -228,6 +242,8 @@ impl Capability {
             Capability::WorldRead => {
                 "see the blocks, biomes and light your game has loaded around you"
             }
+            Capability::Energy => "read and transfer energy in machines that store it",
+            Capability::Lookup => "see which mod provides an API for a block, item or creature",
         }
     }
     /// What the player reads, including a mod's declared disk quota.
@@ -289,6 +305,8 @@ impl fmt::Display for Capability {
             Capability::Container => "container",
             Capability::Channel => "channel",
             Capability::Atmosphere => "atmosphere",
+            Capability::Energy => "energy",
+            Capability::Lookup => "lookup",
         };
         f.write_str(name)
     }

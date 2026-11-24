@@ -24,6 +24,8 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `container` | [`container`](#container) | inspect and click your open inventory and container screens |
 | `channel` | [`channel`](#channel) | exchange mod messages with the server and its players |
 | `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky, and show particle effects and sky sprites |
+| `energy` | [`energy`](#energy) | read and transfer energy in machines that store it |
+| `lookup` | [`lookup`](#lookup) | see which mod provides an API for a block, item or creature |
 
 ## World `channel-host`
 
@@ -43,7 +45,7 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `server-hooks`, `channel`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `server-hooks`, `channel`
 - Exports (what the mod provides): `server-events`
 
 ## World `horizon-ui-mod`
@@ -1611,6 +1613,60 @@ A plain item stack; components are not carried by this API.
 | `set-spawner` | `func(dimension: string, x: s32, y: s32, z: s32, entity: string) -> result<_, string>` | Sets the mob a monster spawner (`minecraft:spawner`) spawns, as a spawn egg used on it does, after this tick's block writes (so a spawner placed by them gets it). `entity` is an entity type id, vanilla's or a content mod's. The spawner keeps its delays, counts and ranges. Not a spawner then, or an unknown type: nothing, logged. |
 | `game-rule` | `func(name: string) -> option<string>` | Current server rule value as text, or none for an unknown rule. Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias. |
 | `difficulty` | `func() -> string` | peaceful, easy, normal or hard, as of the start of this call. |
+
+## `energy`
+
+Access: capability `energy`.
+
+API 39: shared energy storage, capability `energy`, server mods only. Energy lives on a content mod's block entity as a saved `horizon:energy` compound, so it survives reloads and is visible to every mod with this capability. No vanilla block stores energy.
+
+### record `energy-pos`
+
+A block position in the server's world.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+
+### record `energy-stats`
+
+The energy in one side of a loaded block, if it has storage.
+
+| Field | Type | |
+| --- | --- | --- |
+| `amount` | `u64` |  |
+| `capacity` | `u64` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `energy-side` | `func(dimension: string, pos: energy-pos, face: s32) -> option<energy-stats>` | Read the storage on a side of a loaded block (sides are vanilla's 0..5, any other value reads the whole block). None when the block has no energy storage or is unloaded. Reading does not consume energy. |
+| `set-energy-capacity` | `func(dimension: string, pos: energy-pos, capacity: u64) -> result<_, string>` | Give a loaded block's storage a capacity, 1..1,000,000,000. Only the first call succeeds; later ones with a different capacity error, so two mods cannot resize each other's machines. Capability `energy`. |
+| `insert-energy` | `func(dimension: string, pos: energy-pos, face: s32, amount: u64) -> result<u64, string>` | Queue insertion of at most `amount` energy into a side. Returns the amount actually queued; space is rechecked when applied, so a concurrent change can only reduce it, never create energy. |
+| `extract-energy` | `func(dimension: string, pos: energy-pos, face: s32, amount: u64) -> result<u64, string>` | Queue extraction of at most `amount` energy from a side. Returns the amount actually queued; rechecked on apply, so another extractor can only reduce it, never create energy. |
+
+## `lookup`
+
+Access: capability `lookup`.
+
+API 39: shared capability lookup, capability `lookup`, server mods only. Lets mods discover which provider owns an API for a game object. Calls themselves stay in the typed interfaces that own the data; this is a directory, not dynamic dispatch.
+
+### enum `target-kind`
+
+What a provider attaches to.
+
+| Case | |
+| --- | --- |
+| `block` |  |
+| `item` |  |
+| `entity` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `register` | `func(kind: target-kind, id: string, api: string, provider: string) -> result<_, string>` | Register this mod as the provider of `api` for `id` (a resource id). At most 64 registrations per mod; a later call for the same triple replaces the earlier one. `provider` is a short label for players. |
+| `unregister` | `func(kind: target-kind, id: string, api: string) -> result<_, string>` | Remove this mod's registration for the triple, if it has one. |
+| `find` | `func(kind: target-kind, id: string, api: string) -> option<tuple<string, string>>` | The registered provider's mod id and label, when one is registered. |
 
 ## `entities`
 
