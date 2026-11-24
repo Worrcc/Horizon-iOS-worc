@@ -1,6 +1,7 @@
 //! API 38 guest checks: claiming a player's death drops.
 use horizon_mod_sdk::server::{
-    Args, DeathPoint, DeathStack, Player, players, players::{ClaimedDeath, ClaimedStack},
+    Args, DeathPoint, DeathStack, Player, players,
+    players::{ClaimedDeath, ClaimedStack},
     server_hooks,
 };
 use std::sync::atomic::{AtomicBool, Ordering};

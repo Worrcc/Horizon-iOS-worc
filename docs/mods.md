@@ -99,20 +99,21 @@ The chat box colours and Tab-completes a mod's commands like vanilla's, for
 every player whatever their permission level, and takes any text after the
 name (the mod reads it as `args`; API 0.1 has no way to declare argument types).
 
-### Planned interfaces
+### Server APIs added for Afterlight ports (API 39–43)
 
-Each is a new capability, added in a 0.x minor version so older mods keep
-loading. Ordered by what the first native ports need:
+These experimental, capability-gated interfaces are available to server mods:
 
-| Interface | For | Notes |
-|---|---|---|
-| `keys` | keybinds | registered binds appear in Controls; press/release events |
-| `target` | the crosshair's block or entity, with its state and NBT summary | Jade/WTHIT-style tooltips |
-| `inventory-read` | the player's inventory, held item, open container | AppleSkin, recipe viewers |
-| `render` (world) | world-space lines, boxes and billboards, beside the HUD shapes `render` has | Litematica-style placement, waypoints |
-| `registries` | new blocks, items, entities and recipes, mostly data: JSON models, textures, loot and recipes in the `.hmod`'s `assets/` and `data/` | server side; see [Multiplayer](#multiplayer) |
-| `server` | world events (entity spawn/death), game rules, world read/write, typed server commands | after [server mods 0.3](#server-mods-api-03-experimental)'s players, chat, blocks and commands |
-| `net` | a mod's own client↔server channel (custom payloads) | only between the two halves of the same mod |
+| Capability | What it provides |
+|---|---|
+| `energy` (API 39) | Host-saved shared energy storage on content blocks, with bounded deferred insert/extract operations. This is an energy contract, not a fluid API or automatic compatibility layer for Fabric energy mods. |
+| `lookup` (API 39) | A directory of which mod provides a named API for a block, item or entity. It does not dynamically invoke providers. |
+| `server-hooks` lifecycle (API 40) | Opt-in server tick start/end, player respawn, and before/after save callbacks. |
+| machine hooks (API 41) | Opt-in tick callbacks for watched content blocks with containers. |
+| `attachments` (API 41) | Host-managed private bytes attached to entity, chunk, world and block identifiers, saved beside that mod's storage. |
+| `net` (API 42) | Registered, bounded cross-mod messages on a Horizon server, delivered on the next tick. This is separate from `channel`, which connects a mod's own client and server halves. |
+| `worldgen` (API 43) | Deterministic structure sites for newly generated chunks, based on the world seed and a feature's spacing/salt. Mods place them with the existing structure API. It is not a general biome-modifier, dimension, or configured-feature registration API. |
+
+These additions extend the existing API 0.3 server mod surface; they do not run Fabric/NeoForge Java code or expose arbitrary Minecraft internals.
 
 There is no file, socket, process or raw-input interface, on purpose.
 

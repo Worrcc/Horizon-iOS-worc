@@ -7,11 +7,12 @@ mod death38;
 mod interop39;
 mod interop41;
 mod lifecycle40;
-mod net42;
-mod machines30;
 mod machine37;
+mod machines30;
+mod net42;
 mod player_world31;
 mod recipes36;
+mod worldgen43;
 struct Guest;
 impl ServerMod for Guest {
     fn init() -> Result<(Self, Registration), String> {
@@ -31,6 +32,7 @@ impl ServerMod for Guest {
                 .command("lifecycle40")
                 .command("interop41")
                 .command("net42")
+                .command("worldgen43")
                 .command("pw31")
                 .command("behaviour29")
                 .command("schedule29")
@@ -176,6 +178,9 @@ impl ServerMod for Guest {
         }
         if name == "net42" {
             return net42::run(player, args);
+        }
+        if name == "worldgen43" {
+            return worldgen43::run(player, args);
         }
         if name == "data29" {
             let pos = BlockChangePos { x: 0, y: 64, z: 0 };
@@ -595,7 +600,12 @@ impl ServerMod for Guest {
     fn server_tick_end(&mut self, tick: u64) {
         lifecycle40::tick_end(tick);
     }
-    fn player_respawned(&mut self, player: &Player, dimension: &str, _at: horizon_mod_sdk::server::DeathPoint) {
+    fn player_respawned(
+        &mut self,
+        player: &Player,
+        dimension: &str,
+        _at: horizon_mod_sdk::server::DeathPoint,
+    ) {
         lifecycle40::respawned(player, dimension);
     }
     fn before_save(&mut self) {

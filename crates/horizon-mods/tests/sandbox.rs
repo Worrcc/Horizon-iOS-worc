@@ -144,8 +144,8 @@ name = "API20 Server"
 version = "0.1.0"
 api = "0.3"
 side = "server"
-capabilities = ["players", "world", "channel", "energy", "lookup", "attachments", "net"]
-experimental = ["players", "world", "channel", "energy", "lookup", "attachments", "net"]
+capabilities = ["players", "world", "channel", "energy", "lookup", "attachments", "net", "worldgen"]
+experimental = ["players", "world", "channel", "energy", "lookup", "attachments", "net", "worldgen"]
 "#
                 .into(),
             ),
@@ -3742,10 +3742,10 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     ] {
         assert!(imports.iter().any(|i| i == name), "{name}");
     }
-    // The server guest also exercises API 36-39 queries, writes, drops and interop.
+    // The server guest also exercises API 36-43 queries, writes, drops, interop and worldgen.
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
 }
 
@@ -3837,11 +3837,11 @@ mod behaviour;
 #[path = "stack_data/mod.rs"]
 mod stack_data;
 
+#[path = "afterlight36/mod.rs"]
+mod afterlight36;
 mod machines;
 #[path = "player_world/mod.rs"]
 mod player_world;
-#[path = "afterlight36/mod.rs"]
-mod afterlight36;
 
 /// The chat lines and error feedback a command made.
 fn said(mods: &mut Mods, command: &str) -> (Vec<String>, Vec<String>) {

@@ -1,5 +1,5 @@
 //! API 40 guest checks: opt-in server lifecycle callbacks.
-use horizon_mod_sdk::server::{Args, Player, LifecycleConfig, players, server_hooks};
+use horizon_mod_sdk::server::{Args, LifecycleConfig, Player, players, server_hooks};
 
 pub fn run(_player: &Player, args: &Args) -> Result<Option<String>, String> {
     match args.text().trim() {

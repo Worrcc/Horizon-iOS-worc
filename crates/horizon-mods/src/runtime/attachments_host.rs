@@ -10,14 +10,7 @@ fn key(target: &AttachmentTarget, name: &str) -> Key {
         AttachmentTarget::Entity(id) => (0, String::new(), *id as i32, 0, 0, name.to_owned()),
         AttachmentTarget::Chunk(c) => (1, c.dimension.clone(), c.x, c.z, 0, name.to_owned()),
         AttachmentTarget::World(d) => (2, d.clone(), 0, 0, 0, name.to_owned()),
-        AttachmentTarget::Block(b) => (
-            3,
-            b.dimension.clone(),
-            b.x,
-            b.y,
-            b.z,
-            name.to_owned(),
-        ),
+        AttachmentTarget::Block(b) => (3, b.dimension.clone(), b.x, b.y, b.z, name.to_owned()),
     }
 }
 
@@ -61,11 +54,15 @@ impl AttachmentStore {
         };
         while at < raw.len() {
             let Some(kind) = read_u8(&mut at) else { break };
-            let Some(dimension) = read_string(&mut at) else { break };
+            let Some(dimension) = read_string(&mut at) else {
+                break;
+            };
             let Some(a) = read_i32(&mut at) else { break };
             let Some(b) = read_i32(&mut at) else { break };
             let Some(c) = read_i32(&mut at) else { break };
-            let Some(name) = read_string(&mut at) else { break };
+            let Some(name) = read_string(&mut at) else {
+                break;
+            };
             let Some(len) = read_u32(&mut at) else { break };
             let Some(value) = raw.get(at..at + len as usize).map(|v| v.to_vec()) else {
                 break;

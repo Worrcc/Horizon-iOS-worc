@@ -99,9 +99,10 @@ use attachments_host::AttachmentStore;
 mod energy_host;
 mod lookup_host;
 use lookup_host::LookupDirectory;
-mod net_host;
 mod behaviour;
+mod net_host;
 mod player_world;
+mod worldgen_host;
 pub use behaviour::*;
 pub use server_bindings::horizon::mods::server_hooks::{BehaviourConfig, LifecycleConfig};
 mod channel_host;
@@ -303,6 +304,14 @@ pub struct MachineTick {
     pub state: String,
 }
 
+/// API 43: one registered structure-placement feature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldFeature {
+    pub structure: String,
+    pub spacing: u32,
+    pub salt: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnergyKind {
     Capacity,
@@ -400,6 +409,8 @@ pub struct Snapshot {
     pub world_spawn: Option<(String, WorldPoint, f32)>,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
     pub generated_chunks: Arc<[ChunkPos]>,
+    /// API 43: the world seed, for deterministic mod worldgen.
+    pub world_seed: u64,
     /// The first block along the player's view within [`RAYCAST_MAX`] and
     /// its distance from the eye, for `game.raycast`; the game works it out
     /// only while a mod calls it ([`Mods::wants_raycast`]).
@@ -1171,6 +1182,8 @@ struct State {
     net_names: Vec<String>,
     /// API 42: net messages allowed this tick (64).
     net_budget: (Option<u64>, usize),
+    /// API 43: this mod's structure placement definitions.
+    features: HashMap<String, WorldFeature>,
     /// API 39: energy operations allowed this tick (64).
     energy_budget: (Option<u64>, usize),
     /// API 39: the shared provider directory.
@@ -1350,7 +1363,9 @@ impl Mods {
         claimant: &str,
     ) -> bool {
         let Some(i) = self.entries.iter().position(|e| {
-            e.run.as_ref().is_some_and(|r| r.store.data().id == claimant)
+            e.run
+                .as_ref()
+                .is_some_and(|r| r.store.data().id == claimant)
         }) else {
             return false;
         };
@@ -1404,7 +1419,8 @@ impl Mods {
                 }
                 if !watches.iter().any(|p| {
                     p == &tick.state
-                        || p.strip_suffix('*').is_some_and(|ns| tick.state.starts_with(ns))
+                        || p.strip_suffix('*')
+                            .is_some_and(|ns| tick.state.starts_with(ns))
                 }) {
                     continue;
                 }
@@ -1466,7 +1482,7 @@ impl Mods {
                 _ => None,
             };
             if let Some(f) = f {
-                let (player, dimension, at) = (player.clone(), dimension.to_owned(), at.clone());
+                let (player, dimension, at) = (player.clone(), dimension.to_owned(), at);
                 self.call(i, FUEL_EVENT, |r| {
                     f.call(&mut r.store, (player, dimension, at))?;
                     Ok(())
@@ -1739,6 +1755,7 @@ impl Mods {
             machine_watches: Vec::new(),
             net_names: Vec::new(),
             net_budget: (None, 0),
+            features: HashMap::new(),
             energy_budget: (None, 0),
             lookup: self.lookup.clone(),
             storage_move_budget: (None, 0),
@@ -1838,9 +1855,9 @@ impl Mods {
                             | "browser-ext.recipes-page"
                     )
             }),
-            machine_stack_api: functions.iter().any(|f| {
-                f == "world.machine-stacks" || f == "world.set-machine-stacks"
-            }),
+            machine_stack_api: functions
+                .iter()
+                .any(|f| f == "world.machine-stacks" || f == "world.set-machine-stacks"),
             energy_api: functions.iter().any(|f| f.starts_with("energy.")),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
             reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
@@ -2646,10 +2663,13 @@ impl Mods {
                                 .is_none_or(|to| to == &r.store.data().id)
                             && r.store.data().net_names.contains(&message.name) =>
                     {
-                        (true, match &r.hooks {
-                            Hooks::Server(m, _) => m.net_message,
-                            _ => None,
-                        })
+                        (
+                            true,
+                            match &r.hooks {
+                                Hooks::Server(m, _) => m.net_message,
+                                _ => None,
+                            },
+                        )
                     }
                     _ => (false, None),
                 };
@@ -2671,13 +2691,10 @@ impl Mods {
     /// API 41: write each mod's host-managed attachments beside its storage.
     pub fn save_attachments(&mut self) {
         for i in 0..self.entries.len() {
-            let data = self.entries[i]
-                .run
-                .as_ref()
-                .map(|r| {
-                    let s = r.store.data();
-                    (s.data_dir.clone(), s.attachments.values.len())
-                });
+            let data = self.entries[i].run.as_ref().map(|r| {
+                let s = r.store.data();
+                (s.data_dir.clone(), s.attachments.values.len())
+            });
             if let Some((dir, _)) = data {
                 self.entries[i]
                     .run
@@ -2765,6 +2782,11 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
     .map_err(|e| e.to_string())?;
     server_bindings::horizon::mods::net::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
         .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::worldgen::add_to_linker::<State, HasSelf<State>>(
+        &mut linker,
+        |s| s,
+    )
+    .map_err(|e| e.to_string())?;
     // Orders are imported by mods. Their variant grows over time, but
     // Wasmtime's typed bindings require an identical case list. Decode
     // by case name so components built against earlier subsets keep
@@ -3515,7 +3537,8 @@ impl mod_world::Host for State {
             .as_ref()
             .ok_or("world unavailable")?
             .check_give_stack(&stack.item, stack.count)?;
-        self.out.push(Output::GiveItemWithComponents { player, stack });
+        self.out
+            .push(Output::GiveItemWithComponents { player, stack });
         Ok(())
     }
 
@@ -3599,6 +3622,9 @@ impl mod_world::Host for State {
         self.storage_from_player(player, inv_slot, dimension, pos, count)
     }
 
+    fn world_seed(&mut self) -> u64 {
+        self.snapshot.world_seed
+    }
     fn spawn_point(&mut self) -> (String, WorldPoint, f32) {
         self.snapshot.world_spawn.clone().unwrap_or_else(|| {
             (
@@ -4576,7 +4602,7 @@ impl players::Host for State {
             .map(|death| players::ClaimedDeath {
                 player: death.player.clone(),
                 dimension: death.dimension.clone(),
-                at: death.at.clone(),
+                at: death.at,
                 drops: death
                     .drops
                     .iter()
@@ -5620,6 +5646,7 @@ mod entity_tests {
             machine_watches: Vec::new(),
             net_names: Vec::new(),
             net_budget: (None, 0),
+            features: HashMap::new(),
             energy_budget: (None, 0),
             lookup: Default::default(),
             storage_move_budget: (None, 0),

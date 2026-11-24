@@ -138,9 +138,12 @@ pub enum Capability {
     /// Cross-mod messages between running server mods (capability `net`,
     /// API level 42, experimental).
     Net,
+    /// Deterministic feature sites for worldgen mods (capability `worldgen`,
+    /// API level 43, experimental).
+    Worldgen,
 }
 impl Capability {
-    pub const ALL: [Capability; 21] = [
+    pub const ALL: [Capability; 22] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -162,6 +165,7 @@ impl Capability {
         Capability::Lookup,
         Capability::Attachments,
         Capability::Net,
+        Capability::Worldgen,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -176,6 +180,7 @@ impl Capability {
                 | Capability::Lookup
                 | Capability::Attachments
                 | Capability::Net
+                | Capability::Worldgen
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -202,6 +207,7 @@ impl Capability {
             Capability::Lookup => "lookup",
             Capability::Attachments => "attachments",
             Capability::Net => "net",
+            Capability::Worldgen => "worldgen",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -222,6 +228,7 @@ impl Capability {
                 | Capability::Lookup
                 | Capability::Attachments
                 | Capability::Net
+                | Capability::Worldgen
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -260,6 +267,7 @@ impl Capability {
             Capability::Lookup => "see which mod provides an API for a block, item or creature",
             Capability::Attachments => "save its own data on blocks, chunks, worlds and creatures",
             Capability::Net => "exchange messages with other server mods",
+            Capability::Worldgen => "place registered structures in newly generated chunks",
         }
     }
     /// What the player reads, including a mod's declared disk quota.
@@ -325,6 +333,7 @@ impl fmt::Display for Capability {
             Capability::Lookup => "lookup",
             Capability::Attachments => "attachments",
             Capability::Net => "net",
+            Capability::Worldgen => "worldgen",
         };
         f.write_str(name)
     }

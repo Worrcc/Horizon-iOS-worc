@@ -2,11 +2,7 @@
 use horizon_mod_sdk::server::{Args, BlockChangePos, Player, players, world};
 
 fn pos() -> BlockChangePos {
-    BlockChangePos {
-        x: 0,
-        y: 64,
-        z: 0,
-    }
+    BlockChangePos { x: 0, y: 64, z: 0 }
 }
 
 pub fn run(player: &Player, args: &Args) -> Result<Option<String>, String> {

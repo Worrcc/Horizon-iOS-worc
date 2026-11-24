@@ -22,9 +22,10 @@ impl Game<'_> {
                 }
                 match plan.kind {
                     EnergyKind::Capacity => (0, plan.amount),
-                    EnergyKind::Insert => {
-                        (current.0 + plan.amount.min(current.1 - current.0), current.1)
-                    }
+                    EnergyKind::Insert => (
+                        current.0 + plan.amount.min(current.1 - current.0),
+                        current.1,
+                    ),
                     EnergyKind::Extract => (current.0 - plan.amount.min(current.0), current.1),
                 }
             }

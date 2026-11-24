@@ -28,6 +28,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `lookup` | [`lookup`](#lookup) | see which mod provides an API for a block, item or creature |
 | `attachments` | [`attachments`](#attachments) | save its own data on blocks, chunks, worlds and creatures |
 | `net` | [`net`](#net) | exchange messages with other server mods |
+| `worldgen` | [`worldgen`](#worldgen) | place registered structures in newly generated chunks |
 
 ## World `channel-host`
 
@@ -47,7 +48,7 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `attachments`, `net`, `server-hooks`, `channel`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `attachments`, `net`, `worldgen`, `server-hooks`, `channel`
 - Exports (what the mod provides): `server-events`, `net-events`
 
 ## World `horizon-ui-mod`
@@ -1597,6 +1598,7 @@ A plain item stack; components are not carried by this API.
 | `container-to-player` | `func(dimension: string, pos: block-change-pos, slot: u32, count: u32, player: string) -> result<u32, string>` | API level 28: as container-move, into the online player's main inventory. No creative exemption, overflow drops, armor or offhand slots. |
 | `player-to-container` | `func(player: string, inv-slot: u32, dimension: string, pos: block-change-pos, count: u32) -> result<u32, string>` | API level 28: main inventory slot 0..35 (hotbar first) into a container. |
 | `break-blocks-as` | `func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>` | API level 20: queue real player breaks, applied after hooks with the live game. Unknown/offline players or over 2048 positions/call or 4096/mod/tick error atomically. At apply time skip air, liquids, unloaded blocks, positions beyond 80 blocks, and unbreakable blocks in survival. Stop if the player leaves or keep-tool triggers. Uses the normal player path (protection, border, loot, XP, wear, stats and updates). Creative gives no drops/wear; the caller's block-broken hook is excluded. |
+| `world-seed` | `func() -> u64` | API 43: this world's seed, as an unsigned 64-bit integer. Mods use it with chunk coordinates, never with wall time, for deterministic worldgen: the same seed and chunk always produce the same result. |
 | `spawn-point` | `func() -> tuple<string, point, f32>` | The overworld's world spawn: dimension id, position, angle in degrees. |
 | `spawn-item` | `func(dimension: string, at: point, item: string, count: u32) -> result<_, string>` | Drop a plain stack in this dimension, count 1..max stack size. At most 16 successful requests per tick per mod, across all hook calls. |
 | `block-has-tag` | `func(block: string, tag: string) -> bool` | Whether a block id or state belongs to a loaded block tag (without #). Unknown blocks and tags return false. |
@@ -1615,6 +1617,29 @@ A plain item stack; components are not carried by this API.
 | `set-spawner` | `func(dimension: string, x: s32, y: s32, z: s32, entity: string) -> result<_, string>` | Sets the mob a monster spawner (`minecraft:spawner`) spawns, as a spawn egg used on it does, after this tick's block writes (so a spawner placed by them gets it). `entity` is an entity type id, vanilla's or a content mod's. The spawner keeps its delays, counts and ranges. Not a spawner then, or an unknown type: nothing, logged. |
 | `game-rule` | `func(name: string) -> option<string>` | Current server rule value as text, or none for an unknown rule. Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias. |
 | `difficulty` | `func() -> string` | peaceful, easy, normal or hard, as of the start of this call. |
+
+## `worldgen`
+
+Access: capability `worldgen`.
+
+API 43: deterministic feature sites for worldgen mods, capability `worldgen`, server mods only. Horizon keeps the feature definitions and computes sites from the world seed and chunk coordinates; the mod still decides when to place them, using the existing `world.place-structure` and `world.generated-chunks` calls.
+
+### record `feature-site`
+
+A deterministic site inside a chunk column, in block coordinates.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `s32` |  |
+| `z` | `s32` |  |
+| `rotation` | `u32` | 0..3 quarter turns clockwise, from the same hash. |
+| `mirror` | `bool` | Whether the template is mirrored, from the same hash. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `register-feature` | `func(id: string, structure: string, spacing: u32, salt: u32) -> result<_, string>` | Register `structure` (a loaded `data/<ns>/structure/*.nbt` template) as feature `id`: one deterministically chosen chunk in each `spacing` by `spacing` region, with a different deterministic site per `salt`. Spacing is 1..1024 chunks. Up to 64 features per mod; re-registering an id replaces it. |
+| `unregister-feature` | `func(id: string) -> result<_, string>` | Forget this mod's feature, if it has one. |
+| `site-for-chunk` | `func(dimension: string, chunk-x: s32, chunk-z: s32, feature: string) -> option<feature-site>` | The site for a registered feature in one of this tick's generated chunk columns, or none when it is not the selected chunk for its region, the chunk was not newly generated this tick, or the id is unknown. The same world seed, feature id/salt and chunk always give the same site, on every reload and every server. At most one feature per call. Use world.heightmap and world.place-structure to place it. |
 
 ## `net`
 

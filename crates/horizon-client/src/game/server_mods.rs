@@ -260,9 +260,7 @@ pub(super) mod run {
             z: i32,
             _face: i32,
         ) -> Option<(u64, u64)> {
-            self.energy
-                .get(&(dimension.to_owned(), (x, y, z)))
-                .copied()
+            self.energy.get(&(dimension.to_owned(), (x, y, z))).copied()
         }
         fn check_item_stack(&self, item: &str, count: u32) -> Result<(), String> {
             let max = self
@@ -1114,13 +1112,10 @@ pub(super) mod run {
                 z: at[2],
             };
             let dimension = self.dim.id().to_owned();
-            let claimed = self.mods.mods.player_died(
-                &player,
-                &dimension,
-                point,
-                offered,
-                &claimant,
-            );
+            let claimed = self
+                .mods
+                .mods
+                .player_died(&player, &dimension, point, offered, &claimant);
             self.return_world();
             self.return_mod_inventories(None);
             self.show_mod_output();

@@ -29,8 +29,14 @@ impl lookup::Host for State {
         }
         let key = (kind_name(kind).to_owned(), id, api);
         let mut directory = self.lookup.lock().map_err(|_| "lookup unavailable")?;
-        if directory.get(&key).map_or(true, |(owner, _)| owner != &self.id)
-            && directory.values().filter(|(owner, _)| owner == &self.id).count() >= 64
+        if directory
+            .get(&key)
+            .is_none_or(|(owner, _)| owner != &self.id)
+            && directory
+                .values()
+                .filter(|(owner, _)| owner == &self.id)
+                .count()
+                >= 64
         {
             return Err("at most 64 lookup registrations per mod".into());
         }
@@ -41,7 +47,10 @@ impl lookup::Host for State {
     fn unregister(&mut self, kind: TargetKind, id: String, api: String) -> Result<(), String> {
         let key = (kind_name(kind).to_owned(), id, api);
         let mut directory = self.lookup.lock().map_err(|_| "lookup unavailable")?;
-        if directory.get(&key).is_some_and(|(owner, _)| owner == &self.id) {
+        if directory
+            .get(&key)
+            .is_some_and(|(owner, _)| owner == &self.id)
+        {
             directory.remove(&key);
         }
         Ok(())

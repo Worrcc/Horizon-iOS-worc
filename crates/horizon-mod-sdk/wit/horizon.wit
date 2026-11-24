@@ -1589,6 +1589,10 @@ interface %world {
     break-blocks-as: func(player: string, blocks: list<block-change-pos>, options: break-options) -> result<_, string>;
     /// A vector or position in blocks, with finite components.
     record point { x: f64, y: f64, z: f64 }
+    /// API 43: this world's seed, as an unsigned 64-bit integer. Mods use it
+    /// with chunk coordinates, never with wall time, for deterministic
+    /// worldgen: the same seed and chunk always produce the same result.
+    world-seed: func() -> u64;
     /// The overworld's world spawn: dimension id, position, angle in degrees.
     spawn-point: func() -> tuple<string, point, f32>;
     /// Drop a plain stack in this dimension, count 1..max stack size.
@@ -1684,6 +1688,38 @@ interface %world {
     game-rule: func(name: string) -> option<string>;
     /// peaceful, easy, normal or hard, as of the start of this call.
     difficulty: func() -> string;
+}
+
+/// API 43: deterministic feature sites for worldgen mods, capability
+/// `worldgen`, server mods only. Horizon keeps the feature definitions and
+/// computes sites from the world seed and chunk coordinates; the mod still
+/// decides when to place them, using the existing `world.place-structure`
+/// and `world.generated-chunks` calls.
+interface worldgen {
+    /// A deterministic site inside a chunk column, in block coordinates.
+    record feature-site {
+        x: s32,
+        z: s32,
+        /// 0..3 quarter turns clockwise, from the same hash.
+        rotation: u32,
+        /// Whether the template is mirrored, from the same hash.
+        mirror: bool,
+    }
+    /// Register `structure` (a loaded `data/<ns>/structure/*.nbt` template)
+    /// as feature `id`: one deterministically chosen chunk in each `spacing`
+    /// by `spacing` region, with a different deterministic site per `salt`.
+    /// Spacing is 1..1024 chunks. Up to 64 features per mod; re-registering
+    /// an id replaces it.
+    register-feature: func(id: string, structure: string, spacing: u32, salt: u32) -> result<_, string>;
+    /// Forget this mod's feature, if it has one.
+    unregister-feature: func(id: string) -> result<_, string>;
+    /// The site for a registered feature in one of this tick's generated
+    /// chunk columns, or none when it is not the selected chunk for its
+    /// region, the chunk was not newly generated this tick, or the id is
+    /// unknown. The same world seed, feature id/salt and chunk always give
+    /// the same site, on every reload and every server. At most one feature
+    /// per call. Use world.heightmap and world.place-structure to place it.
+    site-for-chunk: func(dimension: string, chunk-x: s32, chunk-z: s32, feature: string) -> option<feature-site>;
 }
 
 /// API 42: cross-mod messages on a Horizon server, capability `net`.
@@ -2624,6 +2660,7 @@ world horizon-server-mod {
     import lookup;
     import attachments;
     import net;
+    import worldgen;
     import server-hooks;
     import channel;
     export server-events;

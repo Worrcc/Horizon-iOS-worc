@@ -74,9 +74,7 @@ impl ServerCallbacks {
         }
         let net_message = instance
             .get_export_index(&mut *store, None, "horizon:mods/net-events@0.1.0")
-            .and_then(|net| {
-                instance.get_export_index(&mut *store, Some(&net), "net-message")
-            })
+            .and_then(|net| instance.get_export_index(&mut *store, Some(&net), "net-message"))
             .and_then(|i| instance.get_typed_func(&mut *store, i).ok());
         Ok(Self {
             init: required!("init"),

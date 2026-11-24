@@ -5,17 +5,12 @@ use server_bindings::horizon::mods::energy::{self, EnergyPos, EnergyStats};
 const MAX_CAPACITY: u64 = 1_000_000_000;
 
 impl energy::Host for State {
-    fn energy_side(
-        &mut self,
-        dimension: String,
-        pos: EnergyPos,
-        face: i32,
-    ) -> Option<EnergyStats> {
+    fn energy_side(&mut self, dimension: String, pos: EnergyPos, face: i32) -> Option<EnergyStats> {
         self.energy_position(&dimension, &pos).ok()?;
         let view = self.world.lock().ok()?;
-        let (amount, capacity) = view.as_ref()?.energy_side(
-            &dimension, pos.x, pos.y, pos.z, face,
-        )?;
+        let (amount, capacity) = view
+            .as_ref()?
+            .energy_side(&dimension, pos.x, pos.y, pos.z, face)?;
         Some(EnergyStats { amount, capacity })
     }
 
@@ -107,7 +102,8 @@ impl State {
         }
         let view = self.world.lock().map_err(|_| "world unavailable")?;
         let world = view.as_ref().ok_or("world unavailable")?;
-        if !world.has_dimension(dimension) || world.block(dimension, pos.x, pos.y, pos.z).is_none() {
+        if !world.has_dimension(dimension) || world.block(dimension, pos.x, pos.y, pos.z).is_none()
+        {
             return Err("unknown dimension or unloaded position".into());
         }
         Ok(())

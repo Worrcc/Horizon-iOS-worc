@@ -22,21 +22,17 @@ impl WorldView for View {
     fn check_state(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
-    fn energy_side(
-        &self,
-        dim: &str,
-        x: i32,
-        y: i32,
-        z: i32,
-        _face: i32,
-    ) -> Option<(u64, u64)> {
+    fn check_structure(&self, id: &str) -> Result<(), String> {
+        if id == "test:temple" {
+            Ok(())
+        } else {
+            Err(format!("no structure template {id}"))
+        }
+    }
+    fn energy_side(&self, dim: &str, x: i32, y: i32, z: i32, _face: i32) -> Option<(u64, u64)> {
         (dim == "minecraft:overworld" && x == 0 && y == 64 && z == 0).then_some((5, 10))
     }
-    fn machine_stacks(
-        &self,
-        dim: &str,
-        pos: BlockChangePos,
-    ) -> Option<Vec<Option<MachineStack>>> {
+    fn machine_stacks(&self, dim: &str, pos: BlockChangePos) -> Option<Vec<Option<MachineStack>>> {
         (dim == "minecraft:overworld" && pos.x == 0 && pos.y == 64 && pos.z == 0).then(|| {
             vec![
                 Some(MachineStack {
@@ -125,6 +121,20 @@ fn setup() -> (Mods, ServerPlayer) {
         tick: 1,
         players: vec![p.clone()],
         recipes: Some(Arc::new(recipes())),
+        world_seed: 42,
+        generated_chunks: vec![
+            horizon_mods::ChunkPos {
+                dimension: "minecraft:overworld".into(),
+                x: 3,
+                z: -2,
+            },
+            horizon_mods::ChunkPos {
+                dimension: "minecraft:overworld".into(),
+                x: 2,
+                z: -4,
+            },
+        ]
+        .into(),
         ..Default::default()
     });
     mods.lend_world(Box::new(View));
@@ -135,7 +145,8 @@ fn setup() -> (Mods, ServerPlayer) {
 fn run(mods: &mut Mods, p: &ServerPlayer, cmd: &str) -> Vec<String> {
     mods.drain();
     assert!(mods.server_command(p, cmd), "{cmd}");
-    mods.drain().into_iter()
+    mods.drain()
+        .into_iter()
         .filter_map(|o| match o {
             Output::Tell { text, .. } => Some(text),
             _ => None,
@@ -163,11 +174,17 @@ fn api36_recipes_for_item_pages_and_resolves_ids() {
     m.drain();
     assert!(m.server_command(&p, "recipes36 minecraft:stone"));
     for o in m.drain() {
-        if let Output::Reply { text, error: true, .. } = o {
+        if let Output::Reply {
+            text, error: true, ..
+        } = o
+        {
             errors.push(text);
         }
     }
-    assert!(errors.iter().any(|e| e.contains("unknown item")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("unknown item")),
+        "{errors:?}"
+    );
 }
 
 #[test]
@@ -185,22 +202,22 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
     )
     .unwrap();
-    assert!(manifest
-        .check_imports(["horizon:mods/world@0.1.0"])
-        .is_ok());
+    assert!(manifest.check_imports(["horizon:mods/world@0.1.0"]).is_ok());
     let no_world = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\"]\nexperimental = [\"players\"]\n",
     )
     .unwrap();
-    assert!(no_world
-        .check_imports(["horizon:mods/world@0.1.0"])
-        .is_err());
+    assert!(
+        no_world
+            .check_imports(["horizon:mods/world@0.1.0"])
+            .is_err()
+    );
 }
 
 #[test]
@@ -216,7 +233,10 @@ fn api37_machine_stacks_read_components_and_queue_checked_writes() {
         assert!(m.server_command(&p, "machine37 write"));
         m.drain()
     };
-    assert!(out.iter().any(|o| matches!(o, Output::Tell { text, .. } if text == "machine queued")));
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Output::Tell { text, .. } if text == "machine queued"))
+    );
     let writes: Vec<_> = out
         .iter()
         .filter_map(|o| match o {
@@ -238,10 +258,14 @@ fn api37_machine_stacks_read_components_and_queue_checked_writes() {
         assert!(m.server_command(&p, "machine37 bad"));
         m.drain()
     };
-    assert!(!out
-        .iter()
-        .any(|o| matches!(o, Output::MachineStackWrite(_))));
-    assert!(out.iter().any(|o| matches!(o, Output::Reply { error: true, .. })));
+    assert!(
+        !out.iter()
+            .any(|o| matches!(o, Output::MachineStackWrite(_)))
+    );
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Output::Reply { error: true, .. }))
+    );
 }
 
 #[test]
@@ -255,7 +279,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
 }
 
@@ -278,24 +302,26 @@ fn api38_claimant_keeps_death_drops_and_only_it_can_read_them() {
         count: 2,
         components: None,
     }];
-    assert!(m.player_died(
-        &p,
-        "minecraft:overworld",
-        DeathPoint {
-            x: at.x,
-            y: at.y,
-            z: at.z,
-        },
-        drops
-            .iter()
-            .map(|s| DeathStack {
-                item: s.item.clone(),
-                count: s.count,
-                components: s.components.clone(),
-            })
-            .collect(),
-        "test_api20_server"
-    ));
+    assert!(
+        m.player_died(
+            &p,
+            "minecraft:overworld",
+            DeathPoint {
+                x: at.x,
+                y: at.y,
+                z: at.z,
+            },
+            drops
+                .iter()
+                .map(|s| DeathStack {
+                    item: s.item.clone(),
+                    count: s.count,
+                    components: s.components.clone(),
+                })
+                .collect(),
+            "test_api20_server"
+        )
+    );
     m.drain();
     // The game stages a claimed death; the next snapshot carries it.
     m.set_snapshot(Snapshot {
@@ -305,7 +331,7 @@ fn api38_claimant_keeps_death_drops_and_only_it_can_read_them() {
         player_death_drops: vec![PlayerDeathDrops {
             player: p.id.clone(),
             dimension: "minecraft:overworld".into(),
-            at: at.clone(),
+            at,
             drops: drops.clone(),
         }]
         .into(),
@@ -359,16 +385,14 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
         .unwrap();
     let imports = horizon_mods::api_level::imports(&wasm).unwrap();
     assert!(imports.iter().any(|f| f == "players.claimed-deaths"));
-    assert!(imports
-        .iter()
-        .any(|f| f == "server-hooks.set-death-drops"));
+    assert!(imports.iter().any(|f| f == "server-hooks.set-death-drops"));
     assert_eq!(
         horizon_mods::api_level::level_of("players.claimed-deaths"),
         Some(38)
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
 }
 
@@ -388,17 +412,26 @@ fn api39_lookup_registers_discovers_and_removes() {
 #[test]
 fn api39_energy_reads_and_queues_checked_changes() {
     let (mut m, p) = setup();
-    assert_eq!(run(&mut m, &p, "interop39 energy read"), ["energy read [5:10]"]);
+    assert_eq!(
+        run(&mut m, &p, "interop39 energy read"),
+        ["energy read [5:10]"]
+    );
     let out = {
         m.drain();
         assert!(m.server_command(&p, "interop39 energy insert"));
         m.drain()
     };
-    assert!(out.iter().any(|o| matches!(o, Output::Tell { text, .. } if text == "energy insert [4]")));
-    let changes: Vec<_> = out.iter().filter_map(|o| match o {
-        Output::EnergyChange(plan) => Some(plan),
-        _ => None,
-    }).collect();
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Output::Tell { text, .. } if text == "energy insert [4]"))
+    );
+    let changes: Vec<_> = out
+        .iter()
+        .filter_map(|o| match o {
+            Output::EnergyChange(plan) => Some(plan),
+            _ => None,
+        })
+        .collect();
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].before, (5, 10));
     assert_eq!(changes[0].amount, 4);
@@ -407,7 +440,10 @@ fn api39_energy_reads_and_queues_checked_changes() {
         assert!(m.server_command(&p, "interop39 energy extract"));
         m.drain()
     };
-    assert!(out.iter().any(|o| matches!(o, Output::EnergyChange(plan) if plan.amount == 3)));
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Output::EnergyChange(plan) if plan.amount == 3))
+    );
 }
 
 #[test]
@@ -425,14 +461,22 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
     )
     .unwrap();
-    assert!(manifest.check_imports(["horizon:mods/energy@0.1.0"]).is_ok());
-    assert!(manifest.check_imports(["horizon:mods/lookup@0.1.0"]).is_ok());
+    assert!(
+        manifest
+            .check_imports(["horizon:mods/energy@0.1.0"])
+            .is_ok()
+    );
+    assert!(
+        manifest
+            .check_imports(["horizon:mods/lookup@0.1.0"])
+            .is_ok()
+    );
 }
 
 #[test]
@@ -455,11 +499,15 @@ fn api40_lifecycle_hooks_are_opt_in_and_routed() {
     );
     m.server_save(true, false);
     m.server_save(false, true);
-    let lines: Vec<String> = m.drain().into_iter().filter_map(|o| match o {
-        Output::Broadcast { text, .. } => Some(text),
-        Output::Tell { text, .. } => Some(text),
-        _ => None,
-    }).collect();
+    let lines: Vec<String> = m
+        .drain()
+        .into_iter()
+        .filter_map(|o| match o {
+            Output::Broadcast { text, .. } => Some(text),
+            Output::Tell { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
         lines,
         [
@@ -479,16 +527,18 @@ fn api40_hook_level_is_40() {
         .wasm
         .unwrap();
     let imports = horizon_mods::api_level::imports(&wasm).unwrap();
-    assert!(imports
-        .iter()
-        .any(|f| f == "server-hooks.set-lifecycle-hooks"));
+    assert!(
+        imports
+            .iter()
+            .any(|f| f == "server-hooks.set-lifecycle-hooks")
+    );
     assert_eq!(
         horizon_mods::api_level::level_of("server-hooks.set-lifecycle-hooks"),
         Some(40)
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
 }
 
@@ -502,10 +552,13 @@ fn api41_machine_ticks_and_attachments_cross_the_sandbox() {
         state: "test:machine".into(),
     }]);
     assert_eq!(
-        m.drain().into_iter().filter_map(|o| match o {
-            Output::Broadcast { text, .. } => Some(text),
-            _ => None,
-        }).collect::<Vec<_>>(),
+        m.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Broadcast { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
         ["machine minecraft:overworld 64 test:machine"]
     );
     run(&mut m, &p, "interop41 attach set");
@@ -532,7 +585,7 @@ fn api41_functions_are_level_41() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
     );
 }
 
@@ -545,10 +598,13 @@ fn api42_net_registers_sends_and_delivers() {
         assert!(m.server_command(&p, "net42 send"));
         m.drain()
     };
-    let messages: Vec<_> = out.iter().filter_map(|o| match o {
-        Output::NetMessage(message) => Some(message),
-        _ => None,
-    }).collect();
+    let messages: Vec<_> = out
+        .iter()
+        .filter_map(|o| match o {
+            Output::NetMessage(message) => Some(message),
+            _ => None,
+        })
+        .collect();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "test_api20_server");
     assert_eq!(messages[0].name, "demo");
@@ -562,10 +618,13 @@ fn api42_net_registers_sends_and_delivers() {
     });
     m.deliver_net();
     assert_eq!(
-        m.drain().into_iter().filter_map(|o| match o {
-            Output::Broadcast { text, .. } => Some(text),
-            _ => None,
-        }).collect::<Vec<_>>(),
+        m.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Broadcast { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
         ["net from other demo 1"]
     );
 }
@@ -581,6 +640,59 @@ fn api42_functions_are_level_42() {
     assert_eq!(horizon_mods::api_level::level_of("net.register"), Some(42));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        42
+        43
+    );
+}
+
+#[test]
+fn api43_worldgen_sites_are_seeded_and_only_for_new_chunks() {
+    let (mut m, p) = setup();
+    run(&mut m, &p, "worldgen43 register");
+    assert_eq!(
+        run(&mut m, &p, "worldgen43 query"),
+        ["worldgen [38:-55:0:false] nonselected [none]", "seed 42"]
+    );
+
+    // Asking about an old/un-generated chunk must not create a site.
+    m.set_snapshot(Snapshot {
+        tick: 2,
+        players: vec![p.clone()],
+        world_seed: 42,
+        generated_chunks: Vec::new().into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        run(&mut m, &p, "worldgen43 query"),
+        ["worldgen [none] nonselected [none]", "seed 42"]
+    );
+
+    // The deterministic seed is surfaced on the server world interface.
+    assert_eq!(
+        horizon_mods::api_level::level_of("world.world-seed"),
+        Some(43)
+    );
+}
+
+#[test]
+fn api43_worldgen_functions_require_capability_and_raise_api_level() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "worldgen.register-feature"));
+    assert!(imports.iter().any(|f| f == "world.world-seed"));
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        43
+    );
+    let manifest = horizon_mods::Manifest::parse(
+        "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"worldgen\"]\nexperimental = [\"worldgen\"]\n",
+    )
+    .unwrap();
+    assert!(
+        manifest
+            .check_imports(["horizon:mods/worldgen@0.1.0"])
+            .is_ok()
     );
 }

@@ -1193,6 +1193,7 @@ impl Game<'_> {
             teleport_borders: Default::default(),
             world_spawn: None,
             generated_chunks: Default::default(),
+            world_seed: self.level.seed as u64,
             view_hit: self.mod_view_hit(),
             view_entity: self.mod_view_entity(),
             recipes,

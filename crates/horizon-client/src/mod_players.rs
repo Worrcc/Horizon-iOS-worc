@@ -1,7 +1,7 @@
 //! Capability `players`: authoritative inventories moved into the mod runtime during hooks.
 use crate::items::ItemStack;
-use horizon_mods::PlayerInventories;
 use horizon_mods::ItemFilter;
+use horizon_mods::PlayerInventories;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -274,14 +274,18 @@ impl PlayerInventories for Inventories {
         }
         // The bytes are lossless network NBT from encode_components, as machine
         // stacks and claimed death drops carry.
-        let tag = stack.components.as_ref().map(|bytes| -> Result<horizon_world::nbt::Tag, String> {
-            let (tag, used) = horizon_world::nbt::read_network(bytes, Default::default())
-                .map_err(|_| "invalid item component patch".to_owned())?;
-            if used != bytes.len() {
-                return Err("trailing bytes in item component patch".into());
-            }
-            Ok(tag)
-        }).transpose()?;
+        let tag = stack
+            .components
+            .as_ref()
+            .map(|bytes| -> Result<horizon_world::nbt::Tag, String> {
+                let (tag, used) = horizon_world::nbt::read_network(bytes, Default::default())
+                    .map_err(|_| "invalid item component patch".to_owned())?;
+                if used != bytes.len() {
+                    return Err("trailing bytes in item component patch".into());
+                }
+                Ok(tag)
+            })
+            .transpose()?;
         let mut entries = vec![
             ("id", horizon_client_core::nbt_value::string(&stack.item)),
             ("count", horizon_world::nbt::Tag::Int(stack.count as i32)),
@@ -289,10 +293,9 @@ impl PlayerInventories for Inventories {
         if let Some(tag) = tag {
             entries.push(("components", tag));
         }
-        let decoded = horizon_items::item_nbt::item_from_nbt(
-            &horizon_world::nbt::Tag::compound(entries),
-        )
-        .ok_or("invalid item stack")?;
+        let decoded =
+            horizon_items::item_nbt::item_from_nbt(&horizon_world::nbt::Tag::compound(entries))
+                .ok_or("invalid item stack")?;
         if decoded.count == 0 {
             return Ok(());
         }

@@ -396,8 +396,7 @@ impl Game<'_> {
         host: Option<&mut LanHost>,
     ) -> Result<(), String> {
         let p = plan.pos;
-        if plan.dimension != self.dim.id()
-            || !self.world.chunks.contains_key(&(p.x >> 4, p.z >> 4))
+        if plan.dimension != self.dim.id() || !self.world.chunks.contains_key(&(p.x >> 4, p.z >> 4))
         {
             return Err("machine unloaded".into());
         }
@@ -412,7 +411,10 @@ impl Game<'_> {
         }
         let encoded: Vec<Option<MachineStack>> = live
             .iter()
-            .map(|slot| slot.as_ref().and_then(super::server_mod_world::encode_machine_stack))
+            .map(|slot| {
+                slot.as_ref()
+                    .and_then(super::server_mod_world::encode_machine_stack)
+            })
             .collect();
         for (slot, expect, _) in &plan.changes {
             let index = *slot as usize;
@@ -454,9 +456,7 @@ mod tests {
     #[test]
     fn api37_machine_stack_components_round_trip() {
         let mut stack = ItemStack::new("minecraft:diamond", 7);
-        stack
-            .set_mod_data("one", Some("saved one"))
-            .unwrap();
+        stack.set_mod_data("one", Some("saved one")).unwrap();
         let encoded = super::super::server_mod_world::encode_machine_stack(&stack).unwrap();
         assert_eq!(encoded.item, "minecraft:diamond");
         assert_eq!(encoded.count, 7);
@@ -481,11 +481,13 @@ mod tests {
         ))
         .unwrap();
         assert!(plain.components.is_none());
-        assert!(decode_machine_stack(&MachineStack {
-            components: Some(vec![0; 8]),
-            ..plain
-        })
-        .is_err());
+        assert!(
+            decode_machine_stack(&MachineStack {
+                components: Some(vec![0; 8]),
+                ..plain
+            })
+            .is_err()
+        );
     }
 
     #[test]

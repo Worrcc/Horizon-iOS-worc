@@ -4140,8 +4140,7 @@ impl Game<'_> {
         // API 38: a mod may keep the drops out of the world and claim them by
         // polling players.claimed-deaths. No claimant means vanilla is unchanged.
         #[cfg(feature = "mods")]
-        if self.mods.mods.death_drop_claimant().is_some()
-            && self.mod_death_drops(who, at, &stacks)
+        if self.mods.mods.death_drop_claimant().is_some() && self.mod_death_drops(who, at, &stacks)
         {
             return;
         }

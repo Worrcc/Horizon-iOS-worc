@@ -514,11 +514,13 @@ pub mod server {
         },
     });
 
+    pub use attachments::{AttachmentTarget, BlockRef, ChunkRef};
+    pub use energy::EnergyPos;
+    pub use exports::horizon::mods::net_events::Guest as __NetGuest;
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, DeathPoint, DeathStack,
         Decision, Guest as __Guest, Hand as BehaviourHand, Registration, ServerCommand,
     };
-    pub use exports::horizon::mods::net_events::Guest as __NetGuest;
     pub use horizon::mods::entities::{
         self, Area, AttributeChange, Death, EffectChange, Entity, HurtEvent, Mount, Order,
         Particles, Point, Rider, Sound, StrikeHit, Target, Walk,
@@ -533,9 +535,9 @@ pub mod server {
         ParticleBurst, Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData,
         WorldTime,
     };
-    pub use horizon::mods::{attachments, channel, energy, lookup, menus, net, server_hooks};
-    pub use attachments::{AttachmentTarget, BlockRef, ChunkRef};
-    pub use energy::EnergyPos;
+    pub use horizon::mods::{
+        attachments, channel, energy, lookup, menus, net, server_hooks, worldgen,
+    };
     pub use lookup::TargetKind;
     pub use menus::MenuItem;
     pub use server_hooks::{BehaviourConfig, LifecycleConfig};

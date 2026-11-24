@@ -345,7 +345,10 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("queued giving {count} {item} with data")
             }
             Output::GiveItemWithComponents { stack, .. } => {
-                format!("queued giving {} {} with components", stack.count, stack.item)
+                format!(
+                    "queued giving {} {} with components",
+                    stack.count, stack.item
+                )
             }
             Output::MachineStackWrite(plan) => {
                 format!("queued {} machine slot write(s)", plan.changes.len())
@@ -354,7 +357,11 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
                 format!("queued {:?} of {} energy", plan.kind, plan.amount)
             }
             Output::NetMessage(message) => {
-                format!("queued net message {} ({} bytes)", message.name, message.data.len())
+                format!(
+                    "queued net message {} ({} bytes)",
+                    message.name,
+                    message.data.len()
+                )
             }
             Output::SpawnItemWithData { item, count, .. } => {
                 format!("queued dropping {count} {item} with data")
