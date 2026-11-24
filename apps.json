@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.87",
+          "buildVersion": "0.2.0.87",
+          "date": "2026-11-24T08:19:33Z",
+          "localizedDescription": "Branch claude/afterlight-api, commit 68fd09b0b.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-87/Horizon.ipa",
+          "size": 34155350,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.82",
           "buildVersion": "0.2.0.82",
           "date": "2026-11-24T04:53:00Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-72/Horizon.ipa",
           "size": 34612273,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.71",
-          "buildVersion": "0.2.0.71",
-          "date": "2026-11-13T21:52:16Z",
-          "localizedDescription": "Branch claude/storage-api, commit 9299745fb.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-71/Horizon.ipa",
-          "size": 34549382,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.82",
-      "versionDate": "2026-11-24T04:53:00Z",
-      "versionDescription": "Branch claude/jei-paging-api, commit 2412faf1c.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-82/Horizon.ipa",
-      "size": 34071859
+      "version": "0.2.0.87",
+      "versionDate": "2026-11-24T08:19:33Z",
+      "versionDescription": "Branch claude/afterlight-api, commit 68fd09b0b.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-87/Horizon.ipa",
+      "size": 34155350
     }
   ],
   "news": []
