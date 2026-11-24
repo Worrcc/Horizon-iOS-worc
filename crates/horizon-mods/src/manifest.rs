@@ -418,9 +418,8 @@ impl Manifest {
         for function in functions {
             if let Some(name) = function.strip_prefix("browser-ext.") {
                 let capability = match name {
-                    "item-facts" | "other-recipes" | "recipe-count" | "recipes-page" => {
-                        Capability::Recipes
-                    }
+                    "item-facts" | "other-recipes" | "recipe-count" | "recipes-page"
+                    | "items-page" => Capability::Recipes,
                     _ => Capability::Ui,
                 };
                 if !self.capabilities.contains(&capability) {
@@ -625,6 +624,7 @@ experimental = ["ui", "recipes"]
             "browser-ext.other-recipes".into(),
             "browser-ext.recipe-count".into(),
             "browser-ext.recipes-page".into(),
+            "browser-ext.items-page".into(),
         ];
         assert!(
             manifest("\"recipes\"")

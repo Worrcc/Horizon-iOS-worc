@@ -250,6 +250,37 @@ impl Game<'_> {
         }
         let cap = self.framerate_limit();
         let scale = self.phone_scale();
+        #[cfg(feature = "mods")]
+        let mod_costs = {
+            let mut costs: Vec<_> = self
+                .mods
+                .mods
+                .entries()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, entry)| {
+                    let id = entry.manifest.as_ref()?.id.clone();
+                    Some((entry.cost, i, id))
+                })
+                .collect();
+            costs.sort_by(|a, b| b.0.cmp(&a.0));
+            let fields = costs
+                .into_iter()
+                .take(4)
+                .map(|(cost, i, id)| {
+                    let fuel = self.mods.mods.last_fuel_used(i).unwrap_or(0);
+                    format!("{id}={}us/{fuel}", cost.as_micros())
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            if fields.is_empty() {
+                String::new()
+            } else {
+                format!(" mod_cost=[{fields}]")
+            }
+        };
+        #[cfg(not(feature = "mods"))]
+        let mod_costs = "";
         let p = &mut self.phone_perf;
         let gpu = self
             .renderer
@@ -286,7 +317,7 @@ impl Game<'_> {
             .gpu_ms
             .map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}"));
         log::info!(
-            "perf: avg_fps={:.1} low_1pct_ms={:.2} low_0.1pct_ms={:.2} cpu_ms={:.2} gpu_ms={} render_distance={} resolution_scale={} fps_cap={} thermal={:?} low_power={} governor={:?} governor_enabled={} resident_mib={}{} slow_frames={} worst_ms={:.1} worst_gpu_ms={} worst=[{}] shadow_ms={} bloom_ms={} shadow_updates_s={:.1}",
+            "perf: avg_fps={:.1} low_1pct_ms={:.2} low_0.1pct_ms={:.2} cpu_ms={:.2} gpu_ms={} render_distance={} resolution_scale={} fps_cap={} thermal={:?} low_power={} governor={:?} governor_enabled={} resident_mib={}{} slow_frames={} worst_ms={:.1} worst_gpu_ms={} worst=[{}] shadow_ms={} bloom_ms={} shadow_updates_s={:.1}{}",
             stats.fps,
             stats.low_1,
             stats.low_01,
@@ -308,6 +339,7 @@ impl Game<'_> {
             stats.scope_ms[0].map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}")),
             stats.scope_ms[1].map_or_else(|| "n/a".into(), |ms| format!("{ms:.2}")),
             stats.shadow_updates_s,
+            mod_costs,
         );
     }
 }

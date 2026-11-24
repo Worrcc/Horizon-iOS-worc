@@ -687,6 +687,28 @@ impl Mod for Guest {
                     same,
                     empty_edges
                 ));
+                let all_items = recipes::items();
+                let mut item_page = Vec::new();
+                let mut start = 0;
+                loop {
+                    let next = browser_ext::items_page(start, 7);
+                    if next.is_empty() {
+                        break;
+                    }
+                    start += next.len() as u32;
+                    item_page.extend(next);
+                }
+                let items_same = item_page.len() == all_items.len()
+                    && item_page
+                        .iter()
+                        .zip(&all_items)
+                        .all(|(a, b)| a.id == b.id && a.name == b.name && a.tags == b.tags);
+                let item_edges = browser_ext::items_page(all_items.len() as u32, 5).is_empty()
+                    && browser_ext::items_page(u32::MAX, u32::MAX).is_empty();
+                chat::show(&format!(
+                    "item page matches {}, empty edges {}",
+                    items_same, item_edges
+                ));
                 let facts = browser_ext::item_facts();
                 let others = browser_ext::other_recipes();
                 chat::show(&format!(

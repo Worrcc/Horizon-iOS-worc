@@ -1071,6 +1071,10 @@ API level 19: browser extensions. Data queries need capability `recipes`; all ot
 
 `type recipe = recipe`
 
+### type `item`
+
+`type item = item`
+
 ### type `stack`
 
 `type stack = stack`
@@ -1177,6 +1181,7 @@ Extra tooltip lines for some of a panel's items.
 | `other-recipes` | `func() -> list<other-recipe>` | Capability `recipes`. The world's recipes of types `recipes.all` can't express, from its data and content mods. Empty on servers that are not Horizon (a client is sent no recipe files). At most 4096, each file at most 16 KiB. |
 | `recipe-count` | `func() -> u32` | Capability `recipes`. How many recipes `recipes.all` holds. |
 | `recipes-page` | `func(start: u32, count: u32) -> list<recipe>` | Capability `recipes`. `count` recipes of `recipes.all` from index `start`, in the same order (fewer at the end, none past it). At most 2048 a call. For big packs, where one `recipes.all` call costs more than a frame's fuel. |
+| `items-page` | `func(start: u32, count: u32) -> list<item>` | Capability `recipes`. API level 35: `count` items of `recipes.items` from index `start`, in the same registry order (fewer at the end, none past it). At most 2048 a call. For big packs and resume/reload, where one `recipes.items` call costs more than a frame's fuel. |
 | `set-recipes` | `func(title: string, tabs: list<stack>, tab: u32, recipes: list<recipe-entry>)` | `browser.set-recipes` with custom layouts mixed in. Same limits, same events (`browser.event.slot-clicked` counts a custom recipe's slots in order, then its result). |
 | `set-bookmarks` | `func(items: list<stack>)` | A second panel left of the screen's window, as JEI's bookmarks (an empty list hides it). At most 1024. Hidden while the screen's recipe book is open. |
 | `set-item-lines` | `func(bookmarks: bool, lines: list<item-lines>)` | Extra tooltip lines under these items' names, for the main panel (`bookmarks` false) or the bookmark panel. Replaces earlier ones for that panel. At most 8 lines of 128 characters per item, 8192 items. Dropped when that panel's items change (`set-items` / `set-bookmarks`). |

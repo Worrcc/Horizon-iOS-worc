@@ -495,8 +495,8 @@ experimental = ["ui", "render", "input", "recipes", "world-read", "container", "
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest also exercises API 34 atmosphere post keys.
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 34);
+    // The UI guest also exercises API 35's paged item reads.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 35);
     // canvas-test now draws items over its canvas screen (level 28).
     assert_eq!(level("canvas_test.hmod"), 28);
 }
@@ -1390,6 +1390,7 @@ fn browser_reads_component_facts_and_other_recipe_files() {
         said(&mut mods, "recipe_facts"),
         [
             "recipe count 0, all 0, count matches true, page matches true, empty edges true",
+            "item page matches true, empty edges true",
             "0 facts, 0 other recipes"
         ]
     );
@@ -1435,6 +1436,7 @@ fn browser_reads_component_facts_and_other_recipe_files() {
         said(&mut mods, "recipe_facts"),
         [
             "recipe count 1, all 1, count matches true, page matches true, empty edges true",
+            "item page matches true, empty edges true",
             "1 facts, 1 other recipes",
             "3: burn 1600, compost 0.3, repaired by [1, 4]",
             "iceandfire:silver: iceandfire:dragonforge {\"type\":\"iceandfire:dragonforge\"}",
@@ -3278,10 +3280,10 @@ fn api25_touch_context_crosses_the_sandbox_and_imports_require_input() {
             .iter()
             .any(|f| f == "input.set-touch-button-context")
     );
-    // The UI guest's newest import is API 34's atmosphere post keys.
+    // The UI guest's newest import is API 35's paged item reads.
     assert_eq!(
         horizon_mods::api_level::needed(functions.iter().map(String::as_str)).0,
-        34
+        35
     );
     let manifest = horizon_mods::Manifest::parse(&UI_MANIFEST.replace("\"input\", ", "")).unwrap();
     assert!(

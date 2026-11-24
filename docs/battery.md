@@ -24,8 +24,9 @@ The `perf:` line is written every ten seconds in a world. The new fields come ri
 - `idle_wakeups_s`, `intr_wakeups_s`: package idle exits and interrupt wake-ups per second; fewer is better.
 - `gpu_ms_s`: the kernel's GPU time for this task per second.
 - `energy_mw`: the kernel's task energy estimate (arm64 iOS only). Compare runs with each other, not with a wattmeter.
+- `mod_cost`: up to four client mods with the highest rolling average hook cost, as `id=average_us/last_fuel`. This attributes the aggregate `mods_frame` span; the last-call fuel is not an average.
 
-A field the OS did not report is left out, never printed as n/a.
+A field the OS did not report is left out, never printed as n/a. A mod that stops also logs which hook it was in and how many work units it used.
 
 ## How to test on the phone
 

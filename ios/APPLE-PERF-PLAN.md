@@ -148,3 +148,21 @@ New order:
    safe choice, apple-a14 a bit faster. Default in this plan: **apple-a12**.
 2. Phone defaults (render distance 8, 60 fps, 75% scale): fine as first-run defaults?
 3. Thermal governor on by default?
+
+## 2026-11-23 Diorama experiment results
+
+Device build `f876c6df8`, Diorama 0.4.1: thermal Nominal throughout, Low Power Mode on, 60 FPS
+cap during play. HUD request 2000 us/grant 500; fullscreen request 6000/grant 4000. Diorama
+advanced at roughly 26-30 callbacks/s, so the phone's low-power gate is a major factor. The
+first HUD fill took 8.87 s (227 callbacks), and after closing fullscreen 3.59 s (107).
+
+Control Pulley runs of the exact installed 0.4.1 artifact (no verification): join focus 102
+frames, saved rejoin 5 frames, fullscreen visible 220 frames. Three changes were rejected after
+measuring against that control: reordering persistence/capture after visible work (120/15/362
+and a final-budget assertion failure), quarter-tile RLE encoding (105/8/226), and half-sized
+tile-save/capture batches (106/7/239). All were reverted; the Diorama tree is clean.
+
+Do not continue with speculative scheduling/config tuning. Next step requires measurement:
+per-mod `mod_cost` diagnostics are implemented in this host snapshot, but also need a new iOS
+build. Host dirty-rectangle upload amplification and storage I/O remain unmeasured. GPU pass
+merging stays deferred until mod stalls are controlled and an LPM-off/120 comparison exists.

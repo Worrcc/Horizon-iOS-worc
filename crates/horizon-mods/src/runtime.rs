@@ -1697,6 +1697,12 @@ impl Mods {
             Err(e) => {
                 let reason = reason(&e);
                 log::warn!("Horizon: mod {} stopped: {reason}", run.store.data().id);
+                log::warn!(
+                    "Horizon: mod {} stopped in the {} hook after {} work units",
+                    run.store.data().id,
+                    if self.framing { "frame" } else { "non-frame" },
+                    entry.last_fuel,
+                );
                 let name = run.store.data().name.clone();
                 self.out.push(Output::Stopped {
                     name,
@@ -2589,6 +2595,15 @@ impl browser_ext::Host for State {
                 .saturating_add((count.min(2048)) as usize)
                 .min(r.recipes.len());
             r.recipes[start..end].to_vec()
+        })
+    }
+    fn items_page(&mut self, start: u32, count: u32) -> Vec<RecipeItem> {
+        self.snapshot.recipes.as_ref().map_or_else(Vec::new, |r| {
+            let start = (start as usize).min(r.items.len());
+            let end = start
+                .saturating_add((count.min(2048)) as usize)
+                .min(r.items.len());
+            r.items[start..end].to_vec()
         })
     }
     fn item_facts(&mut self) -> Vec<ItemFacts> {
