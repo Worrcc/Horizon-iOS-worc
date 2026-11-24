@@ -39,6 +39,11 @@ pub(super) fn allowance(budget: &mut (Option<u64>, usize), tick: u64, limit: usi
     true
 }
 impl server_hooks::Host for State {
+    fn set_lifecycle_hooks(&mut self, config: super::LifecycleConfig) {
+        if self.server {
+            self.lifecycle = (config.server_tick, config.player_respawned, config.save);
+        }
+    }
     fn set_death_drops(&mut self, enabled: bool) {
         if self.server {
             self.death_drops = enabled;

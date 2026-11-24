@@ -536,7 +536,7 @@ pub mod server {
     pub use energy::EnergyPos;
     pub use lookup::TargetKind;
     pub use menus::MenuItem;
-    pub use server_hooks::BehaviourConfig;
+    pub use server_hooks::{BehaviourConfig, LifecycleConfig};
     // The generated WIT type cannot carry a per-type derive here.
     #[allow(clippy::derivable_impls)]
     impl Default for BehaviourConfig {
@@ -677,6 +677,16 @@ pub mod server {
         ) -> bool {
             false
         }
+        /// API 40: the server tick is about to run its levels.
+        fn server_tick_start(&mut self, _tick: u64) {}
+        /// API 40: the server tick's levels and mod work are done.
+        fn server_tick_end(&mut self, _tick: u64) {}
+        /// API 40: a player was placed by a respawn.
+        fn player_respawned(&mut self, _player: &Player, _dimension: &str, _at: DeathPoint) {}
+        /// API 40: the server is about to write its save.
+        fn before_save(&mut self) {}
+        /// API 40: the save finished.
+        fn after_save(&mut self, _saved: bool) {}
         fn channel_message(&mut self, _player: &Player, _name: &str, _data: &[u8]) {}
     }
 
@@ -998,6 +1008,25 @@ macro_rules! export_server_mod {
                     let mut claimed = false;
                     with(|m| claimed = m.player_died(&player, &dimension, at, &drops));
                     claimed
+                }
+                fn server_tick_start(tick: u64) {
+                    with(|m| m.server_tick_start(tick))
+                }
+                fn server_tick_end(tick: u64) {
+                    with(|m| m.server_tick_end(tick))
+                }
+                fn player_respawned(
+                    player: Player,
+                    dimension: String,
+                    at: $crate::server::DeathPoint,
+                ) {
+                    with(|m| m.player_respawned(&player, &dimension, at))
+                }
+                fn before_save() {
+                    with(|m| m.before_save())
+                }
+                fn after_save(saved: bool) {
+                    with(|m| m.after_save(saved))
                 }
                 fn channel_message(player: Player, name: String, data: Vec<u8>) {
                     with(|m| m.channel_message(&player, &name, &data))

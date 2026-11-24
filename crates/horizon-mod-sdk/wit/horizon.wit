@@ -2029,6 +2029,17 @@ interface server-events {
     /// them once with `players.claimed-deaths`. Returning false (or failing)
     /// leaves vanilla drops untouched, so no items are lost.
     player-died: func(player: player, dimension: string, at: death-point, drops: list<death-stack>) -> bool;
+    /// API 40: the server tick is about to run its levels. Opt in with
+    /// `server-hooks.set-lifecycle-hooks`. At most one call per tick.
+    server-tick-start: func(tick: u64);
+    /// API 40: the server tick's levels and mod work are done.
+    server-tick-end: func(tick: u64);
+    /// API 40: a player was placed by a respawn, in their respawn level.
+    player-respawned: func(player: player, dimension: string, at: death-point);
+    /// API 40: the server is about to write its save.
+    before-save: func();
+    /// API 40: the save finished; `saved` is false when it failed.
+    after-save: func(saved: bool);
     /// API 30: optional exports, routed only to the menu's owner; 64 clicks/tick.
     menu-clicked: func(player: player, slot: s32, button: s32, mode: s32);
     /// The owned display menu closed, including replacement, death or leave.
@@ -2160,6 +2171,15 @@ interface server-events {
 /// API level 28: additive server hook opt-in, capability `world`.
 /// Leaves the original server-events.registration record unchanged.
 interface server-hooks {
+    /// API 40: which lifecycle callbacks a server mod wants. All default
+    /// false; disabled callbacks cost no guest calls.
+    record lifecycle-config {
+        server-tick: bool,
+        player-respawned: bool,
+        save: bool,
+    }
+    /// API 40: replace the lifecycle opt-in flags.
+    set-lifecycle-hooks: func(config: lifecycle-config);
     /// API 38: opt in to receiving the dying player's actual drops. The first
     /// running mod to opt in claims them; the rest are not called. Disabled by
     /// default, so vanilla drops are unchanged. May be set during init.

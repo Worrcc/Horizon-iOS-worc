@@ -2018,6 +2018,11 @@ API 29: before a player changes a watched block. Cancel keeps block and item.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `player-died` | `func(player: player, dimension: string, at: death-point, drops: list<death-stack>) -> bool` | API 38: a player died. `drops` are the stacks vanilla would drop, after vanishing-curse removal and native loot hooks, in slot order. Only the first mod to opt in through `server-hooks.set-death-drops` is called. Returning true keeps all drops out of the world; the mod can then read them once with `players.claimed-deaths`. Returning false (or failing) leaves vanilla drops untouched, so no items are lost. |
+| `server-tick-start` | `func(tick: u64)` | API 40: the server tick is about to run its levels. Opt in with `server-hooks.set-lifecycle-hooks`. At most one call per tick. |
+| `server-tick-end` | `func(tick: u64)` | API 40: the server tick's levels and mod work are done. |
+| `player-respawned` | `func(player: player, dimension: string, at: death-point)` | API 40: a player was placed by a respawn, in their respawn level. |
+| `before-save` | `func()` | API 40: the server is about to write its save. |
+| `after-save` | `func(saved: bool)` | API 40: the save finished; `saved` is false when it failed. |
 | `menu-clicked` | `func(player: player, slot: s32, button: s32, mode: s32)` | API 30: optional exports, routed only to the menu's owner; 64 clicks/tick. |
 | `menu-closed` | `func(player: player)` | The owned display menu closed, including replacement, death or leave. |
 | `init` | `func() -> result<registration, string>` | Once, after loading. An error keeps the mod off and is logged. |
@@ -2049,6 +2054,16 @@ Access: capability `world`.
 
 API level 28: additive server hook opt-in, capability `world`. Leaves the original server-events.registration record unchanged.
 
+### record `lifecycle-config`
+
+API 40: which lifecycle callbacks a server mod wants. All default false; disabled callbacks cost no guest calls.
+
+| Field | Type | |
+| --- | --- | --- |
+| `server-tick` | `bool` |  |
+| `player-respawned` | `bool` |  |
+| `save` | `bool` |  |
+
 ### record `behaviour-config`
 
 API 29: all flags default false. Each family has 32 calls/mod/server tick.
@@ -2070,6 +2085,7 @@ API 29: all flags default false. Each family has 32 calls/mod/server tick.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `set-lifecycle-hooks` | `func(config: lifecycle-config)` | API 40: replace the lifecycle opt-in flags. |
 | `set-death-drops` | `func(enabled: bool)` | API 38: opt in to receiving the dying player's actual drops. The first running mod to opt in claims them; the rest are not called. Disabled by default, so vanilla drops are unchanged. May be set during init. |
 | `set-block-uses` | `func(enabled: bool, including-sneaking-item: bool)` | Disabled initially. Sneaking with a nonempty main hand bypasses the hook unless including-sneaking-item is true. May be set during init. |
 | `set-behaviour-hooks` | `func(config: behaviour-config)` | API 29: replace the opt-in flags; disabled flags cost no guest calls. |

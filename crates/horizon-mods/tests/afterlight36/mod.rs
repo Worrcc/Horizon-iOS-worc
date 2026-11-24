@@ -184,7 +184,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        39
+        40
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -254,7 +254,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        39
+        40
     );
 }
 
@@ -367,7 +367,7 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        39
+        40
     );
 }
 
@@ -424,7 +424,7 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        39
+        40
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
@@ -432,4 +432,61 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     .unwrap();
     assert!(manifest.check_imports(["horizon:mods/energy@0.1.0"]).is_ok());
     assert!(manifest.check_imports(["horizon:mods/lookup@0.1.0"]).is_ok());
+}
+
+#[test]
+fn api40_lifecycle_hooks_are_opt_in_and_routed() {
+    let (mut m, p) = setup();
+    // Disabled by default: no output from the lifecycle methods.
+    m.lifecycle_tick(true, 1);
+    assert!(m.drain().is_empty());
+    run(&mut m, &p, "lifecycle40 on");
+    m.lifecycle_tick(true, 7);
+    m.lifecycle_tick(false, 7);
+    m.player_respawned_hook(
+        &p,
+        "minecraft:overworld",
+        DeathPoint {
+            x: 0.0,
+            y: 64.0,
+            z: 0.0,
+        },
+    );
+    m.server_save(true, false);
+    m.server_save(false, true);
+    let lines: Vec<String> = m.drain().into_iter().filter_map(|o| match o {
+        Output::Broadcast { text, .. } => Some(text),
+        Output::Tell { text, .. } => Some(text),
+        _ => None,
+    }).collect();
+    assert_eq!(
+        lines,
+        [
+            "tick start 7",
+            "tick end 7",
+            "respawned minecraft:overworld",
+            "before save",
+            "after save true",
+        ]
+    );
+}
+
+#[test]
+fn api40_hook_level_is_40() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports
+        .iter()
+        .any(|f| f == "server-hooks.set-lifecycle-hooks"));
+    assert_eq!(
+        horizon_mods::api_level::level_of("server-hooks.set-lifecycle-hooks"),
+        Some(40)
+    );
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        40
+    );
 }

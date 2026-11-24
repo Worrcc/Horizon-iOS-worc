@@ -3875,11 +3875,19 @@ impl Game<'_> {
         {
             let g = &host.hub.guests[i];
             let (dimension, at) = (g.dimension.clone(), g.position);
-            self.collect_mod_player_respawn(
-                super::server_mods::run::uuid_string(respawned),
-                dimension,
-                at,
-            );
+            let id = super::server_mods::run::uuid_string(respawned);
+            self.collect_mod_player_respawn(id.clone(), dimension.clone(), at);
+            if let Some(player) = self.server_players(None).into_iter().find(|p| p.id == id) {
+                self.mods.mods.player_respawned_hook(
+                    &player,
+                    &dimension,
+                    horizon_mods::DeathPoint {
+                        x: at[0],
+                        y: at[1],
+                        z: at[2],
+                    },
+                );
+            }
         }
         // The player left another level for the respawn point's: placed for
         // good they tell the mods now, else the trip that is still carrying

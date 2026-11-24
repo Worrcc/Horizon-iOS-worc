@@ -16054,15 +16054,22 @@ impl Game<'_> {
         if dedicated {
             dedicated::events::record_server("saving", serde_json::json!({}));
         }
-        self.save_level(wait)?;
-        self.save_parked_levels(wait)?;
-        self.save_game_metadata()?;
-        let _ = self.finish_player_autosaves(wait);
-        self.native_world_saved(wait);
-        if dedicated {
+        #[cfg(feature = "mods")]
+        self.mods.mods.server_save(true, false);
+        let result = (|| {
+            self.save_level(wait)?;
+            self.save_parked_levels(wait)?;
+            self.save_game_metadata()?;
+            let _ = self.finish_player_autosaves(wait);
+            self.native_world_saved(wait);
+            Ok(())
+        })();
+        #[cfg(feature = "mods")]
+        self.mods.mods.server_save(false, result.is_ok());
+        if result.is_ok() && dedicated {
             dedicated::events::record_server("saved", serde_json::json!({}));
         }
-        Ok(())
+        result
     }
     fn finish_player_autosaves(&mut self, wait: bool) -> Result<bool> {
         let saved = self.player_autosaves.completed(wait);

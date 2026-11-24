@@ -100,7 +100,7 @@ use lookup_host::LookupDirectory;
 mod behaviour;
 mod player_world;
 pub use behaviour::*;
-pub use server_bindings::horizon::mods::server_hooks::BehaviourConfig;
+pub use server_bindings::horizon::mods::server_hooks::{BehaviourConfig, LifecycleConfig};
 mod channel_host;
 pub use channel_host::{CHANNEL_DATA, CHANNEL_MESSAGES, ChannelPeers};
 mod atmosphere_host;
@@ -1139,6 +1139,8 @@ struct State {
     server: bool,
     /// API 38: this server mod opted in to claiming player death drops.
     death_drops: bool,
+    /// API 40: (tick, respawn, save) lifecycle opt-ins.
+    lifecycle: (bool, bool, bool),
     /// API 39: energy operations allowed this tick (64).
     energy_budget: (Option<u64>, usize),
     /// API 39: the shared provider directory.
@@ -1347,6 +1349,83 @@ impl Mods {
             }
         });
         result == Some(true)
+    }
+    /// API 40: call the opted-in server mods at the start or end of a tick.
+    pub fn lifecycle_tick(&mut self, start: bool, tick: u64) {
+        for i in 0..self.entries.len() {
+            let f = match self.entries[i].run.as_ref() {
+                Some(r) if r.store.data().lifecycle.0 => match &r.hooks {
+                    Hooks::Server(m, _) if start => m.server_tick_start,
+                    Hooks::Server(m, _) => m.server_tick_end,
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(f) = f {
+                self.call(i, FUEL_EVENT, |r| {
+                    f.call(&mut r.store, (tick,))?;
+                    Ok(())
+                });
+            }
+        }
+    }
+    /// API 40: a player was placed by a respawn.
+    pub fn player_respawned_hook(
+        &mut self,
+        player: &ServerPlayer,
+        dimension: &str,
+        at: DeathPoint,
+    ) {
+        for i in 0..self.entries.len() {
+            let f = match self.entries[i].run.as_ref() {
+                Some(r) if r.store.data().lifecycle.1 => match &r.hooks {
+                    Hooks::Server(m, _) => m.player_respawned,
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(f) = f {
+                let (player, dimension, at) = (player.clone(), dimension.to_owned(), at.clone());
+                self.call(i, FUEL_EVENT, |r| {
+                    f.call(&mut r.store, (player, dimension, at))?;
+                    Ok(())
+                });
+            }
+        }
+    }
+    /// API 40: around a server save.
+    pub fn server_save(&mut self, before: bool, saved: bool) {
+        for i in 0..self.entries.len() {
+            if before {
+                let f = match self.entries[i].run.as_ref() {
+                    Some(r) if r.store.data().lifecycle.2 => match &r.hooks {
+                        Hooks::Server(m, _) => m.before_save,
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(f) = f {
+                    self.call(i, FUEL_EVENT, |r| {
+                        f.call(&mut r.store, ())?;
+                        Ok(())
+                    });
+                }
+            } else {
+                let f = match self.entries[i].run.as_ref() {
+                    Some(r) if r.store.data().lifecycle.2 => match &r.hooks {
+                        Hooks::Server(m, _) => m.after_save,
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(f) = f {
+                    self.call(i, FUEL_EVENT, |r| {
+                        f.call(&mut r.store, (saved,))?;
+                        Ok(())
+                    });
+                }
+            }
+        }
     }
     pub fn lend_inventories(&mut self, inventories: Box<dyn PlayerInventories>) {
         *self
@@ -1573,6 +1652,7 @@ impl Mods {
             atmosphere: atmosphere_host::AtmosphereState::new(m.namespaces.clone()),
             server,
             death_drops: false,
+            lifecycle: (false, false, false),
             energy_budget: (None, 0),
             lookup: self.lookup.clone(),
             storage_move_budget: (None, 0),
@@ -5378,6 +5458,7 @@ mod entity_tests {
             atmosphere: Default::default(),
             server: false,
             death_drops: false,
+            lifecycle: (false, false, false),
             energy_budget: (None, 0),
             lookup: Default::default(),
             storage_move_budget: (None, 0),

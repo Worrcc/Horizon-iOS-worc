@@ -5,6 +5,7 @@ use horizon_mod_sdk::server::{
 };
 mod death38;
 mod interop39;
+mod lifecycle40;
 mod machines30;
 mod machine37;
 mod player_world31;
@@ -25,6 +26,7 @@ impl ServerMod for Guest {
                 .command("machine37")
                 .command("death38")
                 .command("interop39")
+                .command("lifecycle40")
                 .command("pw31")
                 .command("behaviour29")
                 .command("schedule29")
@@ -161,6 +163,9 @@ impl ServerMod for Guest {
         }
         if name == "interop39" {
             return interop39::run(player, args);
+        }
+        if name == "lifecycle40" {
+            return lifecycle40::run(player, args);
         }
         if name == "data29" {
             let pos = BlockChangePos { x: 0, y: 64, z: 0 };
@@ -567,6 +572,21 @@ impl ServerMod for Guest {
     ) -> bool {
         players::tell(&player.id, "heard use");
         state == "test:terminal"
+    }
+    fn server_tick_start(&mut self, tick: u64) {
+        lifecycle40::tick_start(tick);
+    }
+    fn server_tick_end(&mut self, tick: u64) {
+        lifecycle40::tick_end(tick);
+    }
+    fn player_respawned(&mut self, player: &Player, dimension: &str, _at: horizon_mod_sdk::server::DeathPoint) {
+        lifecycle40::respawned(player, dimension);
+    }
+    fn before_save(&mut self) {
+        lifecycle40::before_save();
+    }
+    fn after_save(&mut self, saved: bool) {
+        lifecycle40::after_save(saved);
     }
     fn player_died(
         &mut self,
