@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.82",
+          "buildVersion": "0.2.0.82",
+          "date": "2026-11-24T04:53:00Z",
+          "localizedDescription": "Branch claude/jei-paging-api, commit 2412faf1c.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-82/Horizon.ipa",
+          "size": 34071859,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.81",
           "buildVersion": "0.2.0.81",
           "date": "2026-11-23T02:10:59Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-71/Horizon.ipa",
           "size": 34549382,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.70",
-          "buildVersion": "0.2.0.70",
-          "date": "2026-11-13T20:21:17Z",
-          "localizedDescription": "Branch claude/storage-api, commit a09be38cf.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-70/Horizon.ipa",
-          "size": 34517787,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.81",
-      "versionDate": "2026-11-23T02:10:59Z",
-      "versionDescription": "Branch claude/launcher-mods-shaders-controller-xfv3kk, commit f876c6df8.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-81/Horizon.ipa",
-      "size": 34065142
+      "version": "0.2.0.82",
+      "versionDate": "2026-11-24T04:53:00Z",
+      "versionDescription": "Branch claude/jei-paging-api, commit 2412faf1c.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-82/Horizon.ipa",
+      "size": 34071859
     }
   ],
   "news": []
