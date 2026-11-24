@@ -518,6 +518,7 @@ pub mod server {
         Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, DeathPoint, DeathStack,
         Decision, Guest as __Guest, Hand as BehaviourHand, Registration, ServerCommand,
     };
+    pub use exports::horizon::mods::net_events::Guest as __NetGuest;
     pub use horizon::mods::entities::{
         self, Area, AttributeChange, Death, EffectChange, Entity, HurtEvent, Mount, Order,
         Particles, Point, Rider, Sound, StrikeHit, Target, Walk,
@@ -532,7 +533,7 @@ pub mod server {
         ParticleBurst, Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData,
         WorldTime,
     };
-    pub use horizon::mods::{attachments, channel, energy, lookup, menus, server_hooks};
+    pub use horizon::mods::{attachments, channel, energy, lookup, menus, net, server_hooks};
     pub use attachments::{AttachmentTarget, BlockRef, ChunkRef};
     pub use energy::EnergyPos;
     pub use lookup::TargetKind;
@@ -678,6 +679,8 @@ pub mod server {
         ) -> bool {
             false
         }
+        /// API 42: a message from another server mod.
+        fn net_message(&mut self, _from: &str, _name: &str, _data: &[u8]) {}
         /// API 41: a watched content block with a container was ticked.
         fn machine_ticked(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
         /// API 40: the server tick is about to run its levels.
@@ -865,6 +868,11 @@ macro_rules! export_server_mod {
                 })
             }
             struct Export;
+            impl $crate::server::__NetGuest for Export {
+                fn net_message(from: String, name: String, data: Vec<u8>) {
+                    with(|m| m.net_message(&from, &name, &data));
+                }
+            }
             impl $crate::server::__Guest for Export {
                 fn init() -> Result<Registration, String> {
                     let (m, registration) = <$t as ServerMod>::init()?;

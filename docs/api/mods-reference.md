@@ -27,6 +27,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `energy` | [`energy`](#energy) | read and transfer energy in machines that store it |
 | `lookup` | [`lookup`](#lookup) | see which mod provides an API for a block, item or creature |
 | `attachments` | [`attachments`](#attachments) | save its own data on blocks, chunks, worlds and creatures |
+| `net` | [`net`](#net) | exchange messages with other server mods |
 
 ## World `channel-host`
 
@@ -46,8 +47,8 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `attachments`, `server-hooks`, `channel`
-- Exports (what the mod provides): `server-events`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `attachments`, `net`, `server-hooks`, `channel`
+- Exports (what the mod provides): `server-events`, `net-events`
 
 ## World `horizon-ui-mod`
 
@@ -1615,6 +1616,18 @@ A plain item stack; components are not carried by this API.
 | `game-rule` | `func(name: string) -> option<string>` | Current server rule value as text, or none for an unknown rule. Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias. |
 | `difficulty` | `func() -> string` | peaceful, easy, normal or hard, as of the start of this call. |
 
+## `net`
+
+Access: capability `net`.
+
+API 42: cross-mod messages on a Horizon server, capability `net`. Payload names are registered per mod; only mods that registered the same name receive it. Messages are delivered on the next server tick, so a mod never re-enters another mod's call.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `register` | `func(name: string) -> result<_, string>` | Register a payload name for this mod, at most 16 names. |
+| `send-to-mod` | `func(to: string, name: string, data: list<u8>) -> result<_, string>` | Send to one running mod, by its manifest id. The target must have registered `name`; otherwise the message is dropped. |
+| `send-to-all` | `func(name: string, data: list<u8>) -> result<_, string>` | Send to every running mod that registered `name`, except this one. |
+
 ## `attachments`
 
 Access: capability `attachments`.
@@ -2092,6 +2105,16 @@ API 29: before a player changes a watched block. Cancel keeps block and item.
 | `block-breaking` | `func(player: player, pos: block-pos, state: string) -> decision` | Before player destruction of a watched block. Cancel keeps it and its drops. |
 | `block-placing` | `func(player: player, pos: block-pos, state: string, item: string) -> decision` | Before engine placement of a watched candidate state from item. Cancel preserves block and hand. |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
+
+## `net-events`
+
+Access: exported by the mod: the game calls it.
+
+API 42: optional export for capability `net`: messages from other mods.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `net-message` | `func(from: string, name: string, data: list<u8>)` | The sending mod's id, the registered payload name and its bytes. |
 
 ## `server-hooks`
 

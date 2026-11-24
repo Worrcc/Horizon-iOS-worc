@@ -1686,6 +1686,20 @@ interface %world {
     difficulty: func() -> string;
 }
 
+/// API 42: cross-mod messages on a Horizon server, capability `net`.
+/// Payload names are registered per mod; only mods that registered the same
+/// name receive it. Messages are delivered on the next server tick, so a mod
+/// never re-enters another mod's call.
+interface net {
+    /// Register a payload name for this mod, at most 16 names.
+    register: func(name: string) -> result<_, string>;
+    /// Send to one running mod, by its manifest id. The target must have
+    /// registered `name`; otherwise the message is dropped.
+    send-to-mod: func(to: string, name: string, data: list<u8>) -> result<_, string>;
+    /// Send to every running mod that registered `name`, except this one.
+    send-to-all: func(name: string, data: list<u8>) -> result<_, string>;
+}
+
 /// API 41: host-managed, persistent byte values attached to game objects,
 /// capability `attachments`, server mods only. Values are saved with the
 /// mod's data and restored on load; no other mod can read them.
@@ -2197,6 +2211,12 @@ interface server-events {
     block-placed: func(player: player, pos: block-pos, state: string);
 }
 
+/// API 42: optional export for capability `net`: messages from other mods.
+interface net-events {
+    /// The sending mod's id, the registered payload name and its bytes.
+    net-message: func(%from: string, name: string, data: list<u8>);
+}
+
 /// API level 28: additive server hook opt-in, capability `world`.
 /// Leaves the original server-events.registration record unchanged.
 interface server-hooks {
@@ -2603,9 +2623,11 @@ world horizon-server-mod {
     import energy;
     import lookup;
     import attachments;
+    import net;
     import server-hooks;
     import channel;
     export server-events;
+    export net-events;
 }
 
 /// A mod with widgets (capability `ui`): the SDK builds every mod against

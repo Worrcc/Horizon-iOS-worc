@@ -1498,6 +1498,7 @@ impl Game<'_> {
                 | Output::Menu(_)
                 | Output::MachineStackWrite(_)
                 | Output::EnergyChange(_)
+                | Output::NetMessage(_)
                 | Output::BlockDataWrite(_)
                 | Output::BreakProgress { .. }
                 | Output::StorageDataWrite(_)

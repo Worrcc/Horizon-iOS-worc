@@ -1,8 +1,9 @@
 //! API 36/37: server recipe queries and component-safe machine writes.
 use super::*;
 use horizon_mods::{
-    BlockChangePos, DeathPoint, DeathStack, GameMode, MachineStack, MachineTick, PlayerDeathDrops,
-    PlayerPoint, Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes, ServerPlayer, WorldView,
+    BlockChangePos, DeathPoint, DeathStack, GameMode, MachineStack, MachineTick, NetMessage,
+    PlayerDeathDrops, PlayerPoint, Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes,
+    ServerPlayer, WorldView,
 };
 use std::sync::Arc;
 
@@ -184,7 +185,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        41
+        42
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -254,7 +255,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        41
+        42
     );
 }
 
@@ -367,7 +368,7 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        41
+        42
     );
 }
 
@@ -424,7 +425,7 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        41
+        42
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
@@ -487,7 +488,7 @@ fn api40_hook_level_is_40() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        41
+        42
     );
 }
 
@@ -531,6 +532,55 @@ fn api41_functions_are_level_41() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        41
+        42
+    );
+}
+
+#[test]
+fn api42_net_registers_sends_and_delivers() {
+    let (mut m, p) = setup();
+    run(&mut m, &p, "net42 register");
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "net42 send"));
+        m.drain()
+    };
+    let messages: Vec<_> = out.iter().filter_map(|o| match o {
+        Output::NetMessage(message) => Some(message),
+        _ => None,
+    }).collect();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "test_api20_server");
+    assert_eq!(messages[0].name, "demo");
+    assert_eq!(messages[0].data, vec![1, 2, 3]);
+    // A message from another mod is delivered on the next tick.
+    m.receive_net(NetMessage {
+        from: "other".into(),
+        to: None,
+        name: "demo".into(),
+        data: vec![9],
+    });
+    m.deliver_net();
+    assert_eq!(
+        m.drain().into_iter().filter_map(|o| match o {
+            Output::Broadcast { text, .. } => Some(text),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        ["net from other demo 1"]
+    );
+}
+
+#[test]
+fn api42_functions_are_level_42() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "net.send-to-all"));
+    assert_eq!(horizon_mods::api_level::level_of("net.register"), Some(42));
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        42
     );
 }

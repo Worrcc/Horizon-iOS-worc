@@ -7,6 +7,7 @@ mod death38;
 mod interop39;
 mod interop41;
 mod lifecycle40;
+mod net42;
 mod machines30;
 mod machine37;
 mod player_world31;
@@ -29,6 +30,7 @@ impl ServerMod for Guest {
                 .command("interop39")
                 .command("lifecycle40")
                 .command("interop41")
+                .command("net42")
                 .command("pw31")
                 .command("behaviour29")
                 .command("schedule29")
@@ -171,6 +173,9 @@ impl ServerMod for Guest {
         }
         if name == "interop41" {
             return interop41::run(player, args);
+        }
+        if name == "net42" {
+            return net42::run(player, args);
         }
         if name == "data29" {
             let pos = BlockChangePos { x: 0, y: 64, z: 0 };
@@ -577,6 +582,9 @@ impl ServerMod for Guest {
     ) -> bool {
         players::tell(&player.id, "heard use");
         state == "test:terminal"
+    }
+    fn net_message(&mut self, from: &str, name: &str, data: &[u8]) {
+        players::broadcast(&format!("net from {from} {name} {}", data.len()));
     }
     fn machine_ticked(&mut self, dimension: &str, pos: BlockPos, state: &str) {
         players::broadcast(&format!("machine {dimension} {} {state}", pos.y));

@@ -5,7 +5,7 @@ use server_bindings::{
     horizon::mods::{entities, players, world as mod_world},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
@@ -99,6 +99,7 @@ use attachments_host::AttachmentStore;
 mod energy_host;
 mod lookup_host;
 use lookup_host::LookupDirectory;
+mod net_host;
 mod behaviour;
 mod player_world;
 pub use behaviour::*;
@@ -283,6 +284,15 @@ pub struct EnergyChange {
     pub before: (u64, u64),
     pub kind: EnergyKind,
     pub amount: u64,
+}
+
+/// API 42: a queued cross-mod message with the state it was planned under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetMessage {
+    pub from: String,
+    pub to: Option<String>,
+    pub name: String,
+    pub data: Vec<u8>,
 }
 
 /// API 41: one watched machine tick, as the game saw it.
@@ -536,6 +546,8 @@ pub enum Output {
     Menu(MenuOperation),
     /// API 37: a preimage-checked machine slot write, applied after hooks.
     MachineStackWrite(MachineStackWrite),
+    /// API 42: a queued cross-mod message.
+    NetMessage(NetMessage),
     /// API 39: a preimage-checked energy change, applied after hooks.
     EnergyChange(EnergyChange),
     BlockDataWrite(BlockDataWrite),
@@ -1155,6 +1167,10 @@ struct State {
     attachments: AttachmentStore,
     /// API 41: block ids whose machines get a tick callback.
     machine_watches: Vec<String>,
+    /// API 42: payload names this mod registered.
+    net_names: Vec<String>,
+    /// API 42: net messages allowed this tick (64).
+    net_budget: (Option<u64>, usize),
     /// API 39: energy operations allowed this tick (64).
     energy_budget: (Option<u64>, usize),
     /// API 39: the shared provider directory.
@@ -1179,6 +1195,8 @@ pub struct Mods {
     menu_leases: machines::MenuLeases,
     /// API 39: the provider directory shared by every running mod.
     lookup: LookupDirectory,
+    /// API 42: messages to deliver on the next server tick.
+    net_inbox: VecDeque<NetMessage>,
     container_shift: ContainerShift,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
@@ -1719,6 +1737,8 @@ impl Mods {
             lifecycle: (false, false, false),
             attachments: AttachmentStore::load(&attachment_path),
             machine_watches: Vec::new(),
+            net_names: Vec::new(),
+            net_budget: (None, 0),
             energy_budget: (None, 0),
             lookup: self.lookup.clone(),
             storage_move_budget: (None, 0),
@@ -2606,6 +2626,48 @@ impl Mods {
         std::mem::take(&mut self.out)
     }
 
+    /// API 42: queue a message for delivery on the next server tick.
+    pub fn receive_net(&mut self, message: NetMessage) {
+        if self.net_inbox.len() < 4096 {
+            self.net_inbox.push_back(message);
+        }
+    }
+    /// API 42: deliver queued messages to the mods that registered the name.
+    pub fn deliver_net(&mut self) {
+        let inbox = std::mem::take(&mut self.net_inbox);
+        for message in inbox {
+            for i in 0..self.entries.len() {
+                let (registered, callback) = match self.entries[i].run.as_ref() {
+                    Some(r)
+                        if r.store.data().id != message.from
+                            && message
+                                .to
+                                .as_ref()
+                                .is_none_or(|to| to == &r.store.data().id)
+                            && r.store.data().net_names.contains(&message.name) =>
+                    {
+                        (true, match &r.hooks {
+                            Hooks::Server(m, _) => m.net_message,
+                            _ => None,
+                        })
+                    }
+                    _ => (false, None),
+                };
+                if !registered {
+                    continue;
+                }
+                if let Some(f) = callback {
+                    let from = message.from.clone();
+                    let name = message.name.clone();
+                    let data = message.data.clone();
+                    self.call(i, FUEL_EVENT, |r| {
+                        f.call(&mut r.store, (from, name, data))?;
+                        Ok(())
+                    });
+                }
+            }
+        }
+    }
     /// API 41: write each mod's host-managed attachments beside its storage.
     pub fn save_attachments(&mut self) {
         for i in 0..self.entries.len() {
@@ -2701,6 +2763,8 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
         |s| s,
     )
     .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::net::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+        .map_err(|e| e.to_string())?;
     // Orders are imported by mods. Their variant grows over time, but
     // Wasmtime's typed bindings require an identical case list. Decode
     // by case name so components built against earlier subsets keep
@@ -5554,6 +5618,8 @@ mod entity_tests {
             lifecycle: (false, false, false),
             attachments: AttachmentStore::default(),
             machine_watches: Vec::new(),
+            net_names: Vec::new(),
+            net_budget: (None, 0),
             energy_budget: (None, 0),
             lookup: Default::default(),
             storage_move_budget: (None, 0),

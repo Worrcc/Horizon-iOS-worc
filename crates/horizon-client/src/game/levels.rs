@@ -474,6 +474,8 @@ impl Game<'_> {
         {
             self.native_lifecycle_server_tick_start(running);
             #[cfg(feature = "mods")]
+            self.mods.mods.deliver_net();
+            #[cfg(feature = "mods")]
             self.mods.mods.lifecycle_tick(true, self.ticks);
             #[cfg(feature = "mods")]
             if self.mods.mods.wants_machine_ticks() {

@@ -353,6 +353,9 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::EnergyChange(plan) => {
                 format!("queued {:?} of {} energy", plan.kind, plan.amount)
             }
+            Output::NetMessage(message) => {
+                format!("queued net message {} ({} bytes)", message.name, message.data.len())
+            }
             Output::SpawnItemWithData { item, count, .. } => {
                 format!("queued dropping {count} {item} with data")
             }

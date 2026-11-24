@@ -48,6 +48,8 @@ pub(super) struct ServerCallbacks {
     pub player_respawned: Option<TypedFunc<(ServerPlayer, String, DeathPoint), ()>>,
     pub before_save: Option<TypedFunc<(), ()>>,
     pub after_save: Option<TypedFunc<(bool,), ()>>,
+    /// API 42: from the separate `net-events` export interface.
+    pub net_message: Option<TypedFunc<(String, String, Vec<u8>), ()>>,
     pub menu_clicked: Option<TypedFunc<(ServerPlayer, i32, i32, i32), ()>>,
     pub menu_closed: Option<TypedFunc<(ServerPlayer,), ()>>,
     pub channel: Option<TypedFunc<(ServerPlayer, String, Vec<u8>), ()>>,
@@ -70,6 +72,12 @@ impl ServerCallbacks {
                     .ok_or_else(|| wasmtime::Error::msg(concat!("missing server-events.", $name)))?
             };
         }
+        let net_message = instance
+            .get_export_index(&mut *store, None, "horizon:mods/net-events@0.1.0")
+            .and_then(|net| {
+                instance.get_export_index(&mut *store, Some(&net), "net-message")
+            })
+            .and_then(|i| instance.get_typed_func(&mut *store, i).ok());
         Ok(Self {
             init: required!("init"),
             tick: required!("tick"),
@@ -99,6 +107,7 @@ impl ServerCallbacks {
             player_respawned: get!("player-respawned"),
             before_save: get!("before-save"),
             after_save: get!("after-save"),
+            net_message,
             channel: get!("channel-message"),
             menu_clicked: get!("menu-clicked"),
             menu_closed: get!("menu-closed"),

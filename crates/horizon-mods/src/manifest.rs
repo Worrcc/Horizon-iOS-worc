@@ -135,9 +135,12 @@ pub enum Capability {
     /// Host-managed persistent byte values on game objects (server mods;
     /// interface `attachments`, API level 41, experimental).
     Attachments,
+    /// Cross-mod messages between running server mods (capability `net`,
+    /// API level 42, experimental).
+    Net,
 }
 impl Capability {
-    pub const ALL: [Capability; 20] = [
+    pub const ALL: [Capability; 21] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -158,6 +161,7 @@ impl Capability {
         Capability::Energy,
         Capability::Lookup,
         Capability::Attachments,
+        Capability::Net,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -171,6 +175,7 @@ impl Capability {
                 | Capability::Energy
                 | Capability::Lookup
                 | Capability::Attachments
+                | Capability::Net
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -196,6 +201,7 @@ impl Capability {
             Capability::Energy => "energy",
             Capability::Lookup => "lookup",
             Capability::Attachments => "attachments",
+            Capability::Net => "net",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -215,6 +221,7 @@ impl Capability {
                 | Capability::Energy
                 | Capability::Lookup
                 | Capability::Attachments
+                | Capability::Net
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -252,6 +259,7 @@ impl Capability {
             Capability::Energy => "read and transfer energy in machines that store it",
             Capability::Lookup => "see which mod provides an API for a block, item or creature",
             Capability::Attachments => "save its own data on blocks, chunks, worlds and creatures",
+            Capability::Net => "exchange messages with other server mods",
         }
     }
     /// What the player reads, including a mod's declared disk quota.
@@ -316,6 +324,7 @@ impl fmt::Display for Capability {
             Capability::Energy => "energy",
             Capability::Lookup => "lookup",
             Capability::Attachments => "attachments",
+            Capability::Net => "net",
         };
         f.write_str(name)
     }

@@ -1956,6 +1956,10 @@ pub(super) mod run {
                         self.apply_mod_machine_stacks(plan, host.as_deref_mut())
                     }
                     Output::EnergyChange(plan) => self.apply_mod_energy(plan),
+                    Output::NetMessage(message) => {
+                        self.mods.mods.receive_net(message);
+                        Ok(())
+                    }
                     Output::BreakProgress {
                         mod_id, pos, stage, ..
                     } => {
@@ -2452,6 +2456,9 @@ pub(super) mod run {
                 }
                 Output::PlaySoundTo { player, sound } => {
                     self.apply_mod_sound_to(host, &player, &sound);
+                }
+                Output::NetMessage(message) => {
+                    self.mods.mods.receive_net(message);
                 }
                 operation @ (Output::BlockDataWrite(_)
                 | Output::MachineStackWrite(_)
