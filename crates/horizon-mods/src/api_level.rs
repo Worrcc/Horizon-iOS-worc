@@ -7,13 +7,16 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 40;
+pub const LEVEL: u32 = 41;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 212] = [
+pub const FUNCTIONS: [(&str, u32); 215] = [
+    ("attachments.set-attachment", 41),
+    ("attachments.attachment", 41),
+    ("server-hooks.watch-machines", 41),
     ("server-hooks.set-lifecycle-hooks", 40),
     ("lookup.unregister", 39),
     ("lookup.register", 39),

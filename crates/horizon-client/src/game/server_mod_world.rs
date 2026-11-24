@@ -142,6 +142,32 @@ impl Game<'_> {
         out
     }
 
+    /// API 41: loaded content blocks with containers, for watched-machine ticks.
+    pub(super) fn mod_machine_tick_snapshot(&self) -> Vec<horizon_mods::MachineTick> {
+        let mut out = Vec::new();
+        let mut add = |dimension: &str, world: &World| {
+            for (&pos, entity) in &world.block_entities {
+                if slots(entity).is_empty() || !world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4))
+                {
+                    continue;
+                }
+                out.push(horizon_mods::MachineTick {
+                    dimension: dimension.to_owned(),
+                    pos,
+                    state: super::server_mods::run::state_string(
+                        self.pack.assets.registry,
+                        world.block(pos.0, pos.1, pos.2),
+                    ),
+                });
+            }
+        };
+        add(self.dim.id(), &self.world);
+        for (dimension, world) in self.levels.all_parked_worlds() {
+            add(dimension.id(), world);
+        }
+        out
+    }
+
     /// API 39: energy of loaded content blocks, built only while a mod reads it.
     pub(super) fn mod_energy_snapshot(&self) -> EnergySnapshot {
         let mut out = HashMap::new();

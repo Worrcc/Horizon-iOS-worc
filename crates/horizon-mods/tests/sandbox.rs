@@ -144,8 +144,8 @@ name = "API20 Server"
 version = "0.1.0"
 api = "0.3"
 side = "server"
-capabilities = ["players", "world", "channel", "energy", "lookup"]
-experimental = ["players", "world", "channel", "energy", "lookup"]
+capabilities = ["players", "world", "channel", "energy", "lookup", "attachments"]
+experimental = ["players", "world", "channel", "energy", "lookup", "attachments"]
 "#
                 .into(),
             ),
@@ -3745,7 +3745,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     // The server guest also exercises API 36-39 queries, writes, drops and interop.
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        40
+        41
     );
 }
 

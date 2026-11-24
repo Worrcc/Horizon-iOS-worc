@@ -1686,6 +1686,30 @@ interface %world {
     difficulty: func() -> string;
 }
 
+/// API 41: host-managed, persistent byte values attached to game objects,
+/// capability `attachments`, server mods only. Values are saved with the
+/// mod's data and restored on load; no other mod can read them.
+interface attachments {
+    /// A chunk column in a dimension.
+    record chunk-ref { dimension: string, x: s32, z: s32 }
+    /// A block in a dimension.
+    record block-ref { dimension: string, x: s32, y: s32, z: s32 }
+    /// Which object a value hangs from. Entities are the content mobs'
+    /// runtime ids, as `entities.mobs` reports them.
+    variant attachment-target {
+        entity(u32),
+        chunk(chunk-ref),
+        %world(string),
+        block(block-ref),
+    }
+    /// Set or remove (`none`) this mod's value under `key`, at most 4096
+    /// bytes. At most 4096 keys and 4 MiB per mod in total.
+    set-attachment: func(target: attachment-target, key: string, value: option<list<u8>>) -> result<_, string>;
+    /// This mod's value, or none. Host-managed: the guest never sees it in
+    /// the object's saved NBT.
+    attachment: func(target: attachment-target, key: string) -> option<list<u8>>;
+}
+
 /// API 39: shared energy storage, capability `energy`, server mods only.
 /// Energy lives on a content mod's block entity as a saved `horizon:energy`
 /// compound, so it survives reloads and is visible to every mod with this
@@ -2031,6 +2055,11 @@ interface server-events {
     player-died: func(player: player, dimension: string, at: death-point, drops: list<death-stack>) -> bool;
     /// API 40: the server tick is about to run its levels. Opt in with
     /// `server-hooks.set-lifecycle-hooks`. At most one call per tick.
+    /// API 41: a watched content block with a container was ticked. At most
+    /// 32 calls per mod per tick; opt in with `server-hooks.watch-machines`.
+    machine-ticked: func(dimension: string, pos: block-pos, state: string);
+    /// API 40: the server tick is about to run its levels. Opt in with
+    /// `server-hooks.set-lifecycle-hooks`. At most one call per tick.
     server-tick-start: func(tick: u64);
     /// API 40: the server tick's levels and mod work are done.
     server-tick-end: func(tick: u64);
@@ -2171,6 +2200,9 @@ interface server-events {
 /// API level 28: additive server hook opt-in, capability `world`.
 /// Leaves the original server-events.registration record unchanged.
 interface server-hooks {
+    /// API 41: receive `machine-ticked` for content blocks whose id matches,
+    /// at most 64 exact ids or `namespace:*`. Same rules as watch-blocks.
+    watch-machines: func(ids: list<string>) -> result<_, string>;
     /// API 40: which lifecycle callbacks a server mod wants. All default
     /// false; disabled callbacks cost no guest calls.
     record lifecycle-config {
@@ -2570,6 +2602,7 @@ world horizon-server-mod {
     import entities;
     import energy;
     import lookup;
+    import attachments;
     import server-hooks;
     import channel;
     export server-events;

@@ -26,6 +26,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `atmosphere` | [`atmosphere`](#atmosphere) | change the colours and distance of fog and the sky, and show particle effects and sky sprites |
 | `energy` | [`energy`](#energy) | read and transfer energy in machines that store it |
 | `lookup` | [`lookup`](#lookup) | see which mod provides an API for a block, item or creature |
+| `attachments` | [`attachments`](#attachments) | save its own data on blocks, chunks, worlds and creatures |
 
 ## World `channel-host`
 
@@ -45,7 +46,7 @@ A client mod: runs in the player's game.
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `server-hooks`, `channel`
+- Imports (what the game offers): `log`, `storage`, `players`, `world`, `menus`, `entities`, `energy`, `lookup`, `attachments`, `server-hooks`, `channel`
 - Exports (what the mod provides): `server-events`
 
 ## World `horizon-ui-mod`
@@ -1614,6 +1615,49 @@ A plain item stack; components are not carried by this API.
 | `game-rule` | `func(name: string) -> option<string>` | Current server rule value as text, or none for an unknown rule. Uses 26.3 names (mob_griefing, minecraft:mob_griefing); mobGriefing is an alias. |
 | `difficulty` | `func() -> string` | peaceful, easy, normal or hard, as of the start of this call. |
 
+## `attachments`
+
+Access: capability `attachments`.
+
+API 41: host-managed, persistent byte values attached to game objects, capability `attachments`, server mods only. Values are saved with the mod's data and restored on load; no other mod can read them.
+
+### record `chunk-ref`
+
+A chunk column in a dimension.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `x` | `s32` |  |
+| `z` | `s32` |  |
+
+### record `block-ref`
+
+A block in a dimension.
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `x` | `s32` |  |
+| `y` | `s32` |  |
+| `z` | `s32` |  |
+
+### variant `attachment-target`
+
+Which object a value hangs from. Entities are the content mobs' runtime ids, as `entities.mobs` reports them.
+
+| Case | Payload | |
+| --- | --- | --- |
+| `entity` | `u32` |  |
+| `chunk` | `chunk-ref` |  |
+| `world` | `string` |  |
+| `block` | `block-ref` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `set-attachment` | `func(target: attachment-target, key: string, value: option<list<u8>>) -> result<_, string>` | Set or remove (`none`) this mod's value under `key`, at most 4096 bytes. At most 4096 keys and 4 MiB per mod in total. |
+| `attachment` | `func(target: attachment-target, key: string) -> option<list<u8>>` | This mod's value, or none. Host-managed: the guest never sees it in the object's saved NBT. |
+
 ## `energy`
 
 Access: capability `energy`.
@@ -2018,6 +2062,7 @@ API 29: before a player changes a watched block. Cancel keeps block and item.
 | Function | Signature | What it does |
 | --- | --- | --- |
 | `player-died` | `func(player: player, dimension: string, at: death-point, drops: list<death-stack>) -> bool` | API 38: a player died. `drops` are the stacks vanilla would drop, after vanishing-curse removal and native loot hooks, in slot order. Only the first mod to opt in through `server-hooks.set-death-drops` is called. Returning true keeps all drops out of the world; the mod can then read them once with `players.claimed-deaths`. Returning false (or failing) leaves vanilla drops untouched, so no items are lost. |
+| `machine-ticked` | `func(dimension: string, pos: block-pos, state: string)` | API 40: the server tick is about to run its levels. Opt in with `server-hooks.set-lifecycle-hooks`. At most one call per tick. API 41: a watched content block with a container was ticked. At most 32 calls per mod per tick; opt in with `server-hooks.watch-machines`. |
 | `server-tick-start` | `func(tick: u64)` | API 40: the server tick is about to run its levels. Opt in with `server-hooks.set-lifecycle-hooks`. At most one call per tick. |
 | `server-tick-end` | `func(tick: u64)` | API 40: the server tick's levels and mod work are done. |
 | `player-respawned` | `func(player: player, dimension: string, at: death-point)` | API 40: a player was placed by a respawn, in their respawn level. |
@@ -2085,6 +2130,7 @@ API 29: all flags default false. Each family has 32 calls/mod/server tick.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `watch-machines` | `func(ids: list<string>) -> result<_, string>` | API 41: receive `machine-ticked` for content blocks whose id matches, at most 64 exact ids or `namespace:*`. Same rules as watch-blocks. |
 | `set-lifecycle-hooks` | `func(config: lifecycle-config)` | API 40: replace the lifecycle opt-in flags. |
 | `set-death-drops` | `func(enabled: bool)` | API 38: opt in to receiving the dying player's actual drops. The first running mod to opt in claims them; the rest are not called. Disabled by default, so vanilla drops are unchanged. May be set during init. |
 | `set-block-uses` | `func(enabled: bool, including-sneaking-item: bool)` | Disabled initially. Sneaking with a nonempty main hand bypasses the hook unless including-sneaking-item is true. May be set during init. |

@@ -532,7 +532,8 @@ pub mod server {
         ParticleBurst, Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData,
         WorldTime,
     };
-    pub use horizon::mods::{channel, energy, lookup, menus, server_hooks};
+    pub use horizon::mods::{attachments, channel, energy, lookup, menus, server_hooks};
+    pub use attachments::{AttachmentTarget, BlockRef, ChunkRef};
     pub use energy::EnergyPos;
     pub use lookup::TargetKind;
     pub use menus::MenuItem;
@@ -677,6 +678,8 @@ pub mod server {
         ) -> bool {
             false
         }
+        /// API 41: a watched content block with a container was ticked.
+        fn machine_ticked(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
         /// API 40: the server tick is about to run its levels.
         fn server_tick_start(&mut self, _tick: u64) {}
         /// API 40: the server tick's levels and mod work are done.
@@ -1008,6 +1011,9 @@ macro_rules! export_server_mod {
                     let mut claimed = false;
                     with(|m| claimed = m.player_died(&player, &dimension, at, &drops));
                     claimed
+                }
+                fn machine_ticked(dimension: String, pos: BlockPos, state: String) {
+                    with(|m| m.machine_ticked(&dimension, pos, &state))
                 }
                 fn server_tick_start(tick: u64) {
                     with(|m| m.server_tick_start(tick))

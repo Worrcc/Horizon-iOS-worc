@@ -94,6 +94,8 @@ mod storage_api;
 pub use storage_api::*;
 mod machines;
 pub use machines::*;
+mod attachments_host;
+use attachments_host::AttachmentStore;
 mod energy_host;
 mod lookup_host;
 use lookup_host::LookupDirectory;
@@ -281,6 +283,14 @@ pub struct EnergyChange {
     pub before: (u64, u64),
     pub kind: EnergyKind,
     pub amount: u64,
+}
+
+/// API 41: one watched machine tick, as the game saw it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MachineTick {
+    pub dimension: String,
+    pub pos: (i32, i32, i32),
+    pub state: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1141,6 +1151,10 @@ struct State {
     death_drops: bool,
     /// API 40: (tick, respawn, save) lifecycle opt-ins.
     lifecycle: (bool, bool, bool),
+    /// API 41: this mod's host-managed persistent values.
+    attachments: AttachmentStore,
+    /// API 41: block ids whose machines get a tick callback.
+    machine_watches: Vec<String>,
     /// API 39: energy operations allowed this tick (64).
     energy_budget: (Option<u64>, usize),
     /// API 39: the shared provider directory.
@@ -1349,6 +1363,55 @@ impl Mods {
             }
         });
         result == Some(true)
+    }
+    /// API 41: deliver watched machine ticks, 32 calls per mod per tick.
+    pub fn machine_ticks(&mut self, ticks: Vec<MachineTick>) {
+        for i in 0..self.entries.len() {
+            let (watches, f) = match self.entries[i].run.as_ref() {
+                Some(r) if !r.store.data().machine_watches.is_empty() => {
+                    let f = match &r.hooks {
+                        Hooks::Server(m, _) => m.machine_ticked,
+                        _ => None,
+                    };
+                    (Some(r.store.data().machine_watches.clone()), f)
+                }
+                _ => (None, None),
+            };
+            let Some(watches) = watches else { continue };
+            let Some(f) = f else { continue };
+            let mut used = 0;
+            for tick in &ticks {
+                if used >= 32 {
+                    break;
+                }
+                if !watches.iter().any(|p| {
+                    p == &tick.state
+                        || p.strip_suffix('*').is_some_and(|ns| tick.state.starts_with(ns))
+                }) {
+                    continue;
+                }
+                let (dimension, pos, state) =
+                    (tick.dimension.clone(), tick.pos, tick.state.clone());
+                let called = self.call(i, FUEL_EVENT, |r| {
+                    f.call(
+                        &mut r.store,
+                        (
+                            dimension,
+                            BlockPos {
+                                x: pos.0,
+                                y: pos.1,
+                                z: pos.2,
+                            },
+                            state,
+                        ),
+                    )?;
+                    Ok(())
+                });
+                if called.is_some() {
+                    used += 1;
+                }
+            }
+        }
     }
     /// API 40: call the opted-in server mods at the start or end of a tick.
     pub fn lifecycle_tick(&mut self, start: bool, tick: u64) {
@@ -1617,6 +1680,7 @@ impl Mods {
             .unwrap_or(Path::new("."))
             .join(crate::manifest::STORAGE_DIR)
             .join(&m.id);
+        let attachment_path = AttachmentStore::path(&data_dir);
         let state = State {
             call_budget: budget::CallBudget::default(),
             player_world: Default::default(),
@@ -1653,6 +1717,8 @@ impl Mods {
             server,
             death_drops: false,
             lifecycle: (false, false, false),
+            attachments: AttachmentStore::load(&attachment_path),
+            machine_watches: Vec::new(),
             energy_budget: (None, 0),
             lookup: self.lookup.clone(),
             storage_move_budget: (None, 0),
@@ -2540,6 +2606,28 @@ impl Mods {
         std::mem::take(&mut self.out)
     }
 
+    /// API 41: write each mod's host-managed attachments beside its storage.
+    pub fn save_attachments(&mut self) {
+        for i in 0..self.entries.len() {
+            let data = self.entries[i]
+                .run
+                .as_ref()
+                .map(|r| {
+                    let s = r.store.data();
+                    (s.data_dir.clone(), s.attachments.values.len())
+                });
+            if let Some((dir, _)) = data {
+                self.entries[i]
+                    .run
+                    .as_ref()
+                    .unwrap()
+                    .store
+                    .data()
+                    .attachments
+                    .save(&AttachmentStore::path(&dir));
+            }
+        }
+    }
     /// Restarts the mods whose file changed since they loaded (mod
     /// development: rebuild, and the game picks it up). True when any did.
     pub fn reload_changed(&mut self, reserved: impl Fn(&str) -> bool) -> bool {
@@ -2604,6 +2692,11 @@ fn linker(engine: &Engine) -> Result<Linker<State>, String> {
     )
     .map_err(|e| e.to_string())?;
     server_bindings::horizon::mods::lookup::add_to_linker::<State, HasSelf<State>>(
+        &mut linker,
+        |s| s,
+    )
+    .map_err(|e| e.to_string())?;
+    server_bindings::horizon::mods::attachments::add_to_linker::<State, HasSelf<State>>(
         &mut linker,
         |s| s,
     )
@@ -5459,6 +5552,8 @@ mod entity_tests {
             server: false,
             death_drops: false,
             lifecycle: (false, false, false),
+            attachments: AttachmentStore::default(),
+            machine_watches: Vec::new(),
             energy_budget: (None, 0),
             lookup: Default::default(),
             storage_move_budget: (None, 0),

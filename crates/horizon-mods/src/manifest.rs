@@ -132,9 +132,12 @@ pub enum Capability {
     /// A directory of which mod provides an API for a block, item or entity
     /// (server mods; interface `lookup`, API level 39, experimental).
     Lookup,
+    /// Host-managed persistent byte values on game objects (server mods;
+    /// interface `attachments`, API level 41, experimental).
+    Attachments,
 }
 impl Capability {
-    pub const ALL: [Capability; 19] = [
+    pub const ALL: [Capability; 20] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -154,6 +157,7 @@ impl Capability {
         Capability::Atmosphere,
         Capability::Energy,
         Capability::Lookup,
+        Capability::Attachments,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
@@ -166,6 +170,7 @@ impl Capability {
                 | Capability::Channel
                 | Capability::Energy
                 | Capability::Lookup
+                | Capability::Attachments
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -190,6 +195,7 @@ impl Capability {
             Capability::Atmosphere => "atmosphere",
             Capability::Energy => "energy",
             Capability::Lookup => "lookup",
+            Capability::Attachments => "attachments",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -208,6 +214,7 @@ impl Capability {
                 | Capability::Atmosphere
                 | Capability::Energy
                 | Capability::Lookup
+                | Capability::Attachments
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -244,6 +251,7 @@ impl Capability {
             }
             Capability::Energy => "read and transfer energy in machines that store it",
             Capability::Lookup => "see which mod provides an API for a block, item or creature",
+            Capability::Attachments => "save its own data on blocks, chunks, worlds and creatures",
         }
     }
     /// What the player reads, including a mod's declared disk quota.
@@ -307,6 +315,7 @@ impl fmt::Display for Capability {
             Capability::Atmosphere => "atmosphere",
             Capability::Energy => "energy",
             Capability::Lookup => "lookup",
+            Capability::Attachments => "attachments",
         };
         f.write_str(name)
     }

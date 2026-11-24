@@ -1,8 +1,8 @@
 //! API 36/37: server recipe queries and component-safe machine writes.
 use super::*;
 use horizon_mods::{
-    BlockChangePos, DeathPoint, DeathStack, GameMode, MachineStack, PlayerDeathDrops, PlayerPoint,
-    Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes, ServerPlayer, WorldView,
+    BlockChangePos, DeathPoint, DeathStack, GameMode, MachineStack, MachineTick, PlayerDeathDrops,
+    PlayerPoint, Recipe, RecipeItem, RecipeKind, RecipeStack, Recipes, ServerPlayer, WorldView,
 };
 use std::sync::Arc;
 
@@ -184,7 +184,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        40
+        41
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -254,7 +254,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        40
+        41
     );
 }
 
@@ -367,7 +367,7 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        40
+        41
     );
 }
 
@@ -424,7 +424,7 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        40
+        41
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
@@ -487,6 +487,50 @@ fn api40_hook_level_is_40() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        40
+        41
+    );
+}
+
+#[test]
+fn api41_machine_ticks_and_attachments_cross_the_sandbox() {
+    let (mut m, p) = setup();
+    run(&mut m, &p, "interop41 watch");
+    m.machine_ticks(vec![MachineTick {
+        dimension: "minecraft:overworld".into(),
+        pos: (0, 64, 0),
+        state: "test:machine".into(),
+    }]);
+    assert_eq!(
+        m.drain().into_iter().filter_map(|o| match o {
+            Output::Broadcast { text, .. } => Some(text),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        ["machine minecraft:overworld 64 test:machine"]
+    );
+    run(&mut m, &p, "interop41 attach set");
+    assert_eq!(
+        run(&mut m, &p, "interop41 attach get"),
+        ["attach get [[1, 2, 3]]"]
+    );
+    run(&mut m, &p, "interop41 attach clear");
+    assert_eq!(run(&mut m, &p, "interop41 attach get"), ["attach get [[]]"]);
+}
+
+#[test]
+fn api41_functions_are_level_41() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "attachments.attachment"));
+    assert!(imports.iter().any(|f| f == "server-hooks.watch-machines"));
+    assert_eq!(
+        horizon_mods::api_level::level_of("attachments.set-attachment"),
+        Some(41)
+    );
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        41
     );
 }

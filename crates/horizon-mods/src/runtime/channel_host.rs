@@ -39,6 +39,13 @@ pub(super) fn allowance(budget: &mut (Option<u64>, usize), tick: u64, limit: usi
     true
 }
 impl server_hooks::Host for State {
+    fn watch_machines(&mut self, ids: Vec<String>) -> Result<(), String> {
+        super::validate_watches(&ids)?;
+        if self.server {
+            self.machine_watches = ids;
+        }
+        Ok(())
+    }
     fn set_lifecycle_hooks(&mut self, config: super::LifecycleConfig) {
         if self.server {
             self.lifecycle = (config.server_tick, config.player_respawned, config.save);

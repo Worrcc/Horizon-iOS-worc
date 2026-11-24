@@ -475,6 +475,11 @@ impl Game<'_> {
             self.native_lifecycle_server_tick_start(running);
             #[cfg(feature = "mods")]
             self.mods.mods.lifecycle_tick(true, self.ticks);
+            #[cfg(feature = "mods")]
+            if self.mods.mods.wants_machine_ticks() {
+                let ticks = self.mod_machine_tick_snapshot();
+                self.mods.mods.machine_ticks(ticks);
+            }
         }
         let observe_level =
             running.is_some() && (self.serving.is_some() || self.options.dedicated.is_some());

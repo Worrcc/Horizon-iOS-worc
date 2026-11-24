@@ -16066,6 +16066,8 @@ impl Game<'_> {
         })();
         #[cfg(feature = "mods")]
         self.mods.mods.server_save(false, result.is_ok());
+        #[cfg(feature = "mods")]
+        self.mods.mods.save_attachments();
         if result.is_ok() && dedicated {
             dedicated::events::record_server("saved", serde_json::json!({}));
         }

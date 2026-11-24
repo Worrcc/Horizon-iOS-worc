@@ -42,6 +42,7 @@ pub(super) struct ServerCallbacks {
     /// API 38: claim a dying player's drops; true keeps them out of the world.
     pub player_died:
         Option<TypedFunc<(ServerPlayer, String, DeathPoint, Vec<DeathStack>), (bool,)>>,
+    pub machine_ticked: Option<TypedFunc<(String, BlockPos, String), ()>>,
     pub server_tick_start: Option<TypedFunc<(u64,), ()>>,
     pub server_tick_end: Option<TypedFunc<(u64,), ()>>,
     pub player_respawned: Option<TypedFunc<(ServerPlayer, String, DeathPoint), ()>>,
@@ -92,6 +93,7 @@ impl ServerCallbacks {
             placing: get!("block-placing"),
             used: get!("block-used"),
             player_died: get!("player-died"),
+            machine_ticked: get!("machine-ticked"),
             server_tick_start: get!("server-tick-start"),
             server_tick_end: get!("server-tick-end"),
             player_respawned: get!("player-respawned"),

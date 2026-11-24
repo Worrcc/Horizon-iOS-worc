@@ -416,6 +416,14 @@ impl Mods {
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.machine_stack_api))
     }
+    /// Some running mod watches machines (API 41).
+    pub fn wants_machine_ticks(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|r| !r.store.data().machine_watches.is_empty())
+        })
+    }
     /// Some running mod reads or changes shared energy (API 39).
     pub fn wants_energy(&self) -> bool {
         self.entries
