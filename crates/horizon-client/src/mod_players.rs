@@ -38,6 +38,60 @@ impl Inventories {
         Ok((inv, max))
     }
 }
+impl Inventories {
+    /// API 38: insert a fully decoded stack, splitting and dropping overflow
+    /// exactly as `give_item_with_data` does.
+    fn give_stack(&mut self, player: &str, mut stack: ItemStack, max: u32) -> Result<(), String> {
+        let inv = self.players.get_mut(player).ok_or("unknown player")?;
+        let selected = inv.selected.min(inv.main.len());
+        let (main, rest) = inv.main.split_at_mut(selected);
+        let (held, after) = if rest.is_empty() {
+            (rest, &mut [][..])
+        } else {
+            rest.split_at_mut(1)
+        };
+        for slot in held
+            .iter_mut()
+            .chain(std::iter::once(&mut inv.offhand))
+            .chain(main)
+            .chain(after)
+            .flatten()
+        {
+            if slot.same_item_same_components(&stack) && slot.count < max {
+                let moved = (max - slot.count).min(stack.count);
+                slot.count += moved;
+                stack.count -= moved;
+                inv.changed |= moved > 0;
+                if stack.count == 0 {
+                    return Ok(());
+                }
+            }
+        }
+        for slot in inv.main.iter_mut().filter(|s| s.is_none()) {
+            let moved = max.min(stack.count);
+            *slot = Some(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+            inv.changed = true;
+            if stack.count == 0 {
+                return Ok(());
+            }
+        }
+        // Item entities carry legal stack sizes, including nonstackable items.
+        while stack.count > 0 {
+            let moved = max.min(stack.count);
+            inv.drops.push(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+        }
+        Ok(())
+    }
+}
+
 impl PlayerInventories for Inventories {
     fn equipment(&self, player: &str) -> Option<horizon_mods::EquipmentSlots> {
         let inv = self.players.get(player)?;
@@ -184,7 +238,7 @@ impl PlayerInventories for Inventories {
         mod_id: &str,
         data: Option<&str>,
     ) -> Result<(), String> {
-        let (inv, max) = self.checked(player, item)?;
+        let (_, max) = self.checked(player, item)?;
         if !mod_id.is_empty() && item == "minecraft:air" {
             return Err("empty/air stacks cannot carry components".into());
         }
@@ -204,52 +258,45 @@ impl PlayerInventories for Inventories {
         if !mod_id.is_empty() {
             stack.set_mod_data(mod_id, data)?;
         }
-        let selected = inv.selected.min(inv.main.len());
-        let (main, rest) = inv.main.split_at_mut(selected);
-        let (held, after) = if rest.is_empty() {
-            (rest, &mut [][..])
-        } else {
-            rest.split_at_mut(1)
-        };
-        for slot in held
-            .iter_mut()
-            .chain(std::iter::once(&mut inv.offhand))
-            .chain(main)
-            .chain(after)
-            .flatten()
-        {
-            if slot.same_item_same_components(&stack) && slot.count < max {
-                let moved = (max - slot.count).min(stack.count);
-                slot.count += moved;
-                stack.count -= moved;
-                inv.changed |= moved > 0;
-                if stack.count == 0 {
-                    return Ok(());
-                }
+        self.give_stack(player, stack, max)
+    }
+    fn give_item_with_components(
+        &mut self,
+        player: &str,
+        stack: horizon_mods::MachineStack,
+    ) -> Result<(), String> {
+        let (_, max) = self.checked(player, &stack.item)?;
+        if max == 0 {
+            return Err("item cannot carry a nonempty stack".into());
+        }
+        if stack.count > max.saturating_mul(100) {
+            return Err("give-item is at most 100 stacks per call".into());
+        }
+        // The bytes are lossless network NBT from encode_components, as machine
+        // stacks and claimed death drops carry.
+        let tag = stack.components.as_ref().map(|bytes| -> Result<horizon_world::nbt::Tag, String> {
+            let (tag, used) = horizon_world::nbt::read_network(bytes, Default::default())
+                .map_err(|_| "invalid item component patch".to_owned())?;
+            if used != bytes.len() {
+                return Err("trailing bytes in item component patch".into());
             }
+            Ok(tag)
+        }).transpose()?;
+        let mut entries = vec![
+            ("id", horizon_client_core::nbt_value::string(&stack.item)),
+            ("count", horizon_world::nbt::Tag::Int(stack.count as i32)),
+        ];
+        if let Some(tag) = tag {
+            entries.push(("components", tag));
         }
-        for slot in inv.main.iter_mut().filter(|s| s.is_none()) {
-            let moved = max.min(stack.count);
-            *slot = Some(ItemStack {
-                count: moved,
-                ..stack.clone()
-            });
-            stack.count -= moved;
-            inv.changed = true;
-            if stack.count == 0 {
-                return Ok(());
-            }
+        let decoded = horizon_items::item_nbt::item_from_nbt(
+            &horizon_world::nbt::Tag::compound(entries),
+        )
+        .ok_or("invalid item stack")?;
+        if decoded.count == 0 {
+            return Ok(());
         }
-        // Item entities carry legal stack sizes, including nonstackable items.
-        while stack.count > 0 {
-            let moved = max.min(stack.count);
-            inv.drops.push(ItemStack {
-                count: moved,
-                ..stack.clone()
-            });
-            stack.count -= moved;
-        }
-        Ok(())
+        self.give_stack(player, decoded, max)
     }
 }
 

@@ -390,6 +390,66 @@ impl Game<'_> {
         }
         result
     }
+    /// API 38: give a stack with full component bytes, as a claimed death drop.
+    pub(super) fn apply_mod_give_components(
+        &mut self,
+        player: &str,
+        stack: horizon_mods::MachineStack,
+        mut host: Option<&mut LanHost>,
+    ) -> Result<(), String> {
+        use horizon_client::mod_players::{Inventories, Inventory};
+        use horizon_mods::PlayerInventories;
+        let mut result = Err("unknown or offline player".into());
+        self.with_mod_player(host.as_deref_mut(), player, |g| {
+            let Some(info) = g.res.items().get(&stack.item) else {
+                result = Err(format!("unknown item {}", stack.item));
+                return;
+            };
+            let max = info.max_stack;
+            let mut inventories = Inventories {
+                item_tags: Default::default(),
+                items: std::sync::Arc::new([(stack.item.clone(), max)].into()),
+                players: [(
+                    player.to_owned(),
+                    Inventory {
+                        main: g.inventory.clone(),
+                        offhand: g.offhand.clone(),
+                        selected: g.selected,
+                        creative: g.creative,
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+            };
+            result = inventories.give_item_with_components(player, stack);
+            if result.is_ok()
+                && let Some(inv) = inventories.players.remove(player)
+            {
+                g.inventory = inv.main;
+                g.offhand = inv.offhand;
+                let at = g
+                    .player
+                    .as_ref()
+                    .map(|p| [p.position.x, p.position.y, p.position.z]);
+                if let Some(at) = at {
+                    for stack in inv.drops {
+                        g.spawn_item(stack, at, [0.0, 0.1, 0.0], 10);
+                    }
+                }
+            }
+        });
+        if result.is_ok()
+            && let Some(host) = host.or(self.lan.as_mut())
+            && let Some(i) = host
+                .hub
+                .guests
+                .iter()
+                .position(|g| g.placed && uuid_string(g.uuid) == player)
+        {
+            host.hub.send_inventory(i);
+        }
+        result
+    }
     pub(super) fn apply_mod_stack_data(
         &mut self,
         plan: StorageDataWrite,

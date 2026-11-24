@@ -1538,6 +1538,11 @@ interface %world {
     /// Same 100 stacks/call and overflow semantics as players.give-item;
     /// component equality prevents merging with plain/differently tagged stacks.
     give-item-with-data: func(player: string, item: string, count: u32, data: option<string>) -> result<_, string>;
+    /// API 38: give one stack with its full saved component patch (lossless
+    /// network NBT bytes, as machine-stacks and claimed drops carry), to an
+    /// online player. Same count and overflow limits as give-item-with-data.
+    /// Component equality prevents merging into a differently tagged stack.
+    give-item-with-components: func(player: string, stack: stack) -> result<_, string>;
     /// Same limits as spawn-item, including the shared 16 spawns/mod/tick.
     spawn-item-with-data: func(dimension: string, at: point, item: string, count: u32, data: option<string>) -> result<_, string>;
     record stack-info-with-data { stack: stack-info, data: option<string> }

@@ -1494,6 +1494,7 @@ impl Game<'_> {
                 | Output::BreakBlocksAs { .. }
                 | Output::SetLootTable { .. }
                 | Output::GiveItemWithData { .. }
+                | Output::GiveItemWithComponents { .. }
                 | Output::Menu(_)
                 | Output::MachineStackWrite(_)
                 | Output::BlockDataWrite(_)

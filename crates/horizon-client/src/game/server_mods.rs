@@ -1827,6 +1827,7 @@ pub(super) mod run {
                 .into_iter()
                 .partition(|op| match op {
                     Output::GiveItemWithData { .. } => true,
+                    Output::GiveItemWithComponents { .. } => true,
                     Output::StorageDataWrite(plan) => match &plan.location {
                         horizon_mods::StorageLocation::Container { dimension, .. } => {
                             dimension == dim
@@ -1916,6 +1917,9 @@ pub(super) mod run {
                             }
                             Err(error) => Err(error),
                         }
+                    }
+                    Output::GiveItemWithComponents { player, stack } => {
+                        self.apply_mod_give_components(&player, stack, host.as_deref_mut())
                     }
                     Output::StorageDataWrite(plan) => {
                         self.apply_mod_stack_data(plan, host.as_deref_mut())
@@ -2432,6 +2436,7 @@ pub(super) mod run {
                 | Output::MachineStackWrite(_)
                 | Output::BreakProgress { .. }
                 | Output::GiveItemWithData { .. }
+                | Output::GiveItemWithComponents { .. }
                 | Output::StorageDataWrite(_)
                 | Output::SpawnItemWithData { .. }
                 | Output::StorageMove(_)

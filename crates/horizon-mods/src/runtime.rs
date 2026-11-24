@@ -488,6 +488,11 @@ pub enum Output {
         mod_id: String,
         data: Option<String>,
     },
+    /// API 38: give one stack with its full component patch.
+    GiveItemWithComponents {
+        player: String,
+        stack: MachineStack,
+    },
     SpawnItemWithData {
         dimension: String,
         at: EntityPoint,
@@ -803,6 +808,14 @@ pub trait PlayerInventories: std::any::Any + Send {
         _data: Option<&str>,
     ) -> Result<(), String> {
         Err("item data creation unavailable".into())
+    }
+    /// API 38: give one stack with its full component patch.
+    fn give_item_with_components(
+        &mut self,
+        _player: &str,
+        _stack: MachineStack,
+    ) -> Result<(), String> {
+        Err("item component creation unavailable".into())
     }
 }
 type InventoriesSlot = Arc<Mutex<Option<Box<dyn PlayerInventories>>>>;
@@ -3186,6 +3199,30 @@ impl mod_world::Host for State {
             mod_id: self.id.clone(),
             data,
         });
+        Ok(())
+    }
+    fn give_item_with_components(
+        &mut self,
+        player: String,
+        stack: MachineStack,
+    ) -> Result<(), String> {
+        self.data_budget()?;
+        if stack.item == "minecraft:air" || stack.count == 0 {
+            return Err("empty/air stacks cannot be given".into());
+        }
+        if stack.components.as_ref().is_some_and(|b| b.len() > 65536) {
+            return Err("item component patch exceeds 65536 bytes".into());
+        }
+        let StorageLocation::Player(player) = self.storage_player(&player)? else {
+            unreachable!()
+        };
+        self.world
+            .lock()
+            .map_err(|_| "world unavailable")?
+            .as_ref()
+            .ok_or("world unavailable")?
+            .check_give_stack(&stack.item, stack.count)?;
+        self.out.push(Output::GiveItemWithComponents { player, stack });
         Ok(())
     }
 
