@@ -344,6 +344,12 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
             Output::GiveItemWithData { item, count, .. } => {
                 format!("queued giving {count} {item} with data")
             }
+            Output::GiveItemWithComponents { stack, .. } => {
+                format!("queued giving {} {} with components", stack.count, stack.item)
+            }
+            Output::MachineStackWrite(plan) => {
+                format!("queued {} machine slot write(s)", plan.changes.len())
+            }
             Output::SpawnItemWithData { item, count, .. } => {
                 format!("queued dropping {count} {item} with data")
             }
