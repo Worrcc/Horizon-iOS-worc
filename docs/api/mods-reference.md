@@ -1391,6 +1391,20 @@ Access: capability `world`.
 
 Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the blocks of the server's loaded chunks, and changes to them through the server's own block updates.
 
+### record `machine-recipe`
+
+API 36: a crafting recipe reduced to item ids, for machines that undo crafting (the Deconstructing Workbench). Server mods only, capability `world`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `string` | The recipe's resource id, `minecraft:oak_planks`. |
+| `kind` | `string` | One of `crafting-shaped`, `crafting-shapeless`, `smelting`, `blasting`, `smoking`, `campfire`, `stonecutting`, `smithing`, `brewing`. |
+| `width` | `u32` | A shaped recipe's grid size; 0 for the other kinds. |
+| `height` | `u32` |  |
+| `ingredients` | `list<list<string>>` | Accepted item ids per grid cell, row by row (item tags are expanded to the ids that satisfy them; an empty cell is an empty list). For cooking and stonecutting this is the single input; for smithing the template, base and addition. |
+| `result` | `string` | The primary result's item id and count. |
+| `result-count` | `u32` |  |
+
 ### record `dust-color`
 
 API 31: particle options: rgb 0xRRGGBB and scale 0.01..4.
@@ -1518,6 +1532,7 @@ A plain item stack; components are not carried by this API.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `recipes-for-item` | `func(item: string, start: u32, count: u32) -> result<list<machine-recipe>, string>` | API 36: at most `count` (<= 128) crafting recipes whose result is `item`, from index `start` in a stable order; fewer at the end, none past it. Capability `world`, server mods only. An unknown item id is an error. |
 | `spawn-particles` | `func(dimension: string, particles: particle-burst) -> result<_, string>` | API 31: 64 calls and 4096 particles/mod/tick, sent to players near `at`. Deferred. |
 | `explode` | `func(dimension: string, center: point, radius: f32, fire: bool, blast: blast-kind) -> result<_, string>` | API 31: Level.explode with no source, 0 < radius <= 8, 4/mod/tick; mob_griefing off keeps blocks and fire. Deferred. |
 | `make-block-fall` | `func(dimension: string, pos: block-change-pos, expected-state: string, velocity: point, hurts: bool) -> result<_, string>` | API 31: turn an existing block into a falling block. expected-state must equal get-block now and when applied; velocity each axis \|v\| <= 3.9; 16/mod/tick. Deferred. |

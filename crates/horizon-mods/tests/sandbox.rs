@@ -3742,9 +3742,10 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     ] {
         assert!(imports.iter().any(|i| i == name), "{name}");
     }
+    // The server guest also exercises API 36's paged recipe queries.
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        31
+        36
     );
 }
 
@@ -3839,6 +3840,8 @@ mod stack_data;
 mod machines;
 #[path = "player_world/mod.rs"]
 mod player_world;
+#[path = "afterlight36/mod.rs"]
+mod afterlight36;
 
 /// The chat lines and error feedback a command made.
 fn said(mods: &mut Mods, command: &str) -> (Vec<String>, Vec<String>) {

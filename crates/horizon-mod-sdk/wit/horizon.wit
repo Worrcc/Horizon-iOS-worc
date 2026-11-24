@@ -1406,6 +1406,30 @@ interface players {
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    /// API 36: a crafting recipe reduced to item ids, for machines that undo
+    /// crafting (the Deconstructing Workbench). Server mods only, capability `world`.
+    record machine-recipe {
+        /// The recipe's resource id, `minecraft:oak_planks`.
+        id: string,
+        /// One of `crafting-shaped`, `crafting-shapeless`, `smelting`, `blasting`,
+        /// `smoking`, `campfire`, `stonecutting`, `smithing`, `brewing`.
+        kind: string,
+        /// A shaped recipe's grid size; 0 for the other kinds.
+        width: u32,
+        height: u32,
+        /// Accepted item ids per grid cell, row by row (item tags are expanded to
+        /// the ids that satisfy them; an empty cell is an empty list). For cooking
+        /// and stonecutting this is the single input; for smithing the template,
+        /// base and addition.
+        ingredients: list<list<string>>,
+        /// The primary result's item id and count.
+        %result: string,
+        result-count: u32,
+    }
+    /// API 36: at most `count` (<= 128) crafting recipes whose result is `item`,
+    /// from index `start` in a stable order; fewer at the end, none past it.
+    /// Capability `world`, server mods only. An unknown item id is an error.
+    recipes-for-item: func(item: string, start: u32, count: u32) -> result<list<machine-recipe>, string>;
     /// API 31: particle options: rgb 0xRRGGBB and scale 0.01..4.
     record dust-color { rgb: u32, scale: f32 }
     /// API 31: a vanilla particle burst. `block` is required for minecraft:block, block_marker,

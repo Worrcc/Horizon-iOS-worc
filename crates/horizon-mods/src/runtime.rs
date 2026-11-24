@@ -1525,7 +1525,8 @@ impl Mods {
                 f.starts_with("recipes.")
                     || matches!(
                         f.as_str(),
-                        "browser-ext.item-facts"
+                        "world.recipes-for-item"
+                            | "browser-ext.item-facts"
                             | "browser-ext.other-recipes"
                             | "browser-ext.recipe-count"
                             | "browser-ext.recipes-page"
@@ -2824,6 +2825,68 @@ impl chat::Host for State {
     }
 }
 impl mod_world::Host for State {
+    fn recipes_for_item(
+        &mut self,
+        item: String,
+        start: u32,
+        count: u32,
+    ) -> Result<Vec<mod_world::MachineRecipe>, String> {
+        if !self.server {
+            return Err("server only".into());
+        }
+        let count = count.min(128);
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let recipes = self
+            .snapshot
+            .recipes
+            .as_ref()
+            .ok_or("recipes unavailable")?;
+        let ids = &recipes.items;
+        let index = ids
+            .iter()
+            .position(|i| i.id == item)
+            .ok_or_else(|| format!("unknown item {item}"))?;
+        let id_of = |stack: &RecipeStack| {
+            ids.get(stack.item as usize)
+                .map_or_else(String::new, |i| i.id.clone())
+        };
+        let matching: Vec<_> = recipes
+            .recipes
+            .iter()
+            .filter(|r| r.results.iter().any(|s| s.item as usize == index))
+            .collect();
+        let start = (start as usize).min(matching.len());
+        let end = start.saturating_add(count as usize).min(matching.len());
+        Ok(matching[start..end]
+            .iter()
+            .map(|r| mod_world::MachineRecipe {
+                id: r.id.clone(),
+                kind: match r.kind {
+                    RecipeKind::CraftingShaped => "crafting-shaped",
+                    RecipeKind::CraftingShapeless => "crafting-shapeless",
+                    RecipeKind::Smelting => "smelting",
+                    RecipeKind::Blasting => "blasting",
+                    RecipeKind::Smoking => "smoking",
+                    RecipeKind::Campfire => "campfire",
+                    RecipeKind::Stonecutting => "stonecutting",
+                    RecipeKind::Smithing => "smithing",
+                    RecipeKind::Brewing => "brewing",
+                }
+                .into(),
+                width: r.width,
+                height: r.height,
+                ingredients: r
+                    .slots
+                    .iter()
+                    .map(|cell| cell.iter().map(id_of).collect())
+                    .collect(),
+                result: r.results.first().map_or_else(String::new, id_of),
+                result_count: r.results.first().map_or(0, |s| s.count),
+            })
+            .collect())
+    }
     fn block_data(
         &mut self,
         dimension: String,

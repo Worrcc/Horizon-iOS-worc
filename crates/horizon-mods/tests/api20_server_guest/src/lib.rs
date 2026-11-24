@@ -5,6 +5,7 @@ use horizon_mod_sdk::server::{
 };
 mod machines30;
 mod player_world31;
+mod recipes36;
 struct Guest;
 impl ServerMod for Guest {
     fn init() -> Result<(Self, Registration), String> {
@@ -17,6 +18,7 @@ impl ServerMod for Guest {
                 .command("storage28")
                 .command("data29")
                 .command("machines30")
+                .command("recipes36")
                 .command("pw31")
                 .command("behaviour29")
                 .command("schedule29")
@@ -141,6 +143,9 @@ impl ServerMod for Guest {
         }
         if name == "machines30" {
             return machines30::run(player, args.text());
+        }
+        if name == "recipes36" {
+            return recipes36::run(player, args);
         }
         if name == "data29" {
             let pos = BlockChangePos { x: 0, y: 64, z: 0 };
