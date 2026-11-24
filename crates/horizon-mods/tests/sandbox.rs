@@ -3745,7 +3745,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     // The server guest also exercises API 36-43 queries, writes, drops, interop and worldgen.
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
 }
 

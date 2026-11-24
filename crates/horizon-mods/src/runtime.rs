@@ -285,7 +285,19 @@ pub struct EnergyChange {
     pub before: (u64, u64),
     pub kind: EnergyKind,
     pub amount: u64,
+    /// API 44: destination for `EnergyKind::Transfer`.
+    pub to: Option<(String, (i32, i32, i32))>,
 }
+
+/// API 44: per-tick reservations so multiple queued energy operations on the
+/// same store cannot be promised twice before they are applied.
+#[derive(Default)]
+pub(super) struct EnergyReservations {
+    tick: u64,
+    /// Signed change already promised to each store this tick.
+    deltas: HashMap<(String, i32, i32, i32), i64>,
+}
+pub(super) type EnergyLedger = Arc<Mutex<EnergyReservations>>;
 
 /// API 42: a queued cross-mod message with the state it was planned under.
 #[derive(Clone, Debug, PartialEq)]
@@ -317,6 +329,7 @@ pub enum EnergyKind {
     Capacity,
     Insert,
     Extract,
+    Transfer,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1178,10 +1191,14 @@ struct State {
     attachments: AttachmentStore,
     /// API 41: block ids whose machines get a tick callback.
     machine_watches: Vec<String>,
+    /// API 44: where the fair 32-per-tick rotation resumes.
+    machine_cursor: usize,
     /// API 42: payload names this mod registered.
     net_names: Vec<String>,
     /// API 42: net messages allowed this tick (64).
     net_budget: (Option<u64>, usize),
+    /// API 44: shared energy reservations for this tick.
+    energy_ledger: EnergyLedger,
     /// API 43: this mod's structure placement definitions.
     features: HashMap<String, WorldFeature>,
     /// API 39: energy operations allowed this tick (64).
@@ -1208,6 +1225,8 @@ pub struct Mods {
     menu_leases: machines::MenuLeases,
     /// API 39: the provider directory shared by every running mod.
     lookup: LookupDirectory,
+    /// API 44: shared energy reservations for this tick.
+    energy_ledger: EnergyLedger,
     /// API 42: messages to deliver on the next server tick.
     net_inbox: VecDeque<NetMessage>,
     container_shift: ContainerShift,
@@ -1397,33 +1416,55 @@ impl Mods {
         });
         result == Some(true)
     }
-    /// API 41: deliver watched machine ticks, 32 calls per mod per tick.
-    pub fn machine_ticks(&mut self, ticks: Vec<MachineTick>) {
+    /// API 41/44: deliver watched machine ticks, 32 calls per mod per tick.
+    /// Matching uses the block id without state properties, and delivery
+    /// rotates from the last key so every matching machine eventually ticks.
+    pub fn machine_ticks(&mut self, mut ticks: Vec<MachineTick>) {
+        ticks.sort_by(|a, b| {
+            (&a.dimension, a.pos.0, a.pos.1, a.pos.2).cmp(&(
+                &b.dimension,
+                b.pos.0,
+                b.pos.1,
+                b.pos.2,
+            ))
+        });
         for i in 0..self.entries.len() {
-            let (watches, f) = match self.entries[i].run.as_ref() {
+            let (watches, f, cursor) = match self.entries[i].run.as_ref() {
                 Some(r) if !r.store.data().machine_watches.is_empty() => {
                     let f = match &r.hooks {
                         Hooks::Server(m, _) => m.machine_ticked,
                         _ => None,
                     };
-                    (Some(r.store.data().machine_watches.clone()), f)
+                    (
+                        Some(r.store.data().machine_watches.clone()),
+                        f,
+                        r.store.data().machine_cursor,
+                    )
                 }
-                _ => (None, None),
+                _ => (None, None, 0),
             };
             let Some(watches) = watches else { continue };
             let Some(f) = f else { continue };
+            let matching: Vec<&MachineTick> = ticks
+                .iter()
+                .filter(|tick| {
+                    let id = tick.state.split('[').next().unwrap_or(&tick.state);
+                    watches.iter().any(|p| {
+                        p == id || p.strip_suffix('*').is_some_and(|ns| id.starts_with(ns))
+                    })
+                })
+                .collect();
+            if matching.is_empty() {
+                continue;
+            }
+            let start = cursor % matching.len();
             let mut used = 0;
-            for tick in &ticks {
-                if used >= 32 {
-                    break;
-                }
-                if !watches.iter().any(|p| {
-                    p == &tick.state
-                        || p.strip_suffix('*')
-                            .is_some_and(|ns| tick.state.starts_with(ns))
-                }) {
-                    continue;
-                }
+            for tick in matching
+                .iter()
+                .cycle()
+                .skip(start)
+                .take(matching.len().min(32))
+            {
                 let (dimension, pos, state) =
                     (tick.dimension.clone(), tick.pos, tick.state.clone());
                 let called = self.call(i, FUEL_EVENT, |r| {
@@ -1444,6 +1485,13 @@ impl Mods {
                 if called.is_some() {
                     used += 1;
                 }
+            }
+            let next = self.entries[i]
+                .run
+                .as_ref()
+                .map_or(0, |r| r.store.data().machine_cursor);
+            if let Some(run) = self.entries[i].run.as_mut() {
+                run.store.data_mut().machine_cursor = next.wrapping_add(used);
             }
         }
     }
@@ -1753,11 +1801,13 @@ impl Mods {
             lifecycle: (false, false, false),
             attachments: AttachmentStore::load(&attachment_path),
             machine_watches: Vec::new(),
+            machine_cursor: 0,
             net_names: Vec::new(),
             net_budget: (None, 0),
             features: HashMap::new(),
             energy_budget: (None, 0),
             lookup: self.lookup.clone(),
+            energy_ledger: self.energy_ledger.clone(),
             storage_move_budget: (None, 0),
             machines: machines::MachineState::new(
                 self.machine_bridge.clone(),
@@ -5644,11 +5694,13 @@ mod entity_tests {
             lifecycle: (false, false, false),
             attachments: AttachmentStore::default(),
             machine_watches: Vec::new(),
+            machine_cursor: 0,
             net_names: Vec::new(),
             net_budget: (None, 0),
             features: HashMap::new(),
             energy_budget: (None, 0),
             lookup: Default::default(),
+            energy_ledger: Default::default(),
             storage_move_budget: (None, 0),
             machines: Default::default(),
             limits: StoreLimitsBuilder::new().build(),

@@ -49,6 +49,21 @@ pub fn run(player: &Player, args: &Args) -> Result<Option<String>, String> {
                     "{}",
                     energy::extract_energy("minecraft:overworld", pos, -1, 3)?
                 ),
+                "insert-twice" => format!(
+                    "{}:{}",
+                    energy::insert_energy("minecraft:overworld", pos, -1, 4)?,
+                    energy::insert_energy("minecraft:overworld", pos, -1, 4)?
+                ),
+                "transfer" => format!(
+                    "{}",
+                    energy::transfer_energy(
+                        "minecraft:overworld",
+                        pos,
+                        "minecraft:overworld",
+                        EnergyPos { x: 1, y: 64, z: 0 },
+                        5,
+                    )?
+                ),
                 _ => return Err("usage: interop39 energy read|cap|insert|extract".into()),
             };
             players::tell(&player.id, &format!("energy {mode} [{text}]"));

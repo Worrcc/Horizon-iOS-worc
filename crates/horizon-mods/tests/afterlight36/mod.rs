@@ -7,10 +7,12 @@ use horizon_mods::{
 };
 use std::sync::Arc;
 
-struct View;
+struct View {
+    empty_energy: bool,
+}
 impl WorldView for View {
     fn block(&self, dim: &str, x: i32, y: i32, z: i32) -> Option<String> {
-        (dim == "minecraft:overworld" && x == 0 && y == 64 && z == 0)
+        (dim == "minecraft:overworld" && y == 64 && (x == 0 || x == 1) && z == 0)
             .then(|| "minecraft:oak_planks".into())
     }
     fn biome(&self, _: &str, _: i32, _: i32, _: i32) -> Option<String> {
@@ -30,7 +32,17 @@ impl WorldView for View {
         }
     }
     fn energy_side(&self, dim: &str, x: i32, y: i32, z: i32, _face: i32) -> Option<(u64, u64)> {
-        (dim == "minecraft:overworld" && x == 0 && y == 64 && z == 0).then_some((5, 10))
+        if dim != "minecraft:overworld" || y != 64 || z != 0 {
+            return None;
+        }
+        if self.empty_energy {
+            return Some((0, 0));
+        }
+        match x {
+            0 => Some((5, 10)),
+            1 => Some((2, 10)),
+            _ => None,
+        }
     }
     fn machine_stacks(&self, dim: &str, pos: BlockChangePos) -> Option<Vec<Option<MachineStack>>> {
         (dim == "minecraft:overworld" && pos.x == 0 && pos.y == 64 && pos.z == 0).then(|| {
@@ -137,7 +149,9 @@ fn setup() -> (Mods, ServerPlayer) {
         .into(),
         ..Default::default()
     });
-    mods.lend_world(Box::new(View));
+    mods.lend_world(Box::new(View {
+        empty_energy: false,
+    }));
     mods.drain();
     (mods, p)
 }
@@ -202,7 +216,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -279,7 +293,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
 }
 
@@ -392,7 +406,7 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
 }
 
@@ -461,7 +475,7 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
@@ -538,7 +552,7 @@ fn api40_hook_level_is_40() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
 }
 
@@ -585,7 +599,7 @@ fn api41_functions_are_level_41() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
 }
 
@@ -640,7 +654,7 @@ fn api42_functions_are_level_42() {
     assert_eq!(horizon_mods::api_level::level_of("net.register"), Some(42));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
 }
 
@@ -684,7 +698,7 @@ fn api43_worldgen_functions_require_capability_and_raise_api_level() {
     assert!(imports.iter().any(|f| f == "world.world-seed"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        43
+        44
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"worldgen\"]\nexperimental = [\"worldgen\"]\n",
@@ -694,5 +708,126 @@ fn api43_worldgen_functions_require_capability_and_raise_api_level() {
         manifest
             .check_imports(["horizon:mods/worldgen@0.1.0"])
             .is_ok()
+    );
+}
+
+fn setup_fresh() -> (Mods, ServerPlayer) {
+    let mut mods = load("horizon_mods_test_api20_server_guest.hmod");
+    let p = ServerPlayer {
+        id: "alice".into(),
+        name: "Alice".into(),
+        x: 0.,
+        y: 64.,
+        z: 0.,
+        dimension: "minecraft:overworld".into(),
+        game_mode: GameMode::Creative,
+        health: 20.,
+    };
+    mods.set_snapshot(Snapshot {
+        tick: 1,
+        players: vec![p.clone()],
+        world_seed: 42,
+        ..Default::default()
+    });
+    mods.lend_world(Box::new(View { empty_energy: true }));
+    mods.drain();
+    (mods, p)
+}
+
+#[test]
+fn api44_fresh_store_can_be_initialized() {
+    let (mut m, p) = setup_fresh();
+    assert_eq!(
+        run(&mut m, &p, "interop39 energy read"),
+        ["energy read [0:0]"]
+    );
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "interop39 energy cap"));
+        m.drain()
+    };
+    let changes: Vec<_> = out
+        .iter()
+        .filter_map(|o| match o {
+            Output::EnergyChange(plan) => Some(plan),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].kind, horizon_mods::EnergyKind::Capacity);
+    assert_eq!(changes[0].amount, 10);
+}
+
+#[test]
+fn api44_reservations_cap_repeated_inserts() {
+    let (mut m, p) = setup();
+    // Store starts at 5/10; four then four can only add five.
+    assert_eq!(
+        run(&mut m, &p, "interop39 energy insert-twice"),
+        ["energy insert-twice [4:1]"]
+    );
+}
+
+#[test]
+fn api44_transfer_is_one_atomic_operation() {
+    let (mut m, p) = setup();
+    let out = {
+        m.drain();
+        assert!(m.server_command(&p, "interop39 energy transfer"));
+        m.drain()
+    };
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Output::Tell { text, .. } if text == "energy transfer [5]"))
+    );
+    let changes: Vec<_> = out
+        .iter()
+        .filter_map(|o| match o {
+            Output::EnergyChange(plan) => Some(plan),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].kind, horizon_mods::EnergyKind::Transfer);
+    assert_eq!(changes[0].amount, 5);
+    assert_eq!(changes[0].to.as_ref().unwrap().1, (1, 64, 0));
+}
+
+#[test]
+fn api44_machine_watch_matches_ids_without_properties() {
+    let (mut m, p) = setup();
+    run(&mut m, &p, "interop41 watch");
+    m.machine_ticks(vec![MachineTick {
+        dimension: "minecraft:overworld".into(),
+        pos: (0, 64, 0),
+        state: "test:machine[facing=north]".into(),
+    }]);
+    assert_eq!(
+        m.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Broadcast { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["machine minecraft:overworld 64 test:machine[facing=north]"]
+    );
+}
+
+#[test]
+fn api44_level_is_44() {
+    let wasm = Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod"))
+        .unwrap()
+        .wasm
+        .unwrap();
+    let imports = horizon_mods::api_level::imports(&wasm).unwrap();
+    assert!(imports.iter().any(|f| f == "energy.transfer-energy"));
+    assert_eq!(
+        horizon_mods::api_level::level_of("energy.transfer-energy"),
+        Some(44)
+    );
+    assert_eq!(
+        horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
+        44
     );
 }

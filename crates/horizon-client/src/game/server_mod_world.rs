@@ -142,12 +142,15 @@ impl Game<'_> {
         out
     }
 
-    /// API 41: loaded content blocks with containers, for watched-machine ticks.
+    /// API 41/44: loaded content blocks, for watched-machine ticks. A block
+    /// entity need not have inventory slots: batteries and generators may be
+    /// watched only for their energy state.
     pub(super) fn mod_machine_tick_snapshot(&self) -> Vec<horizon_mods::MachineTick> {
         let mut out = Vec::new();
         let mut add = |dimension: &str, world: &World| {
             for (&pos, entity) in &world.block_entities {
-                if slots(entity).is_empty() || !world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4))
+                if !matches!(entity, BlockEntity::Mod(_))
+                    || !world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4))
                 {
                     continue;
                 }

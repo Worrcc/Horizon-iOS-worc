@@ -179,11 +179,16 @@ impl ModBlockEntity {
         Ok(())
     }
 
-    /// API 39: the saved energy state on this block, as (amount, capacity).
-    /// The compound is shared by every mod with capability `energy`.
+    /// API 39/44: the saved energy state on this block, as (amount, capacity).
+    /// A content block with no energy compound yet reports an empty store
+    /// `(0, 0)`, so a mod can initialize it once. A malformed compound is not
+    /// silently treated as empty.
     pub fn energy(&self) -> Option<(u64, u64)> {
         use horizon_world::nbt::{JavaString, Tag};
-        let Tag::Compound(values) = self.nbt.get(&JavaString::from("horizon:energy"))? else {
+        let Some(energy) = self.nbt.get(&JavaString::from("horizon:energy")) else {
+            return Some((0, 0));
+        };
+        let Tag::Compound(values) = energy else {
             return None;
         };
         let (Some(Tag::Long(amount)), Some(Tag::Long(capacity))) = (

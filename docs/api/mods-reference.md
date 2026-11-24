@@ -1727,6 +1727,7 @@ The energy in one side of a loaded block, if it has storage.
 | `set-energy-capacity` | `func(dimension: string, pos: energy-pos, capacity: u64) -> result<_, string>` | Give a loaded block's storage a capacity, 1..1,000,000,000. Only the first call succeeds; later ones with a different capacity error, so two mods cannot resize each other's machines. Capability `energy`. |
 | `insert-energy` | `func(dimension: string, pos: energy-pos, face: s32, amount: u64) -> result<u64, string>` | Queue insertion of at most `amount` energy into a side. Returns the amount actually queued; space is rechecked when applied, so a concurrent change can only reduce it, never create energy. |
 | `extract-energy` | `func(dimension: string, pos: energy-pos, face: s32, amount: u64) -> result<u64, string>` | Queue extraction of at most `amount` energy from a side. Returns the amount actually queued; rechecked on apply, so another extractor can only reduce it, never create energy. |
+| `transfer-energy` | `func(from-dimension: string, from: energy-pos, to-dimension: string, to: energy-pos, amount: u64) -> result<u64, string>` | API 44: atomically move up to `amount` energy between two loaded stores, counted as one operation. Returns the amount queued; both endpoints are rechecked on apply and either both change or neither. Both stores must exist and have capacity; the destination cannot overflow. An unknown or unloaded store makes the whole transfer fail. |
 
 ## `lookup`
 

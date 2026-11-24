@@ -1,4 +1,4 @@
-//! API 39: shared energy storage on content blocks.
+//! API 39/44: shared energy storage on content blocks.
 use super::*;
 use server_bindings::horizon::mods::energy::{self, EnergyPos, EnergyStats};
 
@@ -11,6 +11,7 @@ impl energy::Host for State {
         let (amount, capacity) = view
             .as_ref()?
             .energy_side(&dimension, pos.x, pos.y, pos.z, face)?;
+        let amount = self.projected(&dimension, (pos.x, pos.y, pos.z), amount);
         Some(EnergyStats { amount, capacity })
     }
 
@@ -24,17 +25,19 @@ impl energy::Host for State {
         if capacity == 0 || capacity > MAX_CAPACITY {
             return Err("energy capacity must be 1..1,000,000,000".into());
         }
-        let view = self.world.lock().map_err(|_| "world unavailable")?;
-        let current = view
-            .as_ref()
-            .ok_or("world unavailable")?
-            .energy_side(&dimension, pos.x, pos.y, pos.z, -1)
-            .ok_or("block has no energy storage")?;
+        let current = self.saved_energy(&dimension, &pos)?;
         if current.1 != 0 && current.1 != capacity {
             return Err("energy capacity is already set".into());
         }
-        drop(view);
-        self.queue_energy(dimension, pos, -1, current, EnergyKind::Capacity, capacity)
+        self.queue_energy(
+            dimension,
+            pos,
+            -1,
+            current,
+            EnergyKind::Capacity,
+            capacity,
+            None,
+        )
     }
 
     fn insert_energy(
@@ -48,18 +51,22 @@ impl energy::Host for State {
             return Ok(0);
         }
         self.energy_position(&dimension, &pos)?;
-        let view = self.world.lock().map_err(|_| "world unavailable")?;
-        let current = view
-            .as_ref()
-            .ok_or("world unavailable")?
-            .energy_side(&dimension, pos.x, pos.y, pos.z, face)
-            .ok_or("block has no energy storage")?;
-        let queued = amount.min(current.1.saturating_sub(current.0));
-        drop(view);
+        let (projected, capacity) = self.projected_with_capacity(&dimension, &pos, face)?;
+        let queued = amount.min(capacity.saturating_sub(projected));
         if queued == 0 {
             return Ok(0);
         }
-        self.queue_energy(dimension, pos, face, current, EnergyKind::Insert, queued)?;
+        let current = self.saved_energy(&dimension, &pos)?;
+        self.reserve(&dimension, (pos.x, pos.y, pos.z), queued as i64);
+        self.queue_energy(
+            dimension,
+            pos,
+            face,
+            current,
+            EnergyKind::Insert,
+            queued,
+            None,
+        )?;
         Ok(queued)
     }
 
@@ -74,18 +81,64 @@ impl energy::Host for State {
             return Ok(0);
         }
         self.energy_position(&dimension, &pos)?;
-        let view = self.world.lock().map_err(|_| "world unavailable")?;
-        let current = view
-            .as_ref()
-            .ok_or("world unavailable")?
-            .energy_side(&dimension, pos.x, pos.y, pos.z, face)
-            .ok_or("block has no energy storage")?;
-        let queued = amount.min(current.0);
-        drop(view);
+        let (projected, _) = self.projected_with_capacity(&dimension, &pos, face)?;
+        let queued = amount.min(projected);
         if queued == 0 {
             return Ok(0);
         }
-        self.queue_energy(dimension, pos, face, current, EnergyKind::Extract, queued)?;
+        let current = self.saved_energy(&dimension, &pos)?;
+        self.reserve(&dimension, (pos.x, pos.y, pos.z), -(queued as i64));
+        self.queue_energy(
+            dimension,
+            pos,
+            face,
+            current,
+            EnergyKind::Extract,
+            queued,
+            None,
+        )?;
+        Ok(queued)
+    }
+
+    fn transfer_energy(
+        &mut self,
+        from_dimension: String,
+        from: EnergyPos,
+        to_dimension: String,
+        to: EnergyPos,
+        amount: u64,
+    ) -> Result<u64, String> {
+        if amount == 0 {
+            return Ok(0);
+        }
+        self.energy_position(&from_dimension, &from)?;
+        self.energy_position(&to_dimension, &to)?;
+        if from_dimension == to_dimension && from.x == to.x && from.y == to.y && from.z == to.z {
+            return Err("cannot transfer energy to the same store".into());
+        }
+        let (source, source_capacity) = self.projected_with_capacity(&from_dimension, &from, -1)?;
+        let (target, target_capacity) = self.projected_with_capacity(&to_dimension, &to, -1)?;
+        if source_capacity == 0 || target_capacity == 0 {
+            return Err("both endpoints must have energy storage".into());
+        }
+        let queued = amount
+            .min(source)
+            .min(target_capacity.saturating_sub(target));
+        if queued == 0 {
+            return Ok(0);
+        }
+        let before = self.saved_energy(&from_dimension, &from)?;
+        self.reserve(&from_dimension, (from.x, from.y, from.z), -(queued as i64));
+        self.reserve(&to_dimension, (to.x, to.y, to.z), queued as i64);
+        self.queue_energy(
+            from_dimension,
+            from,
+            -1,
+            before,
+            EnergyKind::Transfer,
+            queued,
+            Some((to_dimension, (to.x, to.y, to.z))),
+        )?;
         Ok(queued)
     }
 }
@@ -109,6 +162,63 @@ impl State {
         Ok(())
     }
 
+    fn saved_energy(&self, dimension: &str, pos: &EnergyPos) -> Result<(u64, u64), String> {
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        view.as_ref()
+            .ok_or("world unavailable")?
+            .energy_side(dimension, pos.x, pos.y, pos.z, -1)
+            .ok_or("block has no energy storage".into())
+    }
+
+    fn projected_with_capacity(
+        &self,
+        dimension: &str,
+        pos: &EnergyPos,
+        face: i32,
+    ) -> Result<(u64, u64), String> {
+        let view = self.world.lock().map_err(|_| "world unavailable")?;
+        let (amount, capacity) = view
+            .as_ref()
+            .ok_or("world unavailable")?
+            .energy_side(dimension, pos.x, pos.y, pos.z, face)
+            .ok_or("block has no energy storage")?;
+        Ok((
+            self.projected(dimension, (pos.x, pos.y, pos.z), amount),
+            capacity,
+        ))
+    }
+
+    /// The saved amount plus this tick's already-promised changes.
+    fn projected(&self, dimension: &str, pos: (i32, i32, i32), amount: u64) -> u64 {
+        let Ok(ledger) = self.energy_ledger.lock() else {
+            return amount;
+        };
+        if ledger.tick != self.snapshot.tick {
+            return amount;
+        }
+        match ledger
+            .deltas
+            .get(&(dimension.to_owned(), pos.0, pos.1, pos.2))
+        {
+            Some(delta) if *delta >= 0 => amount.saturating_add(*delta as u64),
+            Some(delta) => amount.saturating_sub((-*delta) as u64),
+            None => amount,
+        }
+    }
+
+    fn reserve(&self, dimension: &str, pos: (i32, i32, i32), delta: i64) {
+        if let Ok(mut ledger) = self.energy_ledger.lock() {
+            if ledger.tick != self.snapshot.tick {
+                ledger.tick = self.snapshot.tick;
+                ledger.deltas.clear();
+            }
+            *ledger
+                .deltas
+                .entry((dimension.to_owned(), pos.0, pos.1, pos.2))
+                .or_default() += delta;
+        }
+    }
+
     fn queue_energy(
         &mut self,
         dimension: String,
@@ -117,6 +227,7 @@ impl State {
         before: (u64, u64),
         kind: EnergyKind,
         amount: u64,
+        to: Option<(String, (i32, i32, i32))>,
     ) -> Result<(), String> {
         if !channel_host::allowance(&mut self.energy_budget, self.snapshot.tick, 64) {
             return Err("at most 64 energy operations per mod per tick".into());
@@ -129,6 +240,7 @@ impl State {
             before,
             kind,
             amount,
+            to,
         }));
         Ok(())
     }

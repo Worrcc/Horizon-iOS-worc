@@ -105,10 +105,10 @@ These experimental, capability-gated interfaces are available to server mods:
 
 | Capability | What it provides |
 |---|---|
-| `energy` (API 39) | Host-saved shared energy storage on content blocks, with bounded deferred insert/extract operations. This is an energy contract, not a fluid API or automatic compatibility layer for Fabric energy mods. |
+| `energy` (API 39, API 44 transfer) | Host-saved shared energy storage on content blocks, with bounded deferred insert/extract and atomic transfer operations. Fresh blocks report an empty store so capacity can be initialized once. This is an energy contract, not a fluid API or automatic compatibility layer for Fabric energy mods. |
 | `lookup` (API 39) | A directory of which mod provides a named API for a block, item or entity. It does not dynamically invoke providers. |
 | `server-hooks` lifecycle (API 40) | Opt-in server tick start/end, player respawn, and before/after save callbacks. |
-| machine hooks (API 41) | Opt-in tick callbacks for watched content blocks with containers. |
+| machine hooks (API 41/44) | Opt-in tick callbacks for watched content blocks with or without containers; exact ids match blocks with state properties, and the 32-calls-per-tick cap rotates fairly. |
 | `attachments` (API 41) | Host-managed private bytes attached to entity, chunk, world and block identifiers, saved beside that mod's storage. |
 | `net` (API 42) | Registered, bounded cross-mod messages on a Horizon server, delivered on the next tick. This is separate from `channel`, which connects a mod's own client and server halves. |
 | `worldgen` (API 43) | Deterministic structure sites for newly generated chunks, based on the world seed and a feature's spacing/salt. Mods place them with the existing structure API. It is not a general biome-modifier, dimension, or configured-feature registration API. |
