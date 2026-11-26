@@ -1,0 +1,8 @@
+id = "container_test"
+name = "Container Test"
+version = "0.1.0"
+description = "API 22: a shift toggle in containers, and right-drag one item per slot. Creative inventory is excluded."
+api = "0.1"
+side = "client"
+capabilities = ["container"]
+experimental = ["container"]

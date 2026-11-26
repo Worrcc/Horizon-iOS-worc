@@ -42,6 +42,15 @@ impl FrameGraph {
                 .fold(0.0, f32::max)
                 + 6.0,
         );
+        #[cfg(target_os = "ios")]
+        let heat = heat_label(horizon_ios::thermal_state());
+        #[cfg(target_os = "ios")]
+        let width = width.max(
+            atlas.font.width(&lines[0])
+                + atlas.font.width("  ")
+                + atlas.font.width_text(&heat)
+                + 6.0,
+        );
         let x = batch.width - width - 2.0;
         let graph = if mode == Overlay::Graph { 42.0 } else { 0.0 };
         batch.fill(
@@ -66,6 +75,17 @@ impl FrameGraph {
                 color,
                 true,
             );
+            #[cfg(target_os = "ios")]
+            if i == 0 {
+                batch.text_styled(
+                    atlas,
+                    &heat,
+                    x + 3.0 + atlas.font.width(line) + atlas.font.width("  "),
+                    4.0,
+                    color,
+                    true,
+                );
+            }
         }
         if mode != Overlay::Graph {
             return;
@@ -107,4 +127,18 @@ impl FrameGraph {
             );
         }
     }
+}
+
+#[cfg(target_os = "ios")]
+fn heat_label(state: horizon_ios::ThermalState) -> Text {
+    use crate::text::{GOLD, GREEN, RED, YELLOW};
+    use horizon_ios::ThermalState;
+    let (key, color) = match state {
+        ThermalState::Nominal => ("horizon.perf.heat.nominal", GREEN),
+        ThermalState::Fair => ("horizon.perf.heat.fair", YELLOW),
+        ThermalState::Serious => ("horizon.perf.heat.serious", GOLD),
+        ThermalState::Critical => ("horizon.perf.heat.critical", RED),
+    };
+    let state = Text::translate(key, &[]);
+    Text::translate("horizon.perf.heat_state", &[state]).with_color(color)
 }

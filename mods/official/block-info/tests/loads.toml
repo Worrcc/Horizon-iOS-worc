@@ -1,0 +1,13 @@
+# Loads in the game's sandbox and ticks in a world and on the title screen without trapping.
+# The runner has no blocks to look at, so the box itself is checked in the game.
+[[step]]
+ticks = 20
+expect.panel = []
+
+[[step]]
+title-screen = true
+ticks = 1
+
+[[step]]
+reload = true
+ticks = 1

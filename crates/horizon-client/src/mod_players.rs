@@ -1,0 +1,651 @@
+//! Capability `players`: authoritative inventories moved into the mod runtime during hooks.
+use crate::items::ItemStack;
+use horizon_mods::ItemFilter;
+use horizon_mods::PlayerInventories;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+#[derive(Default)]
+pub struct Inventory {
+    pub main: Vec<Option<ItemStack>>,
+    pub armor: [Option<ItemStack>; 4],
+    pub offhand: Option<ItemStack>,
+    pub selected: usize,
+    pub creative: bool,
+    pub changed: bool,
+    pub drops: Vec<ItemStack>,
+}
+/// Registry ids and stack limits include vanilla and loaded content mods.
+pub struct Inventories {
+    pub items: Arc<HashMap<String, u32>>,
+    /// Item tags by id without `#`, for `clear-items`.
+    pub item_tags: Arc<HashMap<String, HashSet<String>>>,
+    pub players: HashMap<String, Inventory>,
+}
+impl Inventories {
+    fn checked(&mut self, player: &str, item: &str) -> Result<(&mut Inventory, u32), String> {
+        let max = self
+            .items
+            .get(item)
+            .copied()
+            .ok_or_else(|| format!("unknown item {item}"))?;
+        let inv = self
+            .players
+            .get_mut(player)
+            .ok_or_else(|| format!("no online player {player}"))?;
+        Ok((inv, max))
+    }
+}
+impl Inventories {
+    /// API 38: insert a fully decoded stack, splitting and dropping overflow
+    /// exactly as `give_item_with_data` does.
+    fn give_stack(&mut self, player: &str, mut stack: ItemStack, max: u32) -> Result<(), String> {
+        let inv = self.players.get_mut(player).ok_or("unknown player")?;
+        let selected = inv.selected.min(inv.main.len());
+        let (main, rest) = inv.main.split_at_mut(selected);
+        let (held, after) = if rest.is_empty() {
+            (rest, &mut [][..])
+        } else {
+            rest.split_at_mut(1)
+        };
+        for slot in held
+            .iter_mut()
+            .chain(std::iter::once(&mut inv.offhand))
+            .chain(main)
+            .chain(after)
+            .flatten()
+        {
+            if slot.same_item_same_components(&stack) && slot.count < max {
+                let moved = (max - slot.count).min(stack.count);
+                slot.count += moved;
+                stack.count -= moved;
+                inv.changed |= moved > 0;
+                if stack.count == 0 {
+                    return Ok(());
+                }
+            }
+        }
+        for slot in inv.main.iter_mut().filter(|s| s.is_none()) {
+            let moved = max.min(stack.count);
+            *slot = Some(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+            inv.changed = true;
+            if stack.count == 0 {
+                return Ok(());
+            }
+        }
+        // Item entities carry legal stack sizes, including nonstackable items.
+        while stack.count > 0 {
+            let moved = max.min(stack.count);
+            inv.drops.push(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+        }
+        Ok(())
+    }
+}
+
+impl PlayerInventories for Inventories {
+    fn equipment(&self, player: &str) -> Option<horizon_mods::EquipmentSlots> {
+        let inv = self.players.get(player)?;
+        let id = |slot: &Option<ItemStack>| {
+            slot.as_ref()
+                .filter(|s| s.count > 0)
+                .map(|s| s.item.to_string())
+        };
+        Some(horizon_mods::EquipmentSlots {
+            head: id(&inv.armor[0]),
+            chest: id(&inv.armor[1]),
+            legs: id(&inv.armor[2]),
+            feet: id(&inv.armor[3]),
+            main_hand: inv.main.get(inv.selected).and_then(id),
+            off_hand: id(&inv.offhand),
+            hotbar: (0..9).map(|i| inv.main.get(i).and_then(id)).collect(),
+        })
+    }
+    fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String> {
+        let (inv, _) = self.checked(player, item)?;
+        if inv.creative {
+            return Ok(count);
+        }
+        if count == 0 {
+            return Ok(0);
+        }
+        let mut left = count;
+        let selected = inv.selected.min(inv.main.len());
+        let (main, rest) = inv.main.split_at_mut(selected);
+        let (held, after) = if rest.is_empty() {
+            (rest, &mut [][..])
+        } else {
+            rest.split_at_mut(1)
+        };
+        // Selected hand, other inventory slots, armor, then off hand. Match ids, not components.
+        for slot in held
+            .iter_mut()
+            .chain(main)
+            .chain(after)
+            .chain(&mut inv.armor)
+            .chain(std::iter::once(&mut inv.offhand))
+        {
+            if let Some(stack) = slot
+                && &*stack.item == item
+            {
+                let taken = left.min(stack.count);
+                stack.count -= taken;
+                left -= taken;
+                if stack.count == 0 {
+                    *slot = None;
+                }
+            }
+            if left == 0 {
+                break;
+            }
+        }
+        inv.changed |= left != count;
+        Ok(count - left)
+    }
+    fn clear_items(
+        &mut self,
+        player: &str,
+        filter: &ItemFilter,
+        mod_id: &str,
+        max: u32,
+    ) -> Result<u32, String> {
+        match filter {
+            ItemFilter::Item(id) if !self.items.contains_key(id) => {
+                return Err(format!("unknown item {id}"));
+            }
+            ItemFilter::Tag(tag) if !self.item_tags.contains_key(tag) => {
+                return Err(format!("unknown item tag {tag}"));
+            }
+            _ => {}
+        }
+        let tag_items = match filter {
+            ItemFilter::Tag(tag) => self.item_tags.get(tag),
+            _ => None,
+        };
+        let inv = self
+            .players
+            .get_mut(player)
+            .ok_or_else(|| format!("no online player {player}"))?;
+        let matches = |stack: &ItemStack| match filter {
+            ItemFilter::Item(id) => &*stack.item == id.as_str(),
+            ItemFilter::Tag(_) => tag_items.is_some_and(|items| items.contains(&*stack.item)),
+            ItemFilter::ModData(want) => match stack.mod_data(mod_id) {
+                Ok(Some(value)) => want.as_ref().is_none_or(|w| *w == value),
+                _ => false,
+            },
+        };
+        let selected = inv.selected.min(inv.main.len());
+        let (main, rest) = inv.main.split_at_mut(selected);
+        let (held, after) = if rest.is_empty() {
+            (rest, &mut [][..])
+        } else {
+            rest.split_at_mut(1)
+        };
+        // The order of take_item: selected hand, other inventory slots, armor, off hand.
+        let slots = held
+            .iter_mut()
+            .chain(main)
+            .chain(after)
+            .chain(&mut inv.armor)
+            .chain(std::iter::once(&mut inv.offhand));
+        if max == 0 {
+            let mut total = 0u32;
+            for slot in slots {
+                if let Some(stack) = slot
+                    && matches(stack)
+                {
+                    total = total.saturating_add(stack.count);
+                }
+            }
+            return Ok(total);
+        }
+        let mut left = max;
+        for slot in slots {
+            if left == 0 {
+                break;
+            }
+            if let Some(stack) = slot
+                && matches(stack)
+            {
+                let taken = left.min(stack.count);
+                stack.count -= taken;
+                left -= taken;
+                if stack.count == 0 {
+                    *slot = None;
+                }
+            }
+        }
+        inv.changed |= left != max;
+        Ok(max - left)
+    }
+    fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String> {
+        self.give_item_with_data(player, item, count, "", None)
+    }
+    fn give_item_with_data(
+        &mut self,
+        player: &str,
+        item: &str,
+        count: u32,
+        mod_id: &str,
+        data: Option<&str>,
+    ) -> Result<(), String> {
+        let (_, max) = self.checked(player, item)?;
+        if !mod_id.is_empty() && item == "minecraft:air" {
+            return Err("empty/air stacks cannot carry components".into());
+        }
+        if max == 0 {
+            return Err("item cannot carry a nonempty stack".into());
+        }
+        if data.is_some_and(|s| s.len() > 1024) {
+            return Err("stack data exceeds 1024 UTF-8 bytes".into());
+        }
+        if count > max.saturating_mul(100) {
+            return Err("give-item is at most 100 stacks per call".into());
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let mut stack = ItemStack::new(item, count);
+        if !mod_id.is_empty() {
+            stack.set_mod_data(mod_id, data)?;
+        }
+        self.give_stack(player, stack, max)
+    }
+    fn give_item_with_components(
+        &mut self,
+        player: &str,
+        stack: horizon_mods::MachineStack,
+    ) -> Result<(), String> {
+        let (_, max) = self.checked(player, &stack.item)?;
+        if max == 0 {
+            return Err("item cannot carry a nonempty stack".into());
+        }
+        if stack.count > max.saturating_mul(100) {
+            return Err("give-item is at most 100 stacks per call".into());
+        }
+        // The bytes are lossless network NBT from encode_components, as machine
+        // stacks and claimed death drops carry.
+        let tag = stack
+            .components
+            .as_ref()
+            .map(|bytes| -> Result<horizon_world::nbt::Tag, String> {
+                let (tag, used) = horizon_world::nbt::read_network(bytes, Default::default())
+                    .map_err(|_| "invalid item component patch".to_owned())?;
+                if used != bytes.len() {
+                    return Err("trailing bytes in item component patch".into());
+                }
+                Ok(tag)
+            })
+            .transpose()?;
+        let mut entries = vec![
+            ("id", horizon_client_core::nbt_value::string(&stack.item)),
+            ("count", horizon_world::nbt::Tag::Int(stack.count as i32)),
+        ];
+        if let Some(tag) = tag {
+            entries.push(("components", tag));
+        }
+        let decoded =
+            horizon_items::item_nbt::item_from_nbt(&horizon_world::nbt::Tag::compound(entries))
+                .ok_or("invalid item stack")?;
+        if decoded.count == 0 {
+            return Ok(());
+        }
+        self.give_stack(player, decoded, max)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const ALICE: &str = "00000000-0000-4000-8000-000000000001";
+    const BOB: &str = "00000000-0000-4000-8000-000000000002";
+    #[test]
+    fn giving_data_splits_legal_stacks_merges_only_equal_data_and_keeps_creative_real() {
+        let mut all = inventories();
+        let inv = all.players.get_mut(ALICE).unwrap();
+        inv.main = vec![None; 36];
+        inv.selected = 0;
+        inv.offhand = None;
+        inv.creative = true;
+        inv.main[0] = Some(ItemStack::new("minecraft:beef", 60));
+        all.give_item_with_data(ALICE, "minecraft:beef", 70, "demo", Some("one"))
+            .unwrap();
+        let inv = &all.players[ALICE];
+        assert_eq!(inv.main[0].as_ref().unwrap().count, 60);
+        assert_eq!(inv.main[1].as_ref().unwrap().count, 64);
+        assert_eq!(inv.main[2].as_ref().unwrap().count, 6);
+        assert_eq!(
+            inv.main[1]
+                .as_ref()
+                .unwrap()
+                .mod_data("demo")
+                .unwrap()
+                .as_deref(),
+            Some("one")
+        );
+        all.give_item_with_data(ALICE, "minecraft:beef", 3, "demo", Some("one"))
+            .unwrap();
+        assert_eq!(all.players[ALICE].main[2].as_ref().unwrap().count, 9);
+        all.give_item_with_data(ALICE, "minecraft:beef", 2, "demo", Some("two"))
+            .unwrap();
+        assert_eq!(all.players[ALICE].main[3].as_ref().unwrap().count, 2);
+        all.give_item_with_data(ALICE, "minecraft:beef", 2, "demo", None)
+            .unwrap();
+        assert_eq!(all.players[ALICE].main[0].as_ref().unwrap().count, 62);
+        let saved = all.players[ALICE].main.clone();
+        assert!(
+            all.give_item_with_data(ALICE, "minecraft:beef", 6401, "demo", Some("one"))
+                .is_err()
+        );
+        assert!(
+            all.give_item_with_data(ALICE, "minecraft:beef", 1, "demo", Some(&"x".repeat(1025)))
+                .is_err()
+        );
+        assert_eq!(all.players[ALICE].main, saved);
+        all.give_item_with_data(ALICE, "ruby:scale", 100, "demo", Some("opaque"))
+            .unwrap();
+        let inv = &all.players[ALICE];
+        assert_eq!(inv.drops.len(), 68);
+        assert!(
+            inv.drops
+                .iter()
+                .all(|s| s.count == 1 && s.mod_data("demo").unwrap().as_deref() == Some("opaque"))
+        );
+        assert_eq!(
+            inv.main.iter().flatten().map(|s| s.count).sum::<u32>()
+                + inv.drops.iter().map(|s| s.count).sum::<u32>(),
+            237
+        );
+    }
+    fn inventories() -> Inventories {
+        Inventories {
+            item_tags: Default::default(),
+            items: Arc::new(
+                [
+                    ("minecraft:beef".into(), 64),
+                    ("minecraft:stone".into(), 64),
+                    ("ruby:scale".into(), 1),
+                ]
+                .into(),
+            ),
+            players: [
+                (
+                    ALICE.into(),
+                    Inventory {
+                        main: vec![None; 36],
+                        selected: 5,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    BOB.into(),
+                    Inventory {
+                        main: vec![None; 36],
+                        selected: 0,
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+        }
+    }
+    fn clear_fixture() -> Inventories {
+        let mut all = inventories();
+        all.item_tags = Arc::new(
+            [(
+                "test:meat".to_owned(),
+                ["minecraft:beef".to_owned()].into_iter().collect(),
+            )]
+            .into(),
+        );
+        let a = all.players.get_mut(ALICE).unwrap();
+        a.main[0] = Some(ItemStack::new("minecraft:stone", 64));
+        let mut tagged = ItemStack::new("minecraft:stone", 10);
+        tagged.set_mod_data("m", Some("a")).unwrap();
+        a.main[3] = Some(tagged);
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 5));
+        a.offhand = Some(ItemStack::new("minecraft:stone", 1));
+        all
+    }
+    fn count(all: &Inventories, item: &str) -> u32 {
+        let inv = &all.players[ALICE];
+        inv.main
+            .iter()
+            .chain(&inv.armor)
+            .chain(std::iter::once(&inv.offhand))
+            .flatten()
+            .filter(|s| &*s.item == item)
+            .map(|s| s.count)
+            .sum()
+    }
+    #[test]
+    fn clear_items_destroys_only_matches_conserves_the_rest() {
+        let stone = ItemFilter::Item("minecraft:stone".into());
+        let mut all = clear_fixture();
+        let before = count(&all, "minecraft:stone");
+        assert_eq!(before, 75);
+        // Selected slot first (beef, no match), then main from slot 0.
+        assert_eq!(all.clear_items(ALICE, &stone, "m", 70).unwrap(), 70);
+        assert_eq!(before - count(&all, "minecraft:stone"), 70);
+        let inv = &all.players[ALICE];
+        assert!(inv.changed);
+        assert!(inv.main[0].is_none(), "the first stack went entirely");
+        let kept = inv.main[3].as_ref().unwrap();
+        assert_eq!(kept.count, 4);
+        assert_eq!(kept.mod_data("m").unwrap().as_deref(), Some("a"));
+        assert_eq!(inv.main[5].as_ref().unwrap().count, 5);
+        assert_eq!(inv.offhand.as_ref().unwrap().count, 1);
+
+        // max 0 counts and changes nothing.
+        let mut all = clear_fixture();
+        assert_eq!(all.clear_items(ALICE, &stone, "m", 0).unwrap(), 75);
+        assert_eq!(count(&all, "minecraft:stone"), 75);
+        assert!(!all.players[ALICE].changed);
+
+        // Mod data: only the tagged stack, scoped by mod id.
+        let mut all = clear_fixture();
+        let data = ItemFilter::ModData(Some("a".into()));
+        assert_eq!(all.clear_items(ALICE, &data, "m", u32::MAX).unwrap(), 10);
+        assert!(all.players[ALICE].main[3].is_none());
+        assert_eq!(count(&all, "minecraft:stone"), 65);
+        let mut all = clear_fixture();
+        assert_eq!(
+            all.clear_items(ALICE, &ItemFilter::ModData(None), "n", u32::MAX)
+                .unwrap(),
+            0
+        );
+        assert!(!all.players[ALICE].changed);
+        assert_eq!(
+            all.clear_items(ALICE, &ItemFilter::ModData(None), "m", u32::MAX)
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            all.clear_items(ALICE, &ItemFilter::ModData(Some("b".into())), "m", u32::MAX)
+                .unwrap(),
+            0
+        );
+
+        // Tags.
+        let mut all = clear_fixture();
+        let meat = ItemFilter::Tag("test:meat".into());
+        assert_eq!(all.clear_items(ALICE, &meat, "m", u32::MAX).unwrap(), 5);
+        assert!(all.players[ALICE].main[5].is_none());
+        assert_eq!(count(&all, "minecraft:stone"), 75);
+
+        // Creative players lose items too.
+        let mut all = clear_fixture();
+        all.players.get_mut(ALICE).unwrap().creative = true;
+        assert_eq!(all.clear_items(ALICE, &stone, "m", u32::MAX).unwrap(), 75);
+        assert_eq!(count(&all, "minecraft:stone"), 0);
+
+        // Errors change nothing.
+        let mut all = clear_fixture();
+        assert!(
+            all.clear_items(ALICE, &ItemFilter::Item("nope:x".into()), "m", 1)
+                .is_err()
+        );
+        assert!(
+            all.clear_items(ALICE, &ItemFilter::Tag("nope:x".into()), "m", 1)
+                .is_err()
+        );
+        assert!(all.clear_items("offline", &stone, "m", 1).is_err());
+        assert_eq!(count(&all, "minecraft:stone"), 75);
+        assert!(!all.players[ALICE].changed);
+    }
+    #[test]
+    fn equipment_reads_guest_armor_selected_hand_offhand_and_nine_slots() {
+        let mut inv = inventories();
+        let a = inv.players.get_mut(ALICE).unwrap();
+        for (i, id) in ["ruby:helmet", "ruby:chest", "ruby:legs", "ruby:feet"]
+            .iter()
+            .enumerate()
+        {
+            a.armor[i] = Some(ItemStack::new(id, 1));
+        }
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 2));
+        a.main[8] = Some(ItemStack::new("ruby:scale", 1));
+        a.offhand = Some(ItemStack::new("minecraft:stone", 1));
+        let gear = inv.equipment(ALICE).unwrap();
+        assert_eq!(gear.head.as_deref(), Some("ruby:helmet"));
+        assert_eq!(gear.chest.as_deref(), Some("ruby:chest"));
+        assert_eq!(gear.legs.as_deref(), Some("ruby:legs"));
+        assert_eq!(gear.feet.as_deref(), Some("ruby:feet"));
+        assert_eq!(gear.main_hand.as_deref(), Some("minecraft:beef"));
+        assert_eq!(gear.off_hand.as_deref(), Some("minecraft:stone"));
+        assert_eq!(gear.hotbar.len(), 9);
+        assert_eq!(gear.hotbar[8].as_deref(), Some("ruby:scale"));
+        assert!(gear.hotbar[0].is_none());
+        inv.take_item(ALICE, "minecraft:beef", 2).unwrap();
+        assert!(inv.equipment(ALICE).unwrap().main_hand.is_none());
+        assert!(inv.equipment("offline").is_none());
+        assert!(
+            inv.equipment(BOB)
+                .unwrap()
+                .hotbar
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+    #[test]
+    fn taking_prefers_main_hand_then_rest_preserves_components_and_never_double_spends() {
+        let mut inv = inventories();
+        let a = inv.players.get_mut(ALICE).unwrap();
+        a.main[0] = Some(ItemStack::new("minecraft:beef", 3));
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 3));
+        a.main[5].as_mut().unwrap().damage = 7;
+        a.armor[1] = Some(ItemStack::new("minecraft:beef", 2));
+        a.offhand = Some(ItemStack::new("minecraft:beef", 1));
+        inv.give_item(BOB, "minecraft:beef", 8).unwrap();
+        assert_eq!(inv.take_item(ALICE, "minecraft:beef", 2).unwrap(), 2);
+        let a = &inv.players[ALICE];
+        assert_eq!(a.main[0].as_ref().unwrap().count, 3);
+        assert_eq!(
+            (
+                a.main[5].as_ref().unwrap().count,
+                a.main[5].as_ref().unwrap().damage
+            ),
+            (1, 7)
+        );
+        assert_eq!(inv.take_item(ALICE, "minecraft:beef", 99).unwrap(), 7);
+        assert_eq!(inv.take_item(ALICE, "minecraft:beef", 99).unwrap(), 0);
+        assert!(inv.players[ALICE].main.iter().all(Option::is_none));
+        assert!(inv.players[ALICE].offhand.is_none());
+        assert!(inv.players[ALICE].armor.iter().all(Option::is_none));
+        assert_eq!(inv.take_item(BOB, "minecraft:beef", 99).unwrap(), 8);
+        inv.give_item(ALICE, "minecraft:beef", 4).unwrap();
+        assert_eq!(inv.take_item(ALICE, "minecraft:beef", 4).unwrap(), 4);
+    }
+    #[test]
+    fn creative_takes_are_free_and_ids_and_players_are_checked_even_for_zero() {
+        let mut inv = inventories();
+        inv.players.get_mut(ALICE).unwrap().creative = true;
+        assert_eq!(
+            inv.take_item(ALICE, "minecraft:beef", u32::MAX).unwrap(),
+            u32::MAX
+        );
+        assert!(!inv.players[ALICE].changed);
+        assert!(inv.take_item(ALICE, "minecraft:missing", 0).is_err());
+        assert!(inv.give_item(ALICE, "minecraft:missing", 0).is_err());
+        assert!(inv.take_item("offline", "minecraft:beef", 0).is_err());
+        assert!(inv.give_item("offline", "minecraft:beef", 0).is_err());
+        inv.give_item(ALICE, "ruby:scale", 3).unwrap();
+        assert_eq!(
+            inv.players[ALICE]
+                .main
+                .iter()
+                .flatten()
+                .map(|s| s.count)
+                .sum::<u32>(),
+            3
+        );
+        assert_eq!(inv.take_item(ALICE, "ruby:scale", 2).unwrap(), 2);
+        assert_eq!(
+            inv.players[ALICE]
+                .main
+                .iter()
+                .flatten()
+                .map(|s| s.count)
+                .sum::<u32>(),
+            3
+        );
+    }
+    #[test]
+    fn giving_merges_selected_and_offhand_then_empty_slots_and_drops_legal_stacks() {
+        let mut inv = inventories();
+        let a = inv.players.get_mut(ALICE).unwrap();
+        a.main.fill(Some(ItemStack::new("minecraft:stone", 64)));
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 60));
+        a.offhand = Some(ItemStack::new("minecraft:beef", 60));
+        a.main[10] = None;
+        inv.give_item(ALICE, "minecraft:beef", 10).unwrap();
+        let a = &inv.players[ALICE];
+        assert_eq!(a.main[5].as_ref().unwrap().count, 64);
+        assert_eq!(a.offhand.as_ref().unwrap().count, 64);
+        assert_eq!(a.main[10].as_ref().unwrap().count, 2);
+        assert!(a.drops.is_empty());
+        inv.give_item(ALICE, "ruby:scale", 3).unwrap();
+        assert_eq!(
+            inv.players[ALICE].drops,
+            vec![ItemStack::new("ruby:scale", 1); 3]
+        );
+        let a = &inv.players[ALICE];
+        let before = (a.main.clone(), a.drops.clone());
+        assert!(inv.give_item(ALICE, "ruby:scale", 101).is_err());
+        assert_eq!(
+            (
+                inv.players[ALICE].main.clone(),
+                inv.players[ALICE].drops.clone()
+            ),
+            before
+        );
+    }
+    #[test]
+    fn giving_does_not_merge_stacks_with_different_components_or_discard_creative_overflow() {
+        let mut inv = inventories();
+        let a = inv.players.get_mut(ALICE).unwrap();
+        a.creative = true;
+        a.main.fill(Some(ItemStack::new("minecraft:stone", 64)));
+        a.main[5] = Some(ItemStack::new("minecraft:beef", 1));
+        a.main[5].as_mut().unwrap().damage = 1;
+        inv.give_item(ALICE, "minecraft:beef", 65).unwrap();
+        assert_eq!(inv.players[ALICE].main[5].as_ref().unwrap().count, 1);
+        assert_eq!(
+            inv.players[ALICE].drops,
+            vec![
+                ItemStack::new("minecraft:beef", 64),
+                ItemStack::new("minecraft:beef", 1)
+            ]
+        );
+        assert!(!inv.players[ALICE].changed);
+    }
+}

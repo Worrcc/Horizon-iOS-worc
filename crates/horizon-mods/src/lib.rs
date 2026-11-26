@@ -6,9 +6,13 @@
 //! Nothing here runs unless a mod is installed and turned on: an empty
 //! [`Mods`] makes no engine and every hook returns at once.
 pub mod api_level;
+pub mod atmosphere;
+pub mod atmosphere_fx;
+pub mod atmosphere_sky;
 #[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;
+pub mod datapacks;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod manifest;
@@ -17,6 +21,7 @@ pub mod modpack;
 mod runtime;
 #[cfg(feature = "runtime")]
 pub mod testing;
+pub mod zip_import;
 
 pub use content::Content;
 pub use manifest::{Capability, Manifest, Package, Side, find};

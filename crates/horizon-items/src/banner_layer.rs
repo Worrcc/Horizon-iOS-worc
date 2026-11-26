@@ -3,7 +3,7 @@ use horizon_world::nbt::Tag;
 use std::sync::Arc;
 
 /// `BannerPatternLayers.Layer`: a pattern id and the dye name it is painted in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BannerLayer {
     pub pattern: Arc<str>,
     pub color: Arc<str>,

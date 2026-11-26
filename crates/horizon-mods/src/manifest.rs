@@ -14,8 +14,8 @@ pub const WASM: &str = "mod.wasm";
 /// built for any 0.1.x SDK.
 pub const API: &str = "0.1";
 /// The manifest `api` lines this build loads. 0.2 is 0.1 plus content:
-/// `assets/` and `data/` in the `.hmod`, with blocks and items declared in
-/// `data/<id>/horizon/` (docs/modpacks.md). Code still links API 0.1.
+/// `assets/` and `data/` in the `.hmod`, with blocks, items, creative tabs, mob effects,
+/// entity types and menu types declared in `data/<id>/horizon/` (docs/mods.md). Code still links API 0.1.
 /// 0.3 is a server mod (experimental): the `horizon-server-mod` world.
 pub const APIS: [&str; 3] = [API, "0.2", SERVER_API];
 /// The line of server mods, experimental: `side = "server"`.
@@ -46,6 +46,10 @@ pub struct Manifest {
     pub side: Side,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
+    /// Opt-in disk quota in MiB (1..=1024), with up to 65536 keys.
+    /// Absent: the legacy 4 MiB / 64 keys. Older hosts reject this field.
+    #[serde(default, rename = "storage-mb")]
+    pub storage_mb: Option<u16>,
     /// Namespaces besides `id` that the mod's `assets/` and `data/` use, for
     /// a content mod whose files sit under other names than its id (Towns
     /// and Towers ships `kaisyn` and `towns_and_towers`). No two content mods
@@ -58,6 +62,11 @@ pub struct Manifest {
     /// accepted here, so the manifest keeps loading once it is promoted.
     #[serde(default)]
     pub experimental: Vec<Capability>,
+    /// World data packs the mod ships whole under `datapacks/<name>/`
+    /// (`api = "0.2"`), offered in Create World > Data Packs. Older hosts
+    /// reject this field.
+    #[serde(default)]
+    pub datapacks: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -83,7 +92,7 @@ pub enum Capability {
     Storage,
     /// Runs vanilla commands as the player, with the player's permissions.
     Command,
-    /// New blocks and items from the mod's `data/` (API 0.2): no WIT
+    /// New blocks, items and mob effects from the mod's `data/` (API 0.2): no WIT
     /// interface, the game reads them before the world loads.
     Registries,
     /// A screen the mod owns and a settings page in Options > Mods, drawn
@@ -103,9 +112,38 @@ pub enum Capability {
     /// The recipes and items the game knows, for recipe viewers
     /// (interface `recipes`).
     Recipes,
+    /// The mobs on the server, and orders to the content mods' own (server
+    /// mods; interface `entities`).
+    Entities,
+    /// The blocks, biomes and light the player's game has loaded, and the
+    /// loaded packs' block table and textures (client mods; interface
+    /// `client-world`).
+    WorldRead,
+    /// Inspect and click the local player's open container screen (experimental).
+    Container,
+    /// Sandboxed messages between the same mod id on client and server.
+    Channel,
+    /// Fog and sky colours blended in by the game (client mods; interface
+    /// `atmosphere`, API level 33, experimental).
+    Atmosphere,
+    /// Shared energy storage on content blocks (server mods; interface
+    /// `energy`, API level 39, experimental).
+    Energy,
+    /// A directory of which mod provides an API for a block, item or entity
+    /// (server mods; interface `lookup`, API level 39, experimental).
+    Lookup,
+    /// Host-managed persistent byte values on game objects (server mods;
+    /// interface `attachments`, API level 41, experimental).
+    Attachments,
+    /// Cross-mod messages between running server mods (capability `net`,
+    /// API level 42, experimental).
+    Net,
+    /// Deterministic feature sites for worldgen mods (capability `worldgen`,
+    /// API level 43, experimental).
+    Worldgen,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 22] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -118,12 +156,31 @@ impl Capability {
         Capability::Players,
         Capability::World,
         Capability::Recipes,
+        Capability::Entities,
+        Capability::WorldRead,
+        Capability::Container,
+        Capability::Channel,
+        Capability::Atmosphere,
+        Capability::Energy,
+        Capability::Lookup,
+        Capability::Attachments,
+        Capability::Net,
+        Capability::Worldgen,
     ];
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
         matches!(
             self,
-            Capability::Storage | Capability::Players | Capability::World
+            Capability::Storage
+                | Capability::Players
+                | Capability::World
+                | Capability::Entities
+                | Capability::Channel
+                | Capability::Energy
+                | Capability::Lookup
+                | Capability::Attachments
+                | Capability::Net
+                | Capability::Worldgen
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -141,6 +198,16 @@ impl Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::Entities => "entities",
+            Capability::WorldRead => "client-world",
+            Capability::Container => "container",
+            Capability::Channel => "channel",
+            Capability::Atmosphere => "atmosphere",
+            Capability::Energy => "energy",
+            Capability::Lookup => "lookup",
+            Capability::Attachments => "attachments",
+            Capability::Net => "net",
+            Capability::Worldgen => "worldgen",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -148,7 +215,20 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
+            Capability::Ui
+                | Capability::Render
+                | Capability::Input
+                | Capability::Recipes
+                | Capability::Entities
+                | Capability::WorldRead
+                | Capability::Container
+                | Capability::Channel
+                | Capability::Atmosphere
+                | Capability::Energy
+                | Capability::Lookup
+                | Capability::Attachments
+                | Capability::Net
+                | Capability::Worldgen
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -159,7 +239,9 @@ impl Capability {
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",
             Capability::Command => "run commands as you, with your permissions",
-            Capability::Registries => "add blocks and items to your worlds",
+            Capability::Registries => {
+                "add blocks, items, mob effects and entity types to your worlds"
+            }
             Capability::Ui => "show its own screens and a settings page",
             Capability::Render => "draw on your screen, shake and zoom the camera",
             Capability::Input => {
@@ -170,6 +252,30 @@ impl Capability {
             Capability::Recipes => {
                 "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
             }
+            Capability::Entities => {
+                "see the creatures around, and move, animate and remove its own, whose breath and stomps hurt what is near them"
+            }
+            Capability::Channel => "exchange mod messages with the server and its players",
+            Capability::Atmosphere => {
+                "change the colours and distance of fog and the sky, and show particle effects and sky sprites"
+            }
+            Capability::Container => "inspect and click your open inventory and container screens",
+            Capability::WorldRead => {
+                "see the blocks, biomes and light your game has loaded around you"
+            }
+            Capability::Energy => "read and transfer energy in machines that store it",
+            Capability::Lookup => "see which mod provides an API for a block, item or creature",
+            Capability::Attachments => "save its own data on blocks, chunks, worlds and creatures",
+            Capability::Net => "exchange messages with other server mods",
+            Capability::Worldgen => "place registered structures in newly generated chunks",
+        }
+    }
+    /// What the player reads, including a mod's declared disk quota.
+    pub fn describe_with_storage(self, storage_mb: Option<u16>) -> String {
+        if let (Self::Storage, Some(mb)) = (self, storage_mb) {
+            format!("save up to {mb} MB to disk")
+        } else {
+            self.describe().to_owned()
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -184,9 +290,16 @@ impl Capability {
         if interface == "log" {
             return Ok(None);
         }
-        // A recipe viewer's panel is part of capability `ui`.
-        if interface == "browser" {
+        // A recipe viewer's panel is part of capability `ui`, a mod's own
+        // images of capability `render`.
+        if matches!(interface, "browser" | "browser-ext") {
             return Ok(Some(Capability::Ui));
+        }
+        if interface == "canvas" {
+            return Ok(Some(Capability::Render));
+        }
+        if matches!(interface, "server-hooks" | "menus") {
+            return Ok(Some(Capability::World));
         }
         Capability::ALL
             .into_iter()
@@ -211,14 +324,33 @@ impl fmt::Display for Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::Entities => "entities",
+            Capability::WorldRead => "world-read",
+            Capability::Container => "container",
+            Capability::Channel => "channel",
+            Capability::Atmosphere => "atmosphere",
+            Capability::Energy => "energy",
+            Capability::Lookup => "lookup",
+            Capability::Attachments => "attachments",
+            Capability::Net => "net",
+            Capability::Worldgen => "worldgen",
         };
         f.write_str(name)
     }
 }
 
 impl Manifest {
+    /// The storage limits promised by this manifest: bytes and distinct keys.
+    pub fn storage_limits(&self) -> (u64, usize) {
+        self.storage_mb
+            .map_or((4 << 20, 64), |mb| (u64::from(mb) << 20, 65536))
+    }
+
     pub fn parse(text: &str) -> Result<Self, String> {
         let m: Manifest = toml::from_str(text).map_err(|e| format!("{MANIFEST}: {e}"))?;
+        if m.storage_mb.is_some_and(|mb| !(1..=1024).contains(&mb)) {
+            return Err(format!("{MANIFEST}: storage-mb must be 1..=1024 MB"));
+        }
         let id_ok = (1..=64).contains(&m.id.len())
             && m.id
                 .bytes()
@@ -247,11 +379,9 @@ impl Manifest {
                 "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
             ));
         }
-        if let Some(c) = m
-            .capabilities
-            .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
-        {
+        if let Some(c) = m.capabilities.iter().find(|c| {
+            c.on_server() != server && !matches!(**c, Capability::Storage | Capability::Channel)
+        }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }
@@ -290,11 +420,61 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
+        if !m.datapacks.is_empty() {
+            if m.api != "0.2" {
+                return Err(format!("{MANIFEST}: datapacks needs api = \"0.2\""));
+            }
+            if m.datapacks.len() > 16 {
+                return Err(format!("{MANIFEST}: at most 16 datapacks"));
+            }
+            for (i, name) in m.datapacks.iter().enumerate() {
+                let ok = (1..=64).contains(&name.len())
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+                if !ok {
+                    return Err(format!(
+                        "{MANIFEST}: datapack {name:?} is not [a-z0-9_]{{1,64}}"
+                    ));
+                }
+                if m.datapacks[..i].contains(name) {
+                    return Err(format!("{MANIFEST}: datapack {name} is listed twice"));
+                }
+            }
+        }
         Ok(m)
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
     pub fn owned_namespaces(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.id.as_str()).chain(self.namespaces.iter().map(String::as_str))
+    }
+    /// Check interface imports and the functions of mixed-capability interfaces.
+    /// `browser-ext` data queries belong to `recipes`, its panel functions to `ui`.
+    pub fn check_code_imports<'a>(
+        &self,
+        imports: impl IntoIterator<Item = &'a str>,
+        functions: &[String],
+    ) -> Result<(), String> {
+        self.check_imports(
+            imports
+                .into_iter()
+                .filter(|name| !name.starts_with("horizon:mods/browser-ext@0.1.")),
+        )?;
+        for function in functions {
+            if let Some(name) = function.strip_prefix("browser-ext.") {
+                let capability = match name {
+                    "item-facts" | "other-recipes" | "recipe-count" | "recipes-page"
+                    | "items-page" => Capability::Recipes,
+                    _ => Capability::Ui,
+                };
+                if !self.capabilities.contains(&capability) {
+                    return Err(format!(
+                        "uses capability {capability}, missing from {MANIFEST}"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
     /// Checks that the component's imports need only declared capabilities.
     pub fn check_imports<'a>(
@@ -315,7 +495,7 @@ impl Manifest {
 /// A mod as found on disk: its manifest and component bytes.
 pub struct Package {
     pub manifest: Manifest,
-    /// None for a content-only mod (capability `registries`, no code).
+    /// None for a content-only or data-pack-only mod (no code).
     pub wasm: Option<Vec<u8>>,
 }
 impl Package {
@@ -353,26 +533,41 @@ impl Package {
             return Err(format!("{WASM} is over {} MiB", MAX_WASM >> 20));
         }
         let manifest = Manifest::parse(&toml)?;
-        if wasm.is_none() && !manifest.capabilities.contains(&Capability::Registries) {
+        if wasm.is_none()
+            && !manifest.capabilities.contains(&Capability::Registries)
+            && manifest.datapacks.is_empty()
+        {
             return Err(format!(
-                "{WASM}: missing (only a content mod, with capability registries, may have no code)"
+                "{WASM}: missing (only a content mod, with capability registries, or a mod listing datapacks may have no code)"
             ));
         }
         Ok(Package { manifest, wasm })
+    }
+    /// Whether the mod at `path` (a `.hmod` or a folder) has a [`MANIFEST`]: content, or a legacy
+    /// WebAssembly mod. A `.hmod` holding only native code has none.
+    pub fn has_manifest(path: &Path) -> bool {
+        if path.is_dir() {
+            return path.join(MANIFEST).is_file();
+        }
+        std::fs::File::open(path)
+            .ok()
+            .and_then(|f| zip::ZipArchive::new(f).ok())
+            .is_some_and(|mut zip| zip.by_name(MANIFEST).is_ok())
     }
     /// The `.hmod` bytes for `manifest_text` and a component.
     pub fn write(manifest_text: &str, wasm: &[u8]) -> Result<Vec<u8>, String> {
         Self::write_files(manifest_text, Some(wasm), &[])
     }
     /// The `.hmod` bytes for `manifest_text`, a component if the mod has
-    /// code, and content `files` (`assets/...`, `data/...`) by path.
+    /// code, and content `files` (`assets/...`, `data/...`, and the listed
+    /// `datapacks/<name>/...`) by path.
     pub fn write_files(
         manifest_text: &str,
         wasm: Option<&[u8]>,
         files: &[(&str, &[u8])],
     ) -> Result<Vec<u8>, String> {
         use std::io::Write;
-        Manifest::parse(manifest_text)?;
+        let parsed = Manifest::parse(manifest_text)?;
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         let err = |e: zip::result::ZipError| e.to_string();
@@ -385,7 +580,11 @@ impl Package {
             put(WASM, wasm)?;
         }
         for (name, bytes) in files {
-            crate::content::check_path(name)?;
+            if name.starts_with("datapacks/") {
+                crate::datapacks::check_name(name, &parsed.datapacks)?;
+            } else {
+                crate::content::check_path(name)?;
+            }
             put(name, bytes)?;
         }
         Ok(zip.finish().map_err(err)?.into_inner())
@@ -450,6 +649,82 @@ capabilities = ["game-read", "hud"]
 "#;
 
     #[test]
+    fn browser_data_requires_recipes_and_panel_functions_require_ui() {
+        let manifest = |caps: &str| {
+            Manifest::parse(&format!(
+                r#"
+id = "viewer"
+name = "Viewer"
+version = "0.1.0"
+api = "0.1"
+capabilities = [{caps}]
+experimental = ["ui", "recipes"]
+"#
+            ))
+            .unwrap()
+        };
+        let imports = ["horizon:mods/browser-ext@0.1.0"];
+        let data = [
+            "browser-ext.item-facts".into(),
+            "browser-ext.other-recipes".into(),
+            "browser-ext.recipe-count".into(),
+            "browser-ext.recipes-page".into(),
+            "browser-ext.items-page".into(),
+        ];
+        assert!(
+            manifest("\"recipes\"")
+                .check_code_imports(imports, &data)
+                .is_ok()
+        );
+        assert!(
+            manifest("\"ui\"")
+                .check_code_imports(imports, &data)
+                .unwrap_err()
+                .contains("capability recipes")
+        );
+        assert!(
+            manifest("\"recipes\"")
+                .check_code_imports(imports, &["browser-ext.poll".into()])
+                .unwrap_err()
+                .contains("capability ui")
+        );
+        assert!(
+            manifest("\"ui\"")
+                .check_code_imports(imports, &["browser-ext.poll".into()])
+                .is_ok()
+        );
+    }
+
+    fn pack_toml(api: &str, datapacks: &str) -> String {
+        format!("id = \"d\"\nname = \"D\"\nversion = \"1\"\napi = \"{api}\"\n{datapacks}\n")
+    }
+
+    #[test]
+    fn datapack_names_are_checked() {
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"a\", \"b_1\"]")).is_ok());
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"A\"]")).is_err());
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"a/b\"]")).is_err());
+        assert!(Manifest::parse(&pack_toml("0.2", "datapacks = [\"a\", \"a\"]")).is_err());
+        assert!(Manifest::parse(&pack_toml("0.1", "datapacks = [\"a\"]")).is_err());
+        let many: Vec<String> = (0..17).map(|i| format!("\"p{i}\"")).collect();
+        let many = format!("datapacks = [{}]", many.join(","));
+        assert!(Manifest::parse(&pack_toml("0.2", &many)).is_err());
+    }
+
+    #[test]
+    fn a_codeless_mod_needs_registries_or_datapacks() {
+        let dir = std::env::temp_dir().join(format!("hm-codeless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MANIFEST), pack_toml("0.2", "datapacks = [\"a\"]")).unwrap();
+        assert!(Package::read(&dir).unwrap().wasm.is_none());
+        std::fs::write(dir.join(MANIFEST), pack_toml("0.2", "")).unwrap();
+        let e = Package::read(&dir).err().unwrap();
+        assert!(e.contains("mod.wasm: missing"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn parses_and_checks_imports() {
         let m = Manifest::parse(EXAMPLE).unwrap();
         assert_eq!(m.side, Side::Client);
@@ -489,6 +764,24 @@ capabilities = ["game-read", "hud"]
         assert!(Manifest::parse(&bad_api).unwrap_err().contains("API 0.4"));
         let unknown = format!("{EXAMPLE}network = true\n");
         assert!(Manifest::parse(&unknown).is_err());
+    }
+
+    #[test]
+    fn storage_quota_is_opt_in_and_bounded() {
+        let absent = Manifest::parse(EXAMPLE).unwrap();
+        assert_eq!(absent.storage_limits(), (4 << 20, 64));
+        for mb in [1, 4, 1024] {
+            let m = Manifest::parse(&format!("{EXAMPLE}storage-mb = {mb}\n")).unwrap();
+            assert_eq!(m.storage_limits(), (mb << 20, 65536));
+            assert_eq!(
+                Capability::Storage.describe_with_storage(m.storage_mb),
+                format!("save up to {mb} MB to disk")
+            );
+        }
+        for invalid in ["0", "1025", "-1", "65536", "1.5", "\"1024\""] {
+            let e = Manifest::parse(&format!("{EXAMPLE}storage-mb = {invalid}\n")).unwrap_err();
+            assert!(e.contains("storage-mb"), "{e}");
+        }
     }
 
     #[test]
@@ -543,6 +836,75 @@ capabilities = ["game-read", "hud"]
     }
 
     #[test]
+    fn world_read_is_an_experimental_client_capability_and_canvas_is_render() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
+        let e = Manifest::parse(&format!("{base}capabilities = [\"world-read\"]\n")).unwrap_err();
+        assert!(e.contains("experimental = [\"world-read\"]"), "{e}");
+        let m = Manifest::parse(&format!(
+            "{base}capabilities = [\"world-read\", \"render\"]\nexperimental = [\"world-read\", \"render\"]\n"
+        ))
+        .unwrap();
+        let imports = [
+            "horizon:mods/client-world@0.1.0",
+            "horizon:mods/canvas@0.1.0",
+        ];
+        assert_eq!(m.check_imports(imports), Ok(()));
+        let render_only = Manifest::parse(&format!(
+            "{base}capabilities = [\"render\"]\nexperimental = [\"render\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            render_only.check_imports(["horizon:mods/client-world@0.1.0"]),
+            Err("uses capability world-read, missing from horizon-mod.toml".into())
+        );
+        let server =
+            "id = \"w\"\nname = \"W\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n";
+        let e = Manifest::parse(&format!(
+            "{server}capabilities = [\"world-read\"]\nexperimental = [\"world-read\"]\n"
+        ))
+        .unwrap_err();
+        assert!(
+            e.contains("capability world-read is for client mods"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn container_is_an_experimental_client_capability() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
+        let text = format!("{base}capabilities = [\"container\"]\n");
+        assert!(Manifest::parse(&text).unwrap_err().contains("experimental"));
+        let m = Manifest::parse(&format!("{text}experimental = [\"container\"]\n")).unwrap();
+        let functions = [
+            "state",
+            "click",
+            "take-drag",
+            "set-shift-latch",
+            "set-screen-button",
+            "clear-screen-button",
+        ]
+        .map(|f| format!("container.{f}"));
+        assert!(
+            m.check_code_imports(["horizon:mods/container@0.1.0"], &functions)
+                .is_ok()
+        );
+        assert!(
+            Manifest::parse(base)
+                .unwrap()
+                .check_code_imports(["horizon:mods/container@0.1.0"], &functions)
+                .unwrap_err()
+                .contains("capability container")
+        );
+        let server = format!("{text}experimental = [\"container\"]\nside = \"server\"\n")
+            .replace("0.1", "0.3");
+        assert!(
+            Manifest::parse(&server)
+                .unwrap_err()
+                .contains("for client mods")
+        );
+    }
+
+    #[test]
     fn experimental_capabilities_need_the_opt_in() {
         let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
         let err = Manifest::parse(&format!("{base}capabilities = [\"ui\"]\n")).unwrap_err();
@@ -557,5 +919,32 @@ capabilities = ["game-read", "hud"]
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+    #[test]
+    fn channel_needs_opt_in_on_both_sides_and_imports_require_permission() {
+        for (api, side) in [("0.1", "client"), ("0.3", "server")] {
+            let base = format!(
+                "id = \"channel_test\"\nname = \"Channel test\"\nversion = \"1.0.0\"\napi = \"{api}\"\nside = \"{side}\"\n"
+            );
+            let text = format!("{base}capabilities = [\"channel\"]\n");
+            assert!(Manifest::parse(&text).unwrap_err().contains("experimental"));
+            let manifest =
+                Manifest::parse(&format!("{text}experimental = [\"channel\"]\n")).unwrap();
+            manifest
+                .check_code_imports(["horizon:mods/channel@0.1.0"], &["channel.send".into()])
+                .unwrap();
+            let denied = Manifest::parse(&base).unwrap();
+            assert!(
+                denied
+                    .check_imports(["horizon:mods/channel@0.1.0"])
+                    .unwrap_err()
+                    .contains("channel")
+            );
+        }
     }
 }

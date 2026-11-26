@@ -23,6 +23,11 @@ use std::sync::{
 /// The keychain item holding the account (`Stored` as JSON).
 const KEY: &str = "microsoft-account";
 
+/// No sign-in is under way, so another alert may be shown without replacing one of its.
+pub(super) fn idle() -> bool {
+    STATE.with_borrow(|s| matches!(s.step, Step::Idle))
+}
+
 enum Step {
     Idle,
     /// Asking Microsoft for a code.
@@ -106,7 +111,7 @@ fn keep(stored: &Stored) {
 fn label() -> String {
     STATE.with_borrow(|s| match &s.name {
         Some(name) => name.clone(),
-        None => "Sign in".into(),
+        None => horizon_client::lang::get_or("horizon.touch.sign_in", "Sign in"),
     })
 }
 

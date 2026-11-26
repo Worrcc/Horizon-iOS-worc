@@ -10,8 +10,9 @@
 //!   perspective and pause;
 //! - the hotbar: tap a slot to select it.
 //!
-//! On menus the first finger is the pointer: a tap clicks, a quick swipe scrolls, and a press
-//! that stays put a moment holds the button down to drag (sliders, scroll bars, stacks).
+//! On menus the first finger is the pointer: a tap left clicks, a quick swipe scrolls, and
+//! moving after a short hold drags (sliders, scroll bars, stacks). Holding still for a long
+//! press right clicks once; that finger then does nothing until lifted.
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use winit::{
@@ -19,10 +20,12 @@ use winit::{
     keyboard::KeyCode,
 };
 
-/// A finger kept still this long breaks blocks (look side) or starts a drag (menus).
+/// A finger kept still this long breaks blocks (look side).
 pub const HOLD: Duration = Duration::from_millis(300);
-/// On menus a press held this long, unmoved, becomes a drag instead of a scroll.
+/// On menus movement after a press held this long starts a drag instead of a scroll.
 pub const POINTER_HOLD: Duration = Duration::from_millis(150);
+/// On menus a finger held still this long right clicks once.
+pub const LONG_PRESS: Duration = Duration::from_millis(500);
 /// Movement under this many GUI pixels still counts as a tap.
 pub const TAP_SLOP: f32 = 6.0;
 /// The joystick's ring, in GUI pixels from where the finger landed.
@@ -35,6 +38,8 @@ pub const SCROLL_LINE: f32 = 12.0;
 pub enum Button {
     Jump,
     Sneak,
+    Sprint,
+    Attack,
     Use,
     Drop,
     Inventory,
@@ -44,7 +49,35 @@ pub enum Button {
 }
 
 impl Button {
-    pub const ALL: [Button; 8] = [
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Jump => "game.jump",
+            Self::Sneak => "game.sneak",
+            Self::Sprint => "game.sprint",
+            Self::Attack => "game.attack",
+            Self::Use => "game.use",
+            Self::Drop => "game.drop",
+            Self::Inventory => "game.inventory",
+            Self::Chat => "game.chat",
+            Self::Perspective => "game.perspective",
+            Self::Pause => "game.pause",
+        }
+    }
+    pub fn name_key(self) -> &'static str {
+        match self {
+            Self::Jump => "key.jump",
+            Self::Sneak => "key.sneak",
+            Self::Sprint => "key.sprint",
+            Self::Attack => "key.attack",
+            Self::Use => "key.use",
+            Self::Drop => "key.drop",
+            Self::Inventory => "key.inventory",
+            Self::Chat => "key.chat",
+            Self::Perspective => "key.togglePerspective",
+            Self::Pause => "menu.game",
+        }
+    }
+    pub const ALL: [Button; 10] = [
         Button::Jump,
         Button::Sneak,
         Button::Use,
@@ -53,6 +86,8 @@ impl Button {
         Button::Chat,
         Button::Perspective,
         Button::Pause,
+        Button::Sprint,
+        Button::Attack,
     ];
     /// The vanilla default key of the button's mapping (`key.jump`...): the game translates
     /// keys to their defaults before acting on them, so these follow nothing the player rebinds.
@@ -61,6 +96,8 @@ impl Button {
         Some(match self {
             Button::Jump => KeyCode::Space,
             Button::Sneak => KeyCode::ShiftLeft,
+            Button::Sprint => KeyCode::ControlLeft,
+            Button::Attack => return None,
             Button::Use => return None,
             Button::Drop => KeyCode::KeyQ,
             Button::Inventory => KeyCode::KeyE,
@@ -73,6 +110,8 @@ impl Button {
         match self {
             Button::Jump => "Jump",
             Button::Sneak => "Sneak",
+            Button::Sprint => "Sprint",
+            Button::Attack => "Attack",
             Button::Use => "Use",
             Button::Drop => "Drop",
             Button::Inventory => "...",
@@ -81,9 +120,37 @@ impl Button {
             Button::Pause => "||",
         }
     }
+    /// Translation for the label; the renderer retains `label()` before languages load.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Button::Jump => "horizon.touch.jump",
+            Button::Sneak => "horizon.touch.sneak",
+            Button::Sprint => "horizon.touch.sprint",
+            Button::Attack => "horizon.touch.attack",
+            Button::Use => "horizon.touch.use",
+            Button::Drop => "horizon.touch.drop",
+            Button::Inventory => "horizon.touch.inventory",
+            Button::Chat => "horizon.touch.chat",
+            Button::Perspective => "horizon.touch.perspective",
+            Button::Pause => "horizon.touch.pause",
+        }
+    }
+    pub fn riding_default(self) -> bool {
+        matches!(self, Self::Sprint | Self::Attack)
+    }
+    fn mouse(self) -> MouseButton {
+        if self == Self::Attack {
+            MouseButton::Left
+        } else {
+            MouseButton::Right
+        }
+    }
     /// Held while the finger is on it; the others are a tap of their key.
     fn held(self) -> bool {
-        matches!(self, Button::Jump | Button::Use)
+        matches!(
+            self,
+            Button::Jump | Button::Use | Button::Sprint | Button::Attack
+        )
     }
 }
 
@@ -92,6 +159,8 @@ impl Button {
 pub struct Layout {
     pub width: f32,
     pub height: f32,
+    /// Inventory goes opposite the actual off-hand slot, mirroring with the main arm.
+    pub main_hand_left: bool,
 }
 
 impl Layout {
@@ -102,13 +171,31 @@ impl Layout {
         match button {
             Button::Jump => [w - 38.0, h - 60.0, 32.0, 24.0],
             Button::Sneak => [w - 38.0, h - 32.0, 32.0, 24.0],
+            Button::Sprint => [w - 110.0, h - 88.0, 32.0, 24.0],
+            Button::Attack => [w - 110.0, h - 60.0, 32.0, 24.0],
             Button::Use => [w - 74.0, h - 60.0, 32.0, 24.0],
             Button::Drop => [w - 38.0, h - 88.0, 32.0, 24.0],
-            Button::Inventory => [centre + 95.0, h - 22.0, 20.0, 20.0],
-            Button::Pause => [w - 22.0, 4.0, 18.0, 18.0],
-            Button::Chat => [w - 44.0, 4.0, 18.0, 18.0],
-            Button::Perspective => [w - 66.0, 4.0, 18.0, 18.0],
+            Button::Inventory => [
+                if self.main_hand_left {
+                    centre - 120.0
+                } else {
+                    centre + 91.0
+                },
+                h - 23.0,
+                29.0,
+                24.0,
+            ],
+            Button::Pause => [w - 24.0, 54.0, 20.0, 20.0],
+            Button::Chat => [w - 46.0, 54.0, 20.0, 20.0],
+            Button::Perspective => [w - 68.0, 54.0, 20.0, 20.0],
         }
+    }
+    /// The off-hand artwork is asymmetric: centre the label over its item well.
+    pub fn inventory_label_center(&self) -> (f32, f32) {
+        (
+            (self.width / 2.0).floor() + if self.main_hand_left { -109.0 } else { 109.0 },
+            self.height - 11.0,
+        )
     }
     pub fn button_at(&self, x: f32, y: f32) -> Option<Button> {
         Button::ALL.into_iter().find(|&b| {
@@ -152,6 +239,8 @@ pub enum Output {
     Pointer(f32, f32),
     /// Press or release the menu pointer's left button.
     PointerButton(bool),
+    /// Press and release the menu pointer's right button.
+    PointerRight,
     /// Scroll a menu by this many lines (positive is up, as a wheel turned away).
     Scroll(f32),
 }
@@ -161,6 +250,7 @@ enum PointerMode {
     Pending,
     Pressed,
     Scrolling,
+    Spent,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -189,14 +279,36 @@ enum Finger {
 /// The fingers on the screen and the keys they hold.
 #[derive(Default)]
 pub struct TouchControls {
+    /// The resolved player layout. Menus and standalone callers retain the defaults.
+    geometry: Option<Geometry>,
     fingers: HashMap<u64, Finger>,
     /// Forward, back, left, right and sprint, as the joystick holds them.
     stick_keys: [bool; 5],
     sneaking: bool,
     /// Whether the last touch was in the world (the controls are drawn) or on a menu.
     playing: bool,
-    /// A finger has touched the screen: the controls are drawn from then on.
+    /// A finger has touched the screen: the controls are drawn until a controller is used.
     pub used: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Geometry {
+    pub buttons: [Option<[f32; 4]>; 10],
+    pub stick: Option<[f32; 4]>,
+    pub moved_stick: bool,
+}
+impl Geometry {
+    pub fn button_at(&self, at: (f32, f32)) -> Option<Button> {
+        Button::ALL
+            .into_iter()
+            .zip(self.buttons)
+            .find_map(|(b, r)| {
+                r.filter(|&[x, y, w, h]| {
+                    crate::touch_layout::contains([x - 2.0, y - 2.0, w + 4.0, h + 4.0], at)
+                })
+                .map(|_| b)
+            })
+    }
 }
 
 const STICK_KEYS: [KeyCode; 5] = [
@@ -212,6 +324,40 @@ fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
 }
 
 impl TouchControls {
+    pub fn configure(&mut self, geometry: Geometry) -> Vec<Output> {
+        let mut out = Vec::new();
+        let now = Instant::now();
+        let hidden: Vec<_> = self
+            .fingers
+            .iter()
+            .filter_map(|(&id, finger)| {
+                let hidden = match finger {
+                    Finger::Button(button) => geometry.buttons
+                        [Button::ALL.iter().position(|b| b == button).unwrap()]
+                    .is_none(),
+                    Finger::Stick { .. } => geometry.stick.is_none(),
+                    _ => false,
+                };
+                hidden.then_some(id)
+            })
+            .collect();
+        for id in hidden {
+            let finger = self.fingers.insert(id, Finger::Ignored).unwrap();
+            out.extend(self.lift(finger, now, true));
+        }
+        if geometry.buttons[Button::ALL
+            .iter()
+            .position(|b| *b == Button::Sneak)
+            .unwrap()]
+        .is_none()
+            && self.sneaking
+        {
+            self.sneaking = false;
+            out.push(Output::Key(KeyCode::ShiftLeft, false));
+        }
+        self.geometry = Some(geometry);
+        out
+    }
     /// One touch event at `(x, y)` GUI pixels. `playing`: the world is on screen with no menu.
     pub fn touch(
         &mut self,
@@ -247,20 +393,39 @@ impl TouchControls {
                             mode: PointerMode::Pending,
                         }
                     }
-                } else if let Some(button) = layout.button_at(x, y) {
+                } else if let Some(button) = self
+                    .geometry
+                    .as_ref()
+                    .map_or_else(|| layout.button_at(x, y), |g| g.button_at((x, y)))
+                {
                     out.extend(self.press_button(button));
                     Finger::Button(button)
                 } else if let Some(slot) = layout.hotbar_slot(x, y) {
                     out.push(Output::Hotbar(slot));
                     Finger::Hotbar
-                } else if layout.in_stick_zone(x, y)
-                    && !self
-                        .fingers
-                        .values()
-                        .any(|f| matches!(f, Finger::Stick { .. }))
+                } else if self.geometry.as_ref().map_or_else(
+                    || layout.in_stick_zone(x, y),
+                    |g| {
+                        g.stick.is_some_and(|r| {
+                            if g.moved_stick {
+                                crate::touch_layout::contains(r, (x, y))
+                            } else {
+                                layout.in_stick_zone(x, y)
+                            }
+                        })
+                    },
+                ) && !self
+                    .fingers
+                    .values()
+                    .any(|f| matches!(f, Finger::Stick { .. }))
                 {
                     Finger::Stick {
-                        origin: (x, y),
+                        origin: self
+                            .geometry
+                            .as_ref()
+                            .filter(|g| g.moved_stick)
+                            .and_then(|g| g.stick)
+                            .map_or((x, y), |r| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)),
                         at: (x, y),
                     }
                 } else {
@@ -308,7 +473,7 @@ impl TouchControls {
                                     out.push(Output::Pointer(x, y));
                                 }
                             }
-                            PointerMode::Pending => {}
+                            PointerMode::Pending | PointerMode::Spent => {}
                             PointerMode::Pressed => out.push(Output::Pointer(x, y)),
                             PointerMode::Scrolling => out.push(Output::Scroll(dy / SCROLL_LINE)),
                         }
@@ -327,7 +492,7 @@ impl TouchControls {
         out
     }
 
-    /// Once a frame: fingers held still turn into breaking (world) or a drag (menus).
+    /// Once a frame: fingers held still turn into breaking (world) or a right click (menus).
     pub fn update(&mut self, now: Instant) -> Vec<Output> {
         let mut out = Vec::new();
         for finger in self.fingers.values_mut() {
@@ -343,10 +508,10 @@ impl TouchControls {
                 }
                 Finger::Pointer { start, mode, .. }
                     if matches!(mode, PointerMode::Pending)
-                        && now.duration_since(*start) >= POINTER_HOLD =>
+                        && now.duration_since(*start) >= LONG_PRESS =>
                 {
-                    *mode = PointerMode::Pressed;
-                    out.push(Output::PointerButton(true));
+                    *mode = PointerMode::Spent;
+                    out.push(Output::PointerRight);
                 }
                 _ => {}
             }
@@ -374,16 +539,25 @@ impl TouchControls {
     }
     /// Whether a finger is on `button`, or the sneak toggle is on.
     pub fn pressed(&self, button: Button) -> bool {
-        (button == Button::Sneak && self.sneaking)
-            || self
-                .fingers
-                .values()
-                .any(|f| matches!(f, Finger::Button(b) if *b == button))
+        self.latched(button) || self.touching(button)
+    }
+    pub fn holds_sprint(&self) -> bool {
+        self.pressed(Button::Sprint) || self.stick_keys[4]
+    }
+    /// A finger is on this button, independently of the Sneak latch.
+    pub fn touching(&self, button: Button) -> bool {
+        self.fingers
+            .values()
+            .any(|f| matches!(f, Finger::Button(b) if *b == button))
+    }
+    /// The existing touch Sneak toggle, for the gold selection frame.
+    pub fn latched(&self, button: Button) -> bool {
+        button == Button::Sneak && self.sneaking
     }
 
     fn press_button(&mut self, button: Button) -> Vec<Output> {
         let Some(key) = button.key() else {
-            return vec![Output::Mouse(MouseButton::Right, true)];
+            return vec![Output::Mouse(button.mouse(), true)];
         };
         if button == Button::Sneak {
             // A toggle: holding a finger there would leave none to look with.
@@ -397,6 +571,14 @@ impl TouchControls {
         }
     }
 
+    fn holds_mouse(&self, button: MouseButton) -> bool {
+        self.fingers.values().any(|f| match f {
+            Finger::Button(b) => b.held() && b.key().is_none() && b.mouse() == button,
+            Finger::Look { breaking: true, .. } => button == MouseButton::Left,
+            _ => false,
+        })
+    }
+
     fn lift(&mut self, finger: Finger, now: Instant, cancelled: bool) -> Vec<Output> {
         match finger {
             Finger::Stick { .. } => self.update_stick(),
@@ -407,7 +589,11 @@ impl TouchControls {
                 ..
             } => {
                 if breaking {
-                    vec![Output::Mouse(MouseButton::Left, false)]
+                    if self.holds_mouse(MouseButton::Left) {
+                        Vec::new()
+                    } else {
+                        vec![Output::Mouse(MouseButton::Left, false)]
+                    }
                 } else if !cancelled && moved < TAP_SLOP && now.duration_since(start) < HOLD {
                     vec![Output::Use]
                 } else {
@@ -415,11 +601,19 @@ impl TouchControls {
                 }
             }
             Finger::Button(button) if button.held() => match button.key() {
+                Some(key)
+                    if self.fingers.values().any(
+                        |f| matches!(f, Finger::Button(b) if b.held() && b.key() == Some(key)),
+                    ) || (key == KeyCode::ControlLeft && self.stick_keys[4]) =>
+                {
+                    Vec::new()
+                }
                 Some(key) => vec![Output::Key(key, false)],
-                None => vec![Output::Mouse(MouseButton::Right, false)],
+                None if self.holds_mouse(button.mouse()) => Vec::new(),
+                None => vec![Output::Mouse(button.mouse(), false)],
             },
-            Finger::Pointer { mode, .. } => match mode {
-                PointerMode::Pending if !cancelled => {
+            Finger::Pointer { start, mode, .. } => match mode {
+                PointerMode::Pending if !cancelled && now.duration_since(start) < LONG_PRESS => {
                     vec![Output::PointerButton(true), Output::PointerButton(false)]
                 }
                 PointerMode::Pressed => vec![Output::PointerButton(false)],
@@ -451,7 +645,9 @@ impl TouchControls {
         for (i, key) in STICK_KEYS.into_iter().enumerate() {
             if want[i] != self.stick_keys[i] {
                 self.stick_keys[i] = want[i];
-                out.push(Output::Key(key, want[i]));
+                if want[i] || key != KeyCode::ControlLeft || !self.touching(Button::Sprint) {
+                    out.push(Output::Key(key, want[i]));
+                }
             }
         }
         out
@@ -465,6 +661,7 @@ mod tests {
     const LAYOUT: Layout = Layout {
         width: 633.0,
         height: 292.0,
+        main_hand_left: false,
     };
 
     fn at(
@@ -475,6 +672,251 @@ mod tests {
         now: Instant,
     ) -> Vec<Output> {
         controls.touch(id, phase, p, &LAYOUT, true, now)
+    }
+
+    #[test]
+    fn sprint_and_attack_hold_until_lift_or_context_hides_them() {
+        let now = Instant::now();
+        for (button, down, up) in [
+            (
+                Button::Sprint,
+                Output::Key(KeyCode::ControlLeft, true),
+                Output::Key(KeyCode::ControlLeft, false),
+            ),
+            (
+                Button::Attack,
+                Output::Mouse(MouseButton::Left, true),
+                Output::Mouse(MouseButton::Left, false),
+            ),
+        ] {
+            let mut controls = TouchControls::default();
+            let r = LAYOUT.button(button);
+            let point = (r[0] + 10.0, r[1] + 10.0);
+            assert_eq!(
+                at(&mut controls, 1, TouchPhase::Started, point, now),
+                [down]
+            );
+            assert!(controls.pressed(button));
+            if button == Button::Sprint {
+                assert!(controls.holds_sprint());
+            }
+            assert!(controls.update(now + HOLD).is_empty());
+            assert_eq!(
+                at(&mut controls, 1, TouchPhase::Ended, point, now + HOLD),
+                [up]
+            );
+            assert_eq!(
+                at(&mut controls, 2, TouchPhase::Started, point, now),
+                [down]
+            );
+            let geometry = Geometry {
+                buttons: [None; 10],
+                stick: None,
+                moved_stick: false,
+            };
+            assert_eq!(controls.configure(geometry), [up]);
+            assert!(!controls.pressed(button));
+            assert!(at(&mut controls, 2, TouchPhase::Ended, point, now).is_empty());
+        }
+    }
+
+    #[test]
+    fn sprint_button_and_joystick_keep_each_other_held() {
+        let mut c = TouchControls::default();
+        let now = Instant::now();
+        let r = LAYOUT.button(Button::Sprint);
+        let point = (r[0] + 10.0, r[1] + 10.0);
+        at(&mut c, 1, TouchPhase::Started, point, now);
+        at(&mut c, 2, TouchPhase::Started, (100.0, 200.0), now);
+        at(&mut c, 2, TouchPhase::Moved, (100.0, 170.0), now);
+        assert!(
+            !at(&mut c, 1, TouchPhase::Ended, point, now)
+                .contains(&Output::Key(KeyCode::ControlLeft, false))
+        );
+        assert!(c.holds_sprint());
+        assert!(
+            at(&mut c, 2, TouchPhase::Ended, (100.0, 170.0), now)
+                .contains(&Output::Key(KeyCode::ControlLeft, false))
+        );
+        at(&mut c, 1, TouchPhase::Started, point, now);
+        at(&mut c, 2, TouchPhase::Started, (100.0, 200.0), now);
+        at(&mut c, 2, TouchPhase::Moved, (100.0, 170.0), now);
+        assert!(
+            !at(&mut c, 2, TouchPhase::Ended, (100.0, 170.0), now)
+                .contains(&Output::Key(KeyCode::ControlLeft, false))
+        );
+        assert!(
+            at(&mut c, 1, TouchPhase::Ended, point, now)
+                .contains(&Output::Key(KeyCode::ControlLeft, false))
+        );
+    }
+
+    #[test]
+    fn attack_button_and_look_hold_do_not_release_each_others_mouse_press() {
+        let mut c = TouchControls::default();
+        let now = Instant::now();
+        let r = LAYOUT.button(Button::Attack);
+        let attack = (r[0] + 10.0, r[1] + 10.0);
+        for first_attack in [true, false] {
+            at(&mut c, 1, TouchPhase::Started, attack, now);
+            at(&mut c, 2, TouchPhase::Started, (400.0, 120.0), now);
+            c.update(now + HOLD);
+            let (first, second) = if first_attack {
+                ((1, attack), (2, (400.0, 120.0)))
+            } else {
+                ((2, (400.0, 120.0)), (1, attack))
+            };
+            assert!(at(&mut c, first.0, TouchPhase::Ended, first.1, now + HOLD).is_empty());
+            assert_eq!(
+                at(&mut c, second.0, TouchPhase::Ended, second.1, now + HOLD),
+                [Output::Mouse(MouseButton::Left, false)]
+            );
+        }
+    }
+
+    #[test]
+    fn riding_controls_fit_to_left_of_use_without_overlapping_any_default() {
+        for (width, height) in [(320.0, 180.0), (633.0, 292.0), (320.0, 600.0)] {
+            for main_hand_left in [false, true] {
+                let layout = Layout {
+                    width,
+                    height,
+                    main_hand_left,
+                };
+                for button in [Button::Sprint, Button::Attack] {
+                    let rect =
+                        crate::touch_layout::clamp(layout.button(button), (width, height), false);
+                    assert!(rect[0] + rect[2] < layout.button(Button::Use)[0]);
+                    for other in Button::ALL.into_iter().filter(|b| *b != button) {
+                        assert!(
+                            !crate::touch_layout::overlaps(
+                                rect,
+                                crate::touch_layout::clamp(
+                                    layout.button(other),
+                                    (width, height),
+                                    false
+                                ),
+                                0.0
+                            ),
+                            "{button:?} overlaps {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_geometry_moves_buttons_and_hidden_controls_take_no_touches() {
+        let mut controls = TouchControls::default();
+        let mut geometry = Geometry {
+            buttons: [None; 10],
+            stick: None,
+            moved_stick: false,
+        };
+        geometry.buttons[0] = Some([100.0, 100.0, 32.0, 24.0]);
+        controls.configure(geometry);
+        let now = Instant::now();
+        assert_eq!(
+            at(&mut controls, 1, TouchPhase::Started, (110.0, 110.0), now),
+            [Output::Key(KeyCode::Space, true)]
+        );
+        assert_eq!(
+            at(&mut controls, 1, TouchPhase::Ended, (300.0, 110.0), now),
+            [Output::Key(KeyCode::Space, false)]
+        );
+        // Jump's default box is no longer active. A hidden stick never starts movement.
+        let r = LAYOUT.button(Button::Jump);
+        assert!(
+            at(
+                &mut controls,
+                2,
+                TouchPhase::Started,
+                (r[0] + 5.0, r[1] + 5.0),
+                now
+            )
+            .is_empty()
+        );
+        assert!(!controls.pressed(Button::Jump));
+        at(
+            &mut controls,
+            3,
+            TouchPhase::Started,
+            LAYOUT.stick_rest(),
+            now,
+        );
+        assert!(controls.stick().is_none());
+    }
+    #[test]
+    fn moved_stick_uses_its_new_centre_and_releases_movement() {
+        let mut controls = TouchControls::default();
+        controls.configure(Geometry {
+            buttons: [None; 10],
+            stick: Some([200.0, 80.0, 44.0, 44.0]),
+            moved_stick: true,
+        });
+        let now = Instant::now();
+        at(&mut controls, 1, TouchPhase::Started, (222.0, 102.0), now);
+        assert_eq!(controls.stick(), Some(((222.0, 102.0), (222.0, 102.0))));
+        let out = at(&mut controls, 1, TouchPhase::Moved, (222.0, 50.0), now);
+        assert!(out.contains(&Output::Key(KeyCode::KeyW, true)));
+        assert!(out.contains(&Output::Key(KeyCode::ControlLeft, true)));
+        let out = at(&mut controls, 1, TouchPhase::Ended, (222.0, 50.0), now);
+        assert!(out.contains(&Output::Key(KeyCode::KeyW, false)));
+        assert!(out.contains(&Output::Key(KeyCode::ControlLeft, false)));
+        at(
+            &mut controls,
+            2,
+            TouchPhase::Started,
+            LAYOUT.stick_rest(),
+            now,
+        );
+        assert!(controls.stick().is_none());
+    }
+    #[test]
+    fn top_row_and_inventory_follow_the_art_layout_and_main_arm() {
+        for (button, rect) in [
+            (Button::Perspective, [565.0, 54.0, 20.0, 20.0]),
+            (Button::Chat, [587.0, 54.0, 20.0, 20.0]),
+            (Button::Pause, [609.0, 54.0, 20.0, 20.0]),
+            (Button::Jump, [595.0, 232.0, 32.0, 24.0]),
+            (Button::Sneak, [595.0, 260.0, 32.0, 24.0]),
+            (Button::Use, [559.0, 232.0, 32.0, 24.0]),
+            (Button::Drop, [595.0, 204.0, 32.0, 24.0]),
+        ] {
+            assert_eq!(LAYOUT.button(button), rect);
+            assert_eq!(
+                LAYOUT.button_at(rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0),
+                Some(button)
+            );
+        }
+        assert_eq!(LAYOUT.button_at(619.0, 13.0), None);
+        for (left, rect, centre) in [
+            (false, [407.0, 269.0, 29.0, 24.0], (425.0, 281.0)),
+            (true, [196.0, 269.0, 29.0, 24.0], (207.0, 281.0)),
+        ] {
+            let layout = Layout {
+                main_hand_left: left,
+                ..LAYOUT
+            };
+            assert_eq!(layout.button(Button::Inventory), rect);
+            assert_eq!(layout.inventory_label_center(), centre);
+            let mut controls = TouchControls::default();
+            assert_eq!(
+                controls.touch(
+                    0,
+                    TouchPhase::Started,
+                    centre,
+                    &layout,
+                    true,
+                    Instant::now()
+                ),
+                vec![
+                    Output::Key(KeyCode::KeyE, true),
+                    Output::Key(KeyCode::KeyE, false)
+                ]
+            );
+        }
     }
 
     #[test]
@@ -571,10 +1013,14 @@ mod tests {
         );
         assert!(at(&mut c, 2, TouchPhase::Ended, sneak, t).is_empty());
         assert!(c.pressed(Button::Sneak));
+        assert!(c.latched(Button::Sneak));
+        assert!(!c.touching(Button::Sneak));
         assert_eq!(
             at(&mut c, 3, TouchPhase::Started, sneak, t),
             vec![Output::Key(KeyCode::ShiftLeft, false)]
         );
+        assert!(!c.latched(Button::Sneak));
+        assert!(c.touching(Button::Sneak));
         let [x, y, w, h] = LAYOUT.button(Button::Use);
         let use_at = (x + w / 2.0, y + h / 2.0);
         assert_eq!(
@@ -632,18 +1078,140 @@ mod tests {
         assert!(menu(&mut c, 3, TouchPhase::Ended, (50.0, 84.0), t).is_empty());
         // Held still, then moved: a drag.
         menu(&mut c, 4, TouchPhase::Started, (50.0, 60.0), t);
-        assert_eq!(
-            c.update(t + POINTER_HOLD),
-            vec![Output::PointerButton(true)]
-        );
+        assert!(c.update(t + POINTER_HOLD).is_empty());
         assert_eq!(
             menu(&mut c, 4, TouchPhase::Moved, (70.0, 60.0), t + POINTER_HOLD),
-            vec![Output::Pointer(70.0, 60.0)]
+            vec![Output::PointerButton(true), Output::Pointer(70.0, 60.0)]
         );
         assert_eq!(
             menu(&mut c, 4, TouchPhase::Ended, (70.0, 60.0), t + POINTER_HOLD),
             vec![Output::PointerButton(false)]
         );
+    }
+
+    fn menu_at(
+        controls: &mut TouchControls,
+        phase: TouchPhase,
+        p: (f32, f32),
+        now: Instant,
+    ) -> Vec<Output> {
+        controls.touch(1, phase, p, &LAYOUT, false, now)
+    }
+
+    #[test]
+    fn menu_tap_left_clicks_on_lift() {
+        for duration in [
+            Duration::from_millis(80),
+            POINTER_HOLD,
+            LONG_PRESS - Duration::from_millis(1),
+        ] {
+            let mut c = TouchControls::default();
+            let t = Instant::now();
+            assert_eq!(
+                menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t),
+                vec![Output::Pointer(50.0, 60.0)]
+            );
+            assert!(menu_at(&mut c, TouchPhase::Moved, (51.0, 60.0), t + duration).is_empty());
+            assert!(c.update(t + duration).is_empty());
+            assert_eq!(
+                menu_at(&mut c, TouchPhase::Ended, (51.0, 60.0), t + duration),
+                vec![Output::PointerButton(true), Output::PointerButton(false)]
+            );
+        }
+    }
+
+    #[test]
+    fn menu_long_press_right_clicks_before_lift() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert!(c.update(t + POINTER_HOLD).is_empty());
+        assert!(
+            c.update(t + LONG_PRESS - Duration::from_millis(1))
+                .is_empty()
+        );
+        assert_eq!(c.update(t + LONG_PRESS), vec![Output::PointerRight]);
+        assert!(c.update(t + LONG_PRESS * 2).is_empty());
+        assert!(menu_at(&mut c, TouchPhase::Ended, (50.0, 60.0), t + LONG_PRESS * 2).is_empty());
+    }
+
+    #[test]
+    fn menu_hold_then_move_drags_until_lift() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t),
+            vec![Output::Pointer(50.0, 60.0)]
+        );
+        assert!(c.update(t + POINTER_HOLD).is_empty());
+        // Small movement keeps the pointer at its down position until the drag starts.
+        assert!(menu_at(&mut c, TouchPhase::Moved, (51.0, 60.0), t + POINTER_HOLD).is_empty());
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Moved, (56.0, 60.0), t + POINTER_HOLD),
+            vec![Output::PointerButton(true), Output::Pointer(56.0, 60.0)]
+        );
+        assert!(c.update(t + LONG_PRESS).is_empty());
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Moved, (70.0, 65.0), t + LONG_PRESS),
+            vec![Output::Pointer(70.0, 65.0)]
+        );
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Ended, (70.0, 65.0), t + LONG_PRESS),
+            vec![Output::PointerButton(false)]
+        );
+    }
+
+    #[test]
+    fn menu_quick_swipe_scrolls_without_clicking() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert_eq!(
+            menu_at(
+                &mut c,
+                TouchPhase::Moved,
+                (50.0, 66.0),
+                t + Duration::from_millis(50)
+            ),
+            vec![Output::Scroll(0.5)]
+        );
+        assert!(c.update(t + LONG_PRESS).is_empty());
+        assert_eq!(
+            menu_at(&mut c, TouchPhase::Moved, (50.0, 90.0), t + LONG_PRESS),
+            vec![Output::Scroll(2.0)]
+        );
+        assert!(menu_at(&mut c, TouchPhase::Ended, (50.0, 90.0), t + LONG_PRESS).is_empty());
+    }
+
+    #[test]
+    fn menu_long_press_spends_finger_before_movement() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert!(menu_at(&mut c, TouchPhase::Moved, (51.0, 60.0), t + POINTER_HOLD).is_empty());
+        assert_eq!(c.update(t + LONG_PRESS), vec![Output::PointerRight]);
+        assert!(menu_at(&mut c, TouchPhase::Moved, (70.0, 90.0), t + LONG_PRESS).is_empty());
+        assert!(c.update(t + LONG_PRESS * 2).is_empty());
+        assert!(menu_at(&mut c, TouchPhase::Moved, (50.0, 60.0), t + LONG_PRESS * 2).is_empty());
+        assert!(menu_at(&mut c, TouchPhase::Ended, (50.0, 60.0), t + LONG_PRESS * 2).is_empty());
+    }
+
+    #[test]
+    fn menu_cancelled_hold_does_not_click() {
+        let mut c = TouchControls::default();
+        let t = Instant::now();
+        menu_at(&mut c, TouchPhase::Started, (50.0, 60.0), t);
+        assert!(c.update(t + POINTER_HOLD).is_empty());
+        assert!(
+            menu_at(
+                &mut c,
+                TouchPhase::Cancelled,
+                (50.0, 60.0),
+                t + POINTER_HOLD
+            )
+            .is_empty()
+        );
+        assert!(c.update(t + LONG_PRESS).is_empty());
     }
 
     #[test]

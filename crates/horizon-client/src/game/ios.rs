@@ -17,7 +17,7 @@ use winit::{
     dpi::PhysicalSize,
     event::{DeviceEvent, DeviceId, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS},
+    platform::ios::{ScreenEdge, ValidOrientations, WindowAttributesExtIOS, WindowExtIOS},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -26,29 +26,40 @@ use winit::{
 /// does). Forcing landscape fought hosts that run apps in their own orientation (LiveContainer):
 /// iOS then rotated the view itself, and the picture no longer filled the screen. The app's
 /// Info.plist still makes an installed app landscape-only.
-pub(super) fn window_attributes(mut attributes: WindowAttributes) -> WindowAttributes {
+///
+/// `scale_2x` (the Lower Display Scale setting) draws at 2x the screen's points instead of the
+/// screen's own 3x; it applies here, at window creation, only.
+pub(super) fn window_attributes(
+    mut attributes: WindowAttributes,
+    scale_2x: bool,
+) -> WindowAttributes {
     // No size: winit makes an iOS window exactly the size asked for, so the desktop's 1280 x 720
     // gave a window larger than a phone's screen, partly off it. Without one it is the screen.
     attributes.inner_size = None;
-    attributes
+    attributes = attributes
         .with_valid_orientations(ValidOrientations::LandscapeAndPortrait)
         .with_prefers_status_bar_hidden(true)
         .with_prefers_home_indicator_hidden(true)
-        .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL)
+        .with_preferred_screen_edges_deferring_system_gestures(ScreenEdge::ALL);
+    if scale_2x {
+        attributes = attributes.with_scale_factor(2.0);
+    }
+    attributes
 }
 
 thread_local! {
     /// The game's window, for the geometry logged at each resize.
     static WINDOW: std::cell::RefCell<Option<std::sync::Arc<Window>>> =
         const { std::cell::RefCell::new(None) };
+    static KEYBOARD_FRAMES: std::cell::RefCell<super::perf_log::KeyboardFrames> =
+        std::cell::RefCell::new(super::perf_log::KeyboardFrames::default());
 }
 
 /// The window is up: its sizes go in the log (what a wrong-sized picture comes down to), and
-/// the screen is asked for its full frame rate.
-pub(super) fn log_window(window: &std::sync::Arc<Window>) {
+/// the screen is asked for the initial frame cap.
+pub(super) fn log_window(window: &std::sync::Arc<Window>, cap: i32) {
     WINDOW.set(Some(window.clone()));
-    // ProMotion screens: up to 120 Hz rather than iOS's 60 (the frame limit still applies).
-    horizon_ios::prefer_frame_rate(120.0);
+    horizon_ios::prefer_frame_rate(cap as f32);
     let (inner, outer) = (window.inner_size(), window.outer_size());
     log::info!(
         "Horizon: iOS window {}x{} px (screen frame {}x{} px) at scale {}: {}",
@@ -75,9 +86,44 @@ fn log_resize(size: PhysicalSize<u32>) {
     );
 }
 
+/// Publish keyboard occlusion independently of the drawable size. Every HudBatch (drawing,
+/// hit testing, gui_size and agent snapshots) then uses the same visible layout and scale.
+fn sync_keyboard_layout(window: &Window) {
+    let inset = (window.keyboard_bottom_inset() * window.scale_factor()).ceil() as u32;
+    if horizon_client::hud::set_keyboard_bottom_inset(inset) {
+        let size = window.inner_size();
+        let batch = horizon_client::hud::HudBatch::new([size.width, size.height]);
+        log::info!(
+            "Horizon: iOS keyboard inset={inset} px, surface={}x{}, GUI={}x{} at scale={}: {}",
+            size.width,
+            size.height,
+            batch.width,
+            batch.height,
+            batch.scale,
+            horizon_ios::describe_window(window)
+        );
+        KEYBOARD_FRAMES.with_borrow_mut(|frames| frames.visibility(inset > 0));
+    }
+}
+
+fn keyboard_frame(elapsed: Duration) {
+    KEYBOARD_FRAMES.with_borrow_mut(|frames| {
+        frames.frame(elapsed, |shown, ms| {
+            let state = if shown { "shown" } else { "hidden" };
+            log::info!(
+                "Horizon: iOS keyboard {state} next_frames_ms=[{:.1}, {:.1}, {:.1}]",
+                ms[0],
+                ms[1],
+                ms[2]
+            );
+        });
+    });
+}
+
 /// The window's size when the surface (`surface`, in pixels) no longer has it: a `Resized` lost
 /// around a rotation would otherwise leave the picture stretched over the screen.
 pub(super) fn size_change(window: &Window, surface: [u32; 2]) -> Option<PhysicalSize<u32>> {
+    sync_keyboard_layout(window);
     let size = window.inner_size();
     if size.width == 0 || size.height == 0 || [size.width, size.height] == surface {
         return None;
@@ -96,6 +142,7 @@ pub(super) fn size_change(window: &Window, surface: [u32; 2]) -> Option<Physical
 pub(super) struct Session<A> {
     app: A,
     finish: Option<fn(&mut A) -> Result<()>>,
+    frame_at: Option<Instant>,
 }
 
 impl<A: ApplicationHandler> Session<A> {
@@ -103,6 +150,7 @@ impl<A: ApplicationHandler> Session<A> {
         Self {
             app,
             finish: Some(finish),
+            frame_at: None,
         }
     }
     fn running(&self) -> bool {
@@ -154,22 +202,36 @@ fn wait_for_alert(event_loop: &ActiveEventLoop) {
 impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running() {
+            self.frame_at = None;
             self.app.resumed(event_loop);
             self.check(event_loop);
         }
     }
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         if self.running() {
+            self.frame_at = None;
+            KEYBOARD_FRAMES.with_borrow_mut(|frames| frames.clear());
             self.app.suspended(event_loop);
             self.check(event_loop);
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let redraw = matches!(event, WindowEvent::RedrawRequested);
+        let started = Instant::now();
+        WINDOW.with_borrow(|window| {
+            if let Some(window) = window.as_ref().filter(|window| window.id() == id) {
+                sync_keyboard_layout(window);
+            }
+        });
         if let WindowEvent::Resized(size) = &event {
             log_resize(*size);
         }
         if self.running() {
             self.app.window_event(event_loop, id, event);
+            if redraw {
+                let now = Instant::now();
+                keyboard_frame(now - self.frame_at.replace(now).unwrap_or(started));
+            }
             self.check(event_loop);
         }
     }
@@ -204,7 +266,7 @@ impl<A: ApplicationHandler> ApplicationHandler for Session<A> {
     }
 }
 
-/// What to tell a player whose device has no game files at `resources` (relative to the game
+/// What to tell a player whose device has no game files at `resources` (in the game
 /// folder, Documents), or `None` when they are there.
 pub(super) fn missing_resources(resources: &Path) -> Option<String> {
     if resources.join("horizon-resources.json").is_file() {
@@ -269,6 +331,8 @@ pub(super) fn show_error(title: &'static str, message: String) -> Result<()> {
 impl Game<'_> {
     /// `applicationWillResignActive`: Control Center, a call, the app switcher, the home screen.
     pub(super) fn enter_background(&mut self, event_loop: &ActiveEventLoop) {
+        self.set_phone_background(true);
+        self.phone_perf.suspend();
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {
             // iOS sends no Focused: a lost focus pauses (Gui.setPauseScreen) and lets go of
             // held buttons.
@@ -296,6 +360,9 @@ impl Game<'_> {
 
     /// `applicationDidBecomeActive`.
     pub(super) fn leave_background(&mut self, event_loop: &ActiveEventLoop) {
+        self.set_phone_background(false);
+        // Background redraws may have restarted the log since suspend.
+        self.phone_perf.suspend();
         if let Some(id) = self.window.as_ref().map(|w| w.id()) {
             self.window_event(event_loop, id, WindowEvent::Focused(true));
         }

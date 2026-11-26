@@ -16,7 +16,8 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, chat, command, game,
+    ContainerPointerKind, Mod, Registration, atmosphere, browser, browser_ext, channel, chat,
+    command, container, game,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -75,6 +76,7 @@ struct Guest {
     /// `/recipe_place ID [all] later`: placed on the first tick a crafting
     /// screen is open.
     pending: Option<(i32, bool, String)>,
+    container_latch: bool,
 }
 
 fn widgets() -> Vec<Widget> {
@@ -100,26 +102,56 @@ fn widgets() -> Vec<Widget> {
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
         let hooks = [
+            "container_trap",
+            "container_state",
+            "container_click",
+            "container_take",
+            "container_latch",
+            "container_buttons",
+            "channel28",
             "ui_screen",
+            "chat_open",
             "ui_settings",
             "ui_close",
             "render_hud",
+            "world_lines",
+            "touch_button",
+            "touch_context",
             "render_clear",
             "render_shake",
             "input_claim",
             "input_poll",
             "input_held",
             "input_wheel",
+            "aim_assist",
+            "look_device",
+            "atmo_profile",
+            "atmo_mix",
+            "atmo_conditions",
+            "atmo_effect",
+            "atmo_emit",
+            "atmo_move",
+            "atmo_stop",
+            "atmo_sky",
+            "atmo_post",
             "zoom",
             "minimap",
             "far_terrain",
             "raycast",
             "quiet",
             "quiet_many",
+            "quiet_mod",
+            "quiet_mod_many",
             "recipes",
+            "recipe_facts",
             "browser",
             "browser_poll",
+            "bookmarks",
+            "browser_keep_empty",
+            "item_lines",
+            "bookmarks_poll",
             "browser_recipes",
+            "custom_recipes",
             "recipe_place",
             "recipe_give",
             "corner",
@@ -128,14 +160,130 @@ impl Mod for Guest {
         .into_iter()
         .fold(Registration::new(), Registration::command)
         .on_tick();
-        Ok((Guest { pending: None }, hooks))
+        container::set_screen_button(0, -24.0, 0.0, "minecraft:diamond", false, "Shift");
+        Ok((
+            Guest {
+                pending: None,
+                container_latch: false,
+            },
+            hooks,
+        ))
     }
     fn command(&mut self, name: &str, args: &str) -> Result<Option<String>, String> {
         match name {
+            "channel28" => {
+                assert!(channel::send("bad:scope", &[]).is_err());
+                assert!(channel::send_to_player("Alice", "state", &[]).is_err());
+                channel::send("state", args.as_bytes())?;
+            }
+
+            "container_trap" => panic!("container test trap"),
+            "container_state" => match container::state() {
+                Some(state) => chat::show(&format!(
+                    "container {} carried {}",
+                    state.slots.len(),
+                    state.carried.map_or(0, |s| s.count)
+                )),
+                None => chat::show("no container"),
+            },
+            "container_click" => {
+                let args: Vec<_> = args.split_whitespace().collect();
+                container::click(
+                    args.first().and_then(|s| s.parse().ok()).unwrap_or(0),
+                    args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
+                    args.get(2) == Some(&"shift"),
+                );
+                if let Some(state) = container::state() {
+                    chat::show(&format!(
+                        "after click carried {}",
+                        state.carried.map_or(0, |s| s.count)
+                    ));
+                }
+            }
+            "container_take" => container::take_drag(),
+            "container_latch" => {
+                self.container_latch = args == "on";
+                container::set_shift_latch(self.container_latch);
+            }
+            "container_buttons" => {
+                if args == "off" {
+                    container::clear_screen_button(0);
+                } else {
+                    for id in 0..10 {
+                        container::set_screen_button(
+                            id,
+                            -24.0,
+                            id as f32 * 22.0,
+                            "minecraft:diamond",
+                            true,
+                            &"tip".repeat(100),
+                        );
+                    }
+                }
+            }
+
+            "world_lines" => {
+                let count = args.parse::<usize>().unwrap_or(0);
+                render::set_world_lines(
+                    &vec![
+                        render::WorldLine {
+                            x1: 1.0,
+                            y1: 2.0,
+                            z1: 3.0,
+                            x2: 4.0,
+                            y2: 5.0,
+                            z2: 6.0
+                        };
+                        count
+                    ],
+                    0xFF112233,
+                    0x80112233,
+                );
+            }
+            "touch_context" => {
+                input::register_key("mine", "Mine", "key.keyboard.r")?;
+                if args == "clear" {
+                    input::set_touch_button_context("mine", None)?;
+                } else {
+                    let mut parts = args.split_whitespace();
+                    let name = parts.next().unwrap_or("mine");
+                    let ids = |s: &str| {
+                        if s == "-" {
+                            Vec::new()
+                        } else {
+                            s.split(',').map(str::to_owned).collect()
+                        }
+                    };
+                    let context = input::TouchContext {
+                        riding: ids(parts.next().unwrap_or("-")),
+                        holding: ids(parts.next().unwrap_or("-")),
+                    };
+                    input::set_touch_button_context(name, Some(&context))?;
+                }
+            }
+            "touch_button" => {
+                input::register_key("mine", "Mine", "key.keyboard.r")?;
+                input::set_touch_button(
+                    "mine",
+                    (args != "off")
+                        .then(|| input::TouchButton {
+                            label: "Mine!".into(),
+                            icon: Some("minecraft:diamond_pickaxe".into()),
+                            anchor: render::Corner::TopLeft,
+                            dx: 4.0,
+                            dy: 5.0,
+                            size: 24.0,
+                            lit: true,
+                        })
+                        .as_ref(),
+                )?;
+                chat::show(&format!("touch {}", input::touch_active()));
+            }
             "ui_screen" => ui::open_screen(&Screen {
                 title: "Guest's screen".into(),
                 widgets: widgets(),
             }),
+            "chat_open" => chat::open(args),
             "ui_settings" => ui::set_settings(&widgets()),
             "ui_close" => ui::close_screen(),
             "render_hud" => render::set_hud(&shapes()),
@@ -208,6 +356,233 @@ impl Mod for Guest {
                 chat::show(&format!("holding {held}"));
             }
             "input_wheel" => input::claim_wheel(args != "off"),
+            // `/atmo_profile COLOR START END [relative] [sky] [water]`: one fog key at 0
+            // (`-` for none) and optional sky and water parts; says the id.
+            "atmo_profile" => {
+                let mut words = args.split_whitespace();
+                let color = words.next().unwrap_or("-");
+                let number = |w: Option<&str>| w.and_then(|w| w.parse().ok()).unwrap_or(f32::NAN);
+                let (start, end) = (number(words.next()), number(words.next()));
+                let rest: Vec<&str> = words.collect();
+                let fog_keys = match u32::from_str_radix(color.trim_start_matches("0x"), 16) {
+                    Ok(color) => vec![atmosphere::FogKey {
+                        day_time: 0,
+                        color,
+                        start,
+                        end,
+                        relative: rest.contains(&"relative"),
+                    }],
+                    Err(_) => vec![],
+                };
+                let sky_keys = if rest.contains(&"sky") {
+                    vec![atmosphere::SkyKey {
+                        day_time: 6000,
+                        zenith: 0x0000FF,
+                        horizon: 0x00FF00,
+                        cloud: 0xFFFFFF,
+                        cloud_far: 0x808080,
+                    }]
+                } else {
+                    vec![]
+                };
+                let water_fog = rest.contains(&"water").then_some(atmosphere::WaterFog {
+                    color: 0x0000FF,
+                    start: 1.0,
+                    end: 16.0,
+                });
+                let id = atmosphere::define_profile(&atmosphere::Profile {
+                    fog_keys,
+                    sky_keys,
+                    water_fog,
+                })?;
+                chat::show(&format!("profile {id}"));
+            }
+            // `/atmo_mix SECONDS [ID:WEIGHT]...`.
+            "atmo_mix" => {
+                let mut words = args.split_whitespace();
+                let seconds = words
+                    .next()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(f32::NAN);
+                let weights: Vec<(u32, f32)> = words
+                    .filter_map(|w| {
+                        let (id, weight) = w.split_once(':')?;
+                        Some((id.parse().ok()?, weight.parse().ok()?))
+                    })
+                    .collect();
+                atmosphere::set_mix(&weights, seconds)?;
+            }
+            // `/atmo_effect SPRITE [RATE] [MAX] [nan-size]`: a simple effect; says its id.
+            "atmo_effect" => {
+                use horizon_mod_sdk::atmosphere_fx::{constant, effect, emitter, fade, particle};
+                let mut words = args.split_whitespace();
+                let sprite = words.next().unwrap_or("");
+                let rate = words.next().and_then(|w| w.parse().ok()).unwrap_or(10.0);
+                let max = words.next().and_then(|w| w.parse().ok()).unwrap_or(64);
+                let mut p = particle(sprite);
+                p.size = fade(constant(0.2), 0.2, 0.2);
+                if words.next() == Some("nan-size") {
+                    p.size.base.hi = f32::NAN;
+                }
+                let mut e = emitter(rate);
+                e.max = max;
+                let id = atmosphere::define_effect(&effect(e, p))?;
+                chat::show(&format!("effect {id}"));
+            }
+            // `/atmo_emit EFFECT camera|X Y Z [DENSITY] [TINT]`: says the emitter id.
+            "atmo_emit" => {
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let effect = words
+                    .first()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(u32::MAX);
+                let number = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok());
+                let (anchor, rest) = if words.get(1) == Some(&"camera") {
+                    (atmosphere::Anchor::Camera, 2)
+                } else {
+                    let p = (
+                        number(1).unwrap_or(f64::NAN),
+                        number(2).unwrap_or(f64::NAN),
+                        number(3).unwrap_or(f64::NAN),
+                    );
+                    (atmosphere::Anchor::Point(p), 4)
+                };
+                let density = number(rest).unwrap_or(1.0) as f32;
+                let tint = words
+                    .get(rest + 1)
+                    .and_then(|w| u32::from_str_radix(w, 16).ok())
+                    .unwrap_or(0xFFFFFF);
+                let id = atmosphere::start_emitter(effect, anchor, density, tint)?;
+                chat::show(&format!("emitter {id}"));
+            }
+            // `/atmo_move ID X Y Z`.
+            "atmo_move" => {
+                let words: Vec<f64> = args
+                    .split_whitespace()
+                    .map(|w| w.parse().unwrap_or(f64::NAN))
+                    .collect();
+                let id = words.first().copied().unwrap_or(f64::NAN) as u32;
+                let at = |i: usize| words.get(i).copied().unwrap_or(f64::NAN);
+                atmosphere::move_emitter(id, atmosphere::Anchor::Point((at(1), at(2), at(3))))?;
+            }
+            // `/atmo_stop ID [fade]`.
+            "atmo_stop" => {
+                let mut words = args.split_whitespace();
+                let id = words
+                    .next()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(u32::MAX);
+                atmosphere::stop_emitter(id, words.next() == Some("fade"))?;
+            }
+            // `/atmo_sky COUNT TEXTURE [ALPHA] [dup]`: COUNT sprites, keys 0.., all of TEXTURE.
+            "atmo_sky" => {
+                use horizon_mod_sdk::atmosphere_sky::{emissive, sprite};
+                let mut words = args.split_whitespace();
+                let count: u32 = words.next().and_then(|w| w.parse().ok()).unwrap_or(0);
+                let texture = words.next().unwrap_or("horizon:sky/glow");
+                let alpha = words.next().and_then(|w| w.parse().ok()).unwrap_or(1.0);
+                let mut list: Vec<_> = (0..count)
+                    .map(|key| {
+                        let mut s = emissive(sprite(key, texture, key as f32, 30.0, 8.0));
+                        s.alpha = alpha;
+                        s.drift_yaw = 2.0;
+                        s
+                    })
+                    .collect();
+                if words.next() == Some("dup") && count > 1 {
+                    list[1].key = 0;
+                }
+                atmosphere::set_sky_sprites(&list)?;
+            }
+            // `/atmo_post new|ID [clear|many|EXPOSURE BLOOM THRESHOLD STRENGTH SOFTNESS SATURATION]`:
+            // a post-only profile (says its id), or replaces profile ID's post keys.
+            "atmo_post" => {
+                use horizon_mod_sdk::atmosphere_post::key;
+                let mut words = args.split_whitespace();
+                let target = words.next().unwrap_or("new");
+                let rest: Vec<&str> = words.collect();
+                let keys = match rest.first().copied() {
+                    Some("clear") => vec![],
+                    Some("many") => (0..33).map(|i| key(i * 100)).collect(),
+                    _ => {
+                        let v = |i: usize, d: f32| {
+                            rest.get(i).map_or(d, |w| w.parse().unwrap_or(f32::NAN))
+                        };
+                        let mut k = key(0);
+                        k.exposure = v(0, 1.0);
+                        k.bloom_intensity = v(1, 1.0);
+                        k.bloom_threshold = v(2, 0.0);
+                        k.shadow_strength = v(3, 0.5);
+                        k.shadow_softness = v(4, 0.0);
+                        k.saturation = v(5, 1.0);
+                        let mut night = k;
+                        night.day_time = 12000;
+                        vec![k, night]
+                    }
+                };
+                if target == "new" {
+                    let id = atmosphere::define_post_profile(&keys)?;
+                    chat::show(&format!("post profile {id}"));
+                } else {
+                    let id = target.parse().unwrap_or(u32::MAX);
+                    atmosphere::set_post_keys(id, &keys)?;
+                }
+            }
+            "atmo_conditions" => chat::show(&match atmosphere::conditions() {
+                None => "none".to_owned(),
+                Some(c) => format!(
+                    "rain {} thunder {} day {} moon {} at {} {} {} eye {} light {} {} sky {}",
+                    c.rain,
+                    c.thunder,
+                    c.day_time,
+                    c.moon_phase,
+                    c.camera_x,
+                    c.camera_y,
+                    c.camera_z,
+                    match c.eye {
+                        atmosphere::EyeMedium::Air => "Air",
+                        atmosphere::EyeMedium::Water => "Water",
+                        atmosphere::EyeMedium::Lava => "Lava",
+                        atmosphere::EyeMedium::PowderSnow => "PowderSnow",
+                    },
+                    c.sky_light,
+                    c.block_light,
+                    c.sky_visible
+                ),
+            }),
+            "look_device" => chat::show(match input::look_device() {
+                input::LookDeviceKind::Mouse => "mouse",
+                input::LookDeviceKind::Controller => "controller",
+                input::LookDeviceKind::Touch => "touch",
+            }),
+            "aim_assist" => {
+                let mut words = args.split_whitespace();
+                let mut number = || {
+                    words
+                        .next()
+                        .and_then(|w| w.parse().ok())
+                        .unwrap_or(f32::NAN)
+                };
+                let (range, cone, slowdown, pull) = (number(), number(), number(), number());
+                let targets = words.next().unwrap_or("*");
+                input::set_aim_assist(
+                    (args != "off")
+                        .then(|| input::AimAssist {
+                            targets: if targets == "-" {
+                                vec![]
+                            } else {
+                                targets.split(',').map(str::to_owned).collect()
+                            },
+                            range,
+                            cone,
+                            slowdown,
+                            pull,
+                            controller: true,
+                            touch: true,
+                        })
+                        .as_ref(),
+                )?;
+            }
             "zoom" => {
                 let mut words = args.split(' ');
                 let mut number = || {
@@ -252,6 +627,13 @@ impl Mod for Guest {
                 });
                 render::set_far_terrain(far);
             }
+            "quiet_mod" => {
+                command::run_mod_quiet(&args.split(';').map(str::to_owned).collect::<Vec<_>>())
+            }
+            "quiet_mod_many" => {
+                let n: usize = args.parse().unwrap_or(0);
+                command::run_mod_quiet(&(0..n).map(|i| format!("beacon {i}")).collect::<Vec<_>>());
+            }
             "quiet" => command::run_quiet(&args.split(';').map(str::to_owned).collect::<Vec<_>>()),
             "quiet_many" => {
                 let n: usize = args.parse().unwrap_or(0);
@@ -270,6 +652,79 @@ impl Mod for Guest {
                     ),
                     None => "no hit".into(),
                 });
+            }
+            "recipe_facts" => {
+                let all = recipes::all();
+                let count = browser_ext::recipe_count();
+                let mut page = Vec::new();
+                let mut start = 0;
+                loop {
+                    let next = browser_ext::recipes_page(start, 7);
+                    if next.is_empty() {
+                        break;
+                    }
+                    start += next.len() as u32;
+                    page.extend(next);
+                }
+                let count_matches = count as usize == all.len();
+                let same = page.len() == all.len()
+                    && page.iter().zip(&all).all(|(a, b)| {
+                        a.book_id == b.book_id
+                            && a.results.len() == b.results.len()
+                            && a.results.iter().zip(&b.results).all(|(x, y)| {
+                                x.item == y.item
+                                    && x.count == y.count
+                                    && x.components == y.components
+                            })
+                    });
+                let empty_edges = browser_ext::recipes_page(count, 5).is_empty()
+                    && browser_ext::recipes_page(u32::MAX, u32::MAX).is_empty();
+                chat::show(&format!(
+                    "recipe count {}, all {}, count matches {}, page matches {}, empty edges {}",
+                    count,
+                    all.len(),
+                    count_matches,
+                    same,
+                    empty_edges
+                ));
+                let all_items = recipes::items();
+                let mut item_page = Vec::new();
+                let mut start = 0;
+                loop {
+                    let next = browser_ext::items_page(start, 7);
+                    if next.is_empty() {
+                        break;
+                    }
+                    start += next.len() as u32;
+                    item_page.extend(next);
+                }
+                let items_same = item_page.len() == all_items.len()
+                    && item_page
+                        .iter()
+                        .zip(&all_items)
+                        .all(|(a, b)| a.id == b.id && a.name == b.name && a.tags == b.tags);
+                let item_edges = browser_ext::items_page(all_items.len() as u32, 5).is_empty()
+                    && browser_ext::items_page(u32::MAX, u32::MAX).is_empty();
+                chat::show(&format!(
+                    "item page matches {}, empty edges {}",
+                    items_same, item_edges
+                ));
+                let facts = browser_ext::item_facts();
+                let others = browser_ext::other_recipes();
+                chat::show(&format!(
+                    "{} facts, {} other recipes",
+                    facts.len(),
+                    others.len()
+                ));
+                for f in facts {
+                    chat::show(&format!(
+                        "{}: burn {}, compost {}, repaired by {:?}",
+                        f.item, f.burn_ticks, f.compost_chance, f.repaired_by
+                    ));
+                }
+                for r in others {
+                    chat::show(&format!("{}: {} {}", r.id, r.kind, r.json));
+                }
             }
             "recipes" => {
                 let items = recipes::items();
@@ -404,6 +859,66 @@ impl Mod for Guest {
                 browser::set_recipes(&format!("Recipes for {args}"), &tabs, 0, &views);
                 chat::show(&format!("recipes shown: {}", views.len()));
             }
+            "custom_recipes" => {
+                use browser_ext::{CustomView, PlacedSlot, PlacedSprite, PlacedText, RecipeEntry};
+                let stack = browser::Stack {
+                    item: "minecraft:stone".into(),
+                    count: 2,
+                    components: String::new(),
+                };
+                let standard = browser::RecipeView {
+                    layout: browser::Layout::Grid,
+                    width: 99,
+                    height: 0,
+                    slots: vec![vec![stack.clone()]; 10],
+                    results: vec![stack.clone()],
+                    note: "standard".into(),
+                    action: None,
+                };
+                let slot = PlacedSlot {
+                    x: -20,
+                    y: 500,
+                    stacks: vec![stack.clone(); 65],
+                };
+                let custom = RecipeEntry::Custom(CustomView {
+                    width: 300,
+                    height: 300,
+                    slots: vec![slot; 10],
+                    result: (args != "no_result").then_some(PlacedSlot {
+                        x: 500,
+                        y: -20,
+                        stacks: vec![stack.clone()],
+                    }),
+                    texts: vec![
+                        PlacedText {
+                            x: 500,
+                            y: -20,
+                            text: "界".repeat(300),
+                            color: 0x123456
+                        };
+                        17
+                    ],
+                    sprites: vec![
+                        PlacedSprite {
+                            x: -20,
+                            y: 500,
+                            sprite: "container/furnace/lit_progress".into()
+                        };
+                        17
+                    ],
+                    action: Some(true),
+                });
+                if args == "standard" {
+                    browser::set_recipes("standard", &[], 0, &[standard]);
+                } else {
+                    let entries = if args == "empty" {
+                        vec![]
+                    } else {
+                        vec![custom, RecipeEntry::Standard(standard)]
+                    };
+                    browser_ext::set_recipes("custom", &vec![stack; 17], 3, &entries);
+                }
+            }
             "recipe_place" => {
                 let mut words = args.split_whitespace();
                 let id = words.next().unwrap_or_default();
@@ -442,6 +957,49 @@ impl Mod for Guest {
                     None => format!("give {id}: no such item"),
                 });
             }
+            "bookmarks" => {
+                let count = args.parse().unwrap_or(0);
+                let mut items = vec![
+                    browser::Stack {
+                        item: "minecraft:stone".into(),
+                        count: 7,
+                        components: "[minecraft:damage=1]".into(),
+                    };
+                    count
+                ];
+                if count > 1024 {
+                    items[0].item = "é".repeat(300);
+                    items[0].components = "界".repeat(4200);
+                }
+                browser_ext::set_bookmarks(&items);
+            }
+            // /item_lines BOOKMARKS COUNT LINE|LINE... replaces that panel's lines.
+            "item_lines" => {
+                let mut args = args.splitn(3, ' ');
+                let bookmarks = args.next() == Some("true");
+                let count = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                let lines: Vec<String> = args
+                    .next()
+                    .unwrap_or("")
+                    .split('|')
+                    .map(str::to_owned)
+                    .collect();
+                let items: Vec<_> = (0..count)
+                    .map(|index| browser_ext::ItemLines {
+                        index,
+                        lines: lines.clone(),
+                    })
+                    .collect();
+                browser_ext::set_item_lines(bookmarks, &items);
+            }
+            "browser_keep_empty" => browser_ext::keep_empty(args == "true"),
+            "bookmarks_poll" => {
+                let events = browser_ext::poll();
+                chat::show(&format!("{} bookmark events", events.len()));
+                for browser_ext::Event::BookmarkClicked(c) in events.into_iter().take(1) {
+                    chat::show(&format!("bookmark {} {}", c.index, c.right));
+                }
+            }
             "browser_poll" => {
                 let stack = |s: &browser::Stack| format!("{} x{}{}", s.item, s.count, s.components);
                 // A hook shows at most 8 chat lines: the count, then the first 7.
@@ -478,6 +1036,9 @@ impl Mod for Guest {
         }
         Ok(None)
     }
+    fn channel_message(&mut self, name: &str, data: &[u8]) {
+        chat::show(&format!("channel {name} {}", data.len()));
+    }
     fn tick(&mut self, _tick: u64) {
         if let Some((book, all, id)) = self.pending.take() {
             match recipes::place(book, all) {
@@ -486,6 +1047,37 @@ impl Mod for Guest {
                 Err(e) => chat::show(&format!("place {id}: {e}")),
             }
         }
+    }
+    fn container_pointer(
+        &mut self,
+        kind: ContainerPointerKind,
+        x: f32,
+        y: f32,
+        button: u32,
+        slot: Option<u32>,
+        shift: bool,
+    ) {
+        if kind == ContainerPointerKind::Down {
+            container::take_drag();
+        }
+        chat::show(&format!(
+            "container pointer {kind:?} {x} {y} {button} {slot:?} {shift}"
+        ));
+    }
+    fn container_scroll(&mut self, _x: f32, _y: f32, steps: f32, slot: Option<u32>) -> bool {
+        chat::show(&format!("container scroll {steps} {slot:?}"));
+        slot.is_some()
+    }
+    fn container_button(&mut self, id: u32) {
+        self.container_latch = !self.container_latch;
+        container::set_shift_latch(self.container_latch);
+        chat::show(&format!("container button {id}"));
+    }
+    fn container_opened(&mut self) {
+        chat::show("container opened");
+    }
+    fn container_closed(&mut self) {
+        chat::show("container closed");
     }
     fn ui_select(&mut self, id: u32, row: u32) {
         chat::show(&format!("selected {id}:{row}"));

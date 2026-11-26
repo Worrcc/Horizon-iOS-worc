@@ -25,6 +25,8 @@ if ! command -v xcrun >/dev/null 2>&1; then
 #define TARGET_OS_EMBEDDED 1
 H
     printf '#pragma once\n#define assert(x) ((void)0)\n' > "$stub/usr/include/assert.h"
+    # wasmtime's C helpers (the `mods` feature).
+    printf '#pragma once\n#include <stddef.h>\nvoid abort(void);\n' > "$stub/usr/include/stdlib.h"
     printf '#pragma once\n#include <stddef.h>\nvoid *memcpy(void*,const void*,size_t);\nvoid *memset(void*,int,size_t);\nint memcmp(const void*,const void*,size_t);\nvoid *memmove(void*,const void*,size_t);\nsize_t strlen(const char*);\n' > "$stub/usr/include/string.h"
     export SDKROOT="$stub"
     triple="${target//-/_}"
@@ -33,4 +35,4 @@ H
 fi
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 cd "$root"
-exec cargo check --target "$target" -p horizon-client --bins --lib "$@"
+exec cargo check --target "$target" -p horizon-client --bins --lib --features mods "$@"

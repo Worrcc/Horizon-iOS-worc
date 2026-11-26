@@ -1,5 +1,9 @@
 //! Write Horizon mods in Rust (`docs/mods.md`).
 //!
+//! API level 28: [`canvas::set_screen_items`] and [`canvas::set_box_items`]
+//! draw item icons on canvases; [`server::world::player_stacks`] reads an online
+//! player's main inventory, including earlier storage reservations in the batch.
+//!
 //! A mod is a type implementing [`Mod`], exported with [`export_mod!`] from
 //! a `cdylib` crate built for `wasm32-unknown-unknown`;
 //! `cargo horizon-mod build` turns it into the component the game loads.
@@ -28,6 +32,44 @@
 //! [`ui::open_screen`] and a page in Options > Mods with
 //! [`ui::set_settings`]; what the player does with them comes back as
 //! [`Mod::ui_select`], [`Mod::ui_closed`] and [`Mod::ui_settings_opened`].
+//!
+//! Pixels (capability `render`, API level 17): [`canvas::create_image`] and
+//! [`canvas::update_image`] fill images that [`canvas::set_corner`] shows in
+//! a corner box; [`canvas::request_frame_budget`] and [`canvas::work_left`]
+//! keep heavy `frame` work to a time budget. The loaded world (capability
+//! `world-read`, API level 17): [`client_world::columns`] reads whole chunks,
+//! [`client_world::block_table`] and [`client_world::texture`] the packs.
+//! Level 23 adds [`client_world::set_see_through`] and
+//! [`client_world::prepared_columns`] to prepare columns natively.
+//! Level 24 adds [`client_world::harvest`] (the tool and tier a block needs)
+//! and [`input::set_auto_button_shown`]: automatic touch buttons start hidden.
+//! Level 25 adds [`input::set_touch_button_context`] for riding/held-item visibility.
+//! Level 26 adds [`server::players::teleport`] for vanilla player teleports across dimensions.
+//! [`server::players::permission_level`] reads an online player's vanilla op level.
+//! [`server::world::spawn_point`] reads the overworld's world spawn and angle.
+//! Level 27 adds [`input::set_aim_assist`] for controller/touch look and [`input::look_device`].
+//! Level 28 adds server block-use hooks, scoped mod channels and component-preserving container moves.
+//! Level 29 adds behaviour hooks and [`server::world::player_held_data`], with
+//! scoped UTF-8 data in minecraft:custom_data (1024 bytes; JSON/base64 allowed).
+//! Data writes and creation share storage moves' 64 requests/mod/tick and apply
+//! after hooks. [`server::StackInfoWithData`] leaves the older record unchanged.
+//! Level 32 adds [`server::world::heightmap`]: a loaded chunk's 256 OCEAN_FLOOR heights.
+//! Level 33 adds [`atmosphere`] (experimental capability `atmosphere`): fog and sky profiles keyed
+//! by time of day, a weighted mix the game cross-fades to ([`atmosphere::set_mix`], or
+//! [`atmosphere_mix::show`] and [`atmosphere_mix::clear`]) and the camera's conditions; and
+//! particle effects the game simulates ([`atmosphere::define_effect`], emitters started, moved and
+//! stopped by id, builders in [`atmosphere_fx`]); and up to 256 sky sprites the game moves and
+//! fades on the sky dome ([`atmosphere::set_sky_sprites`], builders in [`atmosphere_sky`]).
+//! Level 34 adds post keys to atmosphere profiles: exposure, bloom intensity and threshold,
+//! shadow strength and softness and saturation keyed by time of day, scaled within the player's
+//! Bloom and Shadows settings ([`atmosphere::define_post_profile`],
+//! [`atmosphere::set_post_keys`], builders in [`atmosphere_post`]).
+//!
+//! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
+//! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
+//! API level 21: [`canvas::set_box_key`] makes a touch on the HUD box hold a registered mod key.
+//! [`chat::open`] prefills the player's chat box without sending anything; touch chat opens
+//! the on-screen keyboard. A leading `/` prefills a command.
 
 wit_bindgen::generate!({
     path: "wit",
@@ -37,11 +79,223 @@ wit_bindgen::generate!({
     default_bindings_module: "horizon_mod_sdk",
 });
 
-pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
-pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
-pub use horizon::mods::{
-    browser, chat, command, game, hud, input, log, recipes, render, storage, ui,
+pub use exports::horizon::mods::channel_events::Guest as __ChannelEventsGuest;
+pub use exports::horizon::mods::container_events::{
+    Guest as __ContainerEventsGuest, PointerKind as ContainerPointerKind,
 };
+pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
+pub use exports::horizon::mods::ui_events::{Guest as __UiEventsGuest, PointerKind};
+pub use horizon::mods::{
+    atmosphere, browser, browser_ext, canvas, channel, chat, client_world, command, container,
+    game, hud, input, log, recipes, render, storage, ui,
+};
+
+/// Shorthands for [`atmosphere::set_mix`] (capability `atmosphere`, API level 33).
+pub mod atmosphere_mix {
+    use super::atmosphere;
+    /// Shows one profile alone, cross-fading over `seconds`.
+    pub fn show(profile: u32, seconds: f32) -> Result<(), String> {
+        atmosphere::set_mix(&[(profile, 1.0)], seconds)
+    }
+    /// Back to vanilla fog and sky over `seconds`.
+    pub fn clear(seconds: f32) -> Result<(), String> {
+        atmosphere::set_mix(&[], seconds)
+    }
+    /// `0xRRGGBB` from 0..255 channels.
+    pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+        (r as u32) << 16 | (g as u32) << 8 | b as u32
+    }
+}
+
+/// Builders for [`atmosphere::define_effect`]'s records (capability `atmosphere`, API level 33):
+/// start from [`atmosphere_fx::emitter`] and [`atmosphere_fx::particle`] and change fields.
+pub mod atmosphere_fx {
+    use super::atmosphere::{
+        Curve, CurveKey, Ease, Effect, Emitter, EmitterShape, FrameMode, Medium, Particle, Span,
+        Span3,
+    };
+    /// A range drawn per particle.
+    pub const fn span(lo: f32, hi: f32) -> Span {
+        Span { lo, hi }
+    }
+    /// One value.
+    pub const fn constant(v: f32) -> Span {
+        Span { lo: v, hi: v }
+    }
+    /// The same range on every axis.
+    pub const fn span3(lo: f32, hi: f32) -> Span3 {
+        Span3 {
+            x: span(lo, hi),
+            y: span(lo, hi),
+            z: span(lo, hi),
+        }
+    }
+    /// A curve that stays at a drawn base.
+    pub fn flat(base: Span) -> Curve {
+        Curve {
+            base,
+            keys: Vec::new(),
+            ease: Ease::Linear,
+            wave: None,
+        }
+    }
+    /// A drawn base that eases in over the first `fade_in` of the life and out over the last
+    /// `fade_out` (fractions 0..1).
+    pub fn fade(base: Span, fade_in: f32, fade_out: f32) -> Curve {
+        let key = |t: f32, value: f32| CurveKey { t, value };
+        Curve {
+            base,
+            keys: vec![
+                key(0.0, 0.0),
+                key(fade_in, 1.0),
+                key(1.0 - fade_out, 1.0),
+                key(1.0, 0.0),
+            ],
+            ease: Ease::Smooth,
+            wave: None,
+        }
+    }
+    /// A looping point emitter of `rate` particles per second, up to 512 live.
+    pub fn emitter(rate: f32) -> Emitter {
+        Emitter {
+            looping: true,
+            duration: 1.0,
+            rate,
+            density_scaled: true,
+            max: 512,
+            burst: 0,
+            shape: EmitterShape::Point,
+            offset: span3(0.0, 0.0),
+            half_size: (0.0, 0.0, 0.0),
+            radius: constant(0.0),
+            surface: false,
+            direction: None,
+        }
+    }
+    /// A white, cut-out, world-lit particle of `sprite` living one second at 0.1 blocks,
+    /// motionless.
+    pub fn particle(sprite: &str) -> Particle {
+        Particle {
+            sprite: sprite.into(),
+            frame: FrameMode::First,
+            frame_rate: 0.0,
+            lifetime: constant(1.0),
+            speed: constant(0.0),
+            velocity: span3(0.0, 0.0),
+            drag: 0.0,
+            gravity: 0.0,
+            acceleration: None,
+            size: flat(constant(0.1)),
+            alpha: flat(constant(1.0)),
+            color: 0xFFFFFF,
+            color_keys: Vec::new(),
+            shade: 0.0,
+            spin: constant(0.0),
+            spin_rate: constant(0.0),
+            fade_near: None,
+            fade_far: None,
+            emissive: false,
+            translucent: false,
+            only_in: Medium::Anywhere,
+            die_nearer_than: 0.0,
+        }
+    }
+    /// Both halves.
+    pub fn effect(emitter: Emitter, particle: Particle) -> Effect {
+        Effect { emitter, particle }
+    }
+}
+
+/// Builders for [`atmosphere::set_sky_sprites`]' records (capability `atmosphere`, API level 33):
+/// start from [`atmosphere_sky::sprite`] and change fields.
+pub mod atmosphere_sky {
+    use super::atmosphere::{SkyBlend, SkySpace, SkySprite};
+    /// Horizon's soft round glow (a halo, a star, a meteor's head).
+    pub const GLOW: &str = "horizon:sky/glow";
+    /// Horizon's sharp-edged round disc (a moon, a planet).
+    pub const DISC: &str = "horizon:sky/disc";
+    /// Horizon's streak, bright at its right end and fading to the left (a meteor's trail).
+    pub const STREAK: &str = "horizon:sky/streak";
+    /// Horizon's curtain, bright along its bottom edge and fading upwards (an aurora's veil).
+    pub const VEIL: &str = "horizon:sky/veil";
+
+    /// A white, whole-texture, translucent sprite `size` degrees square at a compass `yaw` and
+    /// `elevation` (degrees), fixed to the compass, motionless and shown until removed.
+    pub fn sprite(key: u32, texture: &str, yaw: f32, elevation: f32, size: f32) -> SkySprite {
+        SkySprite {
+            key,
+            texture: texture.into(),
+            uv: (0.0, 0.0, 1.0, 1.0),
+            yaw,
+            elevation,
+            width: size,
+            height: size,
+            roll: 0.0,
+            tint: 0xFFFFFF,
+            alpha: 1.0,
+            blend: SkyBlend::Translucent,
+            space: SkySpace::Compass,
+            drift_yaw: 0.0,
+            drift_elevation: 0.0,
+            spin: 0.0,
+            lifetime: 0.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+        }
+    }
+    /// The same sprite adding light instead of covering the sky.
+    pub fn emissive(mut s: SkySprite) -> SkySprite {
+        s.blend = SkyBlend::Emissive;
+        s
+    }
+}
+
+/// Builders for [`atmosphere::define_post_profile`]'s and [`atmosphere::set_post_keys`]' keys
+/// (capability `atmosphere`, API level 34): start from [`atmosphere_post::key`] and change fields.
+pub mod atmosphere_post {
+    use super::atmosphere::PostKey;
+    /// A key at `day_time` that changes nothing: exposure, bloom and saturation 1, no bloom
+    /// threshold, shadow strength 0.5 (the game's own) and no softening.
+    pub fn key(day_time: u32) -> PostKey {
+        PostKey {
+            day_time,
+            exposure: 1.0,
+            bloom_intensity: 1.0,
+            bloom_threshold: 0.0,
+            shadow_strength: 0.5,
+            shadow_softness: 0.0,
+            saturation: 1.0,
+        }
+    }
+    /// Stores a profile of one constant key (the same at every time of day).
+    pub fn constant(k: PostKey) -> Result<u32, String> {
+        super::atmosphere::define_post_profile(&[k])
+    }
+}
+
+/// `client_world::BlockStates::state_flags`' bits (capability `world-read`).
+pub mod state_flags {
+    pub const AIR: u16 = 1;
+    /// Drawn as nothing: a barrier, a light block, a structure void.
+    pub const INVISIBLE: u16 = 2;
+    pub const WATER: u16 = 4;
+    pub const LAVA: u16 = 8;
+    pub const WATERLOGGED: u16 = 16;
+    /// See-through like glass, ice or leaves.
+    pub const SEE_THROUGH: u16 = 32;
+    /// No collision, like a plant or a torch.
+    pub const NO_COLLISION: u16 = 64;
+    /// A full face on top (a minimap draws the block, not what's under it).
+    pub const FULL_TOP: u16 = 128;
+    /// The light a state gives (0 to 15), from these bits.
+    pub fn emission(flags: u16) -> u8 {
+        (flags >> 8) as u8 & 15
+    }
+}
+/// `client_world::ChunkColumns::tops` for a column with no block.
+pub const NO_TOP: i16 = i16::MIN;
+/// `client_world::Face::sprite` for a side that draws nothing.
+pub const NO_SPRITE: u32 = u32::MAX;
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
 /// are called; the others may stay as their defaults.
@@ -51,6 +305,8 @@ pub trait Mod: Sized + 'static {
     fn init() -> Result<(Self, Registration), String>;
     /// Every game tick, when [`Registration::tick`] is set.
     fn tick(&mut self, _tick: u64) {}
+    /// API 28: a message from this mod id on the server.
+    fn channel_message(&mut self, _name: &str, _data: &[u8]) {}
     /// Every rendered frame, when [`Registration::frame`] is set.
     fn frame(&mut self, _seconds: f32) {}
     /// `/name args` for a command the mod registered. `Ok(Some(text))` is
@@ -63,6 +319,30 @@ pub trait Mod: Sized + 'static {
     /// A row of one of the mod's `list` widgets was picked (capability
     /// `ui`): the widget's `id` and the row.
     fn ui_select(&mut self, _id: u32, _row: u32) {}
+    /// Pointer action on the canvas screen, in GUI pixels (API level 18).
+    fn ui_pointer(&mut self, _kind: PointerKind, _x: f32, _y: f32, _button: u32) {}
+    /// Wheel on the canvas screen; positive steps away from the player.
+    fn ui_scroll(&mut self, _x: f32, _y: f32, _steps: f32) {}
+    /// A key.keyboard.* key on the canvas screen, excluding Escape.
+    fn ui_screen_key(&mut self, _key: &str, _down: bool) {}
+    /// Before vanilla container input (API 22, capability `container`).
+    fn container_pointer(
+        &mut self,
+        _kind: ContainerPointerKind,
+        _x: f32,
+        _y: f32,
+        _button: u32,
+        _slot: Option<u32>,
+        _shift: bool,
+    ) {
+    }
+    /// True consumes the container wheel/two-finger scroll.
+    fn container_scroll(&mut self, _x: f32, _y: f32, _steps: f32, _slot: Option<u32>) -> bool {
+        false
+    }
+    fn container_button(&mut self, _id: u32) {}
+    fn container_opened(&mut self) {}
+    fn container_closed(&mut self) {}
     /// The player left the mod's screen (Esc or Done; capability `ui`).
     fn ui_closed(&mut self) {}
     /// The player opened the mod's settings page (capability `ui`): call
@@ -152,7 +432,21 @@ macro_rules! export_mod {
                     with(|m| $crate::Mod::chat(m, &text))
                 }
             }
+            impl $crate::__ChannelEventsGuest for Export {
+                fn message(name: String, data: Vec<u8>) {
+                    with(|m| $crate::Mod::channel_message(m, &name, &data))
+                }
+            }
             impl $crate::__UiEventsGuest for Export {
+                fn pointer(kind: $crate::PointerKind, x: f32, y: f32, button: u32) {
+                    with(|m| $crate::Mod::ui_pointer(m, kind, x, y, button))
+                }
+                fn scroll(x: f32, y: f32, steps: f32) {
+                    with(|m| $crate::Mod::ui_scroll(m, x, y, steps))
+                }
+                fn screen_key(key: String, down: bool) {
+                    with(|m| $crate::Mod::ui_screen_key(m, &key, down))
+                }
                 fn select(id: u32, row: u32) {
                     with(|m| $crate::Mod::ui_select(m, id, row))
                 }
@@ -161,6 +455,32 @@ macro_rules! export_mod {
                 }
                 fn settings_opened() {
                     with(|m| $crate::Mod::ui_settings_opened(m))
+                }
+            }
+            impl $crate::__ContainerEventsGuest for Export {
+                fn pointer(
+                    kind: $crate::ContainerPointerKind,
+                    x: f32,
+                    y: f32,
+                    button: u32,
+                    slot: Option<u32>,
+                    shift: bool,
+                ) {
+                    with(|m| $crate::Mod::container_pointer(m, kind, x, y, button, slot, shift))
+                }
+                fn scroll(x: f32, y: f32, steps: f32, slot: Option<u32>) -> bool {
+                    let mut consumed = false;
+                    with(|m| consumed = $crate::Mod::container_scroll(m, x, y, steps, slot));
+                    consumed
+                }
+                fn button(id: u32) {
+                    with(|m| $crate::Mod::container_button(m, id))
+                }
+                fn opened() {
+                    with(|m| $crate::Mod::container_opened(m))
+                }
+                fn closed() {
+                    with(|m| $crate::Mod::container_closed(m))
                 }
             }
             // Only WebAssembly has the component's exports: a host build (cargo test or
@@ -194,12 +514,53 @@ pub mod server {
         },
     });
 
+    pub use attachments::{AttachmentTarget, BlockRef, ChunkRef};
+    pub use energy::EnergyPos;
+    pub use exports::horizon::mods::net_events::Guest as __NetGuest;
     pub use exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
-        ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, ChatDecision, DeathPoint, DeathStack,
+        Decision, Guest as __Guest, Hand as BehaviourHand, Registration, ServerCommand,
     };
-    pub use horizon::mods::players::{self, GameMode, Player};
-    pub use horizon::mods::world::{self, BlockChange};
+    pub use horizon::mods::entities::{
+        self, Area, AttributeChange, Death, EffectChange, Entity, HurtEvent, Mount, Order,
+        Particles, Point, Rider, Sound, StrikeHit, Target, Walk,
+    };
+    pub use horizon::mods::players::{
+        self, ActiveEffect, Attack, BlockHit, EquipmentSlots, GameMode, ItemFilter, ItemUse, Look,
+        Player, PlayerDamage, PlayerDeath, PlayerRespawn, PlayerVitals, Point as PlayerPoint,
+        TeleportTarget,
+    };
+    pub use horizon::mods::world::{
+        self, BlastKind, BlockChange, BlockChangePos, BreakOptions, ChunkPos, DustColor, ItemStack,
+        ParticleBurst, Point as WorldPoint, Stack as MachineStack, StackInfo, StackInfoWithData,
+        WorldTime,
+    };
+    pub use horizon::mods::{
+        attachments, channel, energy, lookup, menus, net, server_hooks, worldgen,
+    };
+    pub use lookup::TargetKind;
+    pub use menus::MenuItem;
+    pub use server_hooks::{BehaviourConfig, LifecycleConfig};
+    // The generated WIT type cannot carry a per-type derive here.
+    #[allow(clippy::derivable_impls)]
+    impl Default for BehaviourConfig {
+        fn default() -> Self {
+            Self {
+                block_breaking: false,
+                block_placing: false,
+                block_interacted: false,
+                block_neighbour_changed: false,
+                block_random_tick: false,
+                block_scheduled_tick: false,
+                item_used_on_block: false,
+                item_used: false,
+                item_hit_entity: false,
+                item_use_finished: false,
+                item_picked_up: false,
+                chat_sent_filter: false,
+            }
+        }
+    }
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks
     /// for are called; the others may stay as their defaults.
@@ -228,6 +589,113 @@ pub mod server {
         /// When [`Registration::blocks`] is set: `state` is what was there.
         fn block_broken(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
         fn block_placed(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
+        fn block_neighbour_changed(
+            &mut self,
+            _dimension: &str,
+            _pos: BlockPos,
+            _state: &str,
+            _from: &str,
+        ) {
+        }
+        fn block_random_tick(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
+        fn menu_clicked(&mut self, _player: &Player, _slot: i32, _button: i32, _mode: i32) {}
+        fn menu_closed(&mut self, _player: &Player) {}
+        fn block_scheduled_tick(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
+        fn item_used_on_block(
+            &mut self,
+            _player: &Player,
+            _item: &str,
+            _pos: BlockPos,
+            _state: &str,
+            _face: i32,
+        ) -> Decision {
+            Decision::Allow
+        }
+        fn item_used(&mut self, _player: &Player, _item: &str) -> Decision {
+            Decision::Allow
+        }
+        fn item_hit_entity(
+            &mut self,
+            _player: &Player,
+            _item: &str,
+            _entity_kind: &str,
+            _entity_id: i32,
+        ) -> Decision {
+            Decision::Allow
+        }
+        fn item_use_finished(&mut self, _player: &Player, _item: &str) {}
+        fn item_picked_up(&mut self, _player: &Player, _item: &str) -> Decision {
+            Decision::Allow
+        }
+        fn chat_sent_filter(&mut self, _player: &Player, _text: &str) -> ChatDecision {
+            ChatDecision::Allow
+        }
+        /// API 28: opt in with server_hooks::set_block_uses during init.
+        fn block_used(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+            _sneaking: bool,
+        ) -> bool {
+            false
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn block_interacted(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+            _face: i32,
+            _hit_x: f64,
+            _hit_y: f64,
+            _hit_z: f64,
+            _hand: BehaviourHand,
+            _item: &str,
+            _sneaking: bool,
+        ) -> Decision {
+            Decision::Allow
+        }
+        fn block_breaking(&mut self, _player: &Player, _pos: BlockPos, _state: &str) -> Decision {
+            Decision::Allow
+        }
+        fn block_placing(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+            _item: &str,
+        ) -> Decision {
+            Decision::Allow
+        }
+        /// API 38: a player died with these drops. Only the first mod to call
+        /// `server_hooks::set_death_drops(true)` is asked. True keeps the drops
+        /// out of the world; read them with `players::claimed_deaths`. False
+        /// leaves vanilla drops untouched.
+        fn player_died(
+            &mut self,
+            _player: &Player,
+            _dimension: &str,
+            _at: DeathPoint,
+            _drops: &[DeathStack],
+        ) -> bool {
+            false
+        }
+        /// API 42: a message from another server mod.
+        fn net_message(&mut self, _from: &str, _name: &str, _data: &[u8]) {}
+        /// API 41: a watched content block with a container was ticked.
+        fn machine_ticked(&mut self, _dimension: &str, _pos: BlockPos, _state: &str) {}
+        /// API 40: the server tick is about to run its levels.
+        fn server_tick_start(&mut self, _tick: u64) {}
+        /// API 40: the server tick's levels and mod work are done.
+        fn server_tick_end(&mut self, _tick: u64) {}
+        /// API 40: a player was placed by a respawn.
+        fn player_respawned(&mut self, _player: &Player, _dimension: &str, _at: DeathPoint) {}
+        /// API 40: the server is about to write its save.
+        fn before_save(&mut self) {}
+        /// API 40: the save finished.
+        fn after_save(&mut self, _saved: bool) {}
+        fn channel_message(&mut self, _player: &Player, _name: &str, _data: &[u8]) {}
     }
 
     impl Registration {
@@ -402,6 +870,11 @@ macro_rules! export_server_mod {
                 })
             }
             struct Export;
+            impl $crate::server::__NetGuest for Export {
+                fn net_message(from: String, name: String, data: Vec<u8>) {
+                    with(|m| m.net_message(&from, &name, &data));
+                }
+            }
             impl $crate::server::__Guest for Export {
                 fn init() -> Result<Registration, String> {
                     let (m, registration) = <$t as ServerMod>::init()?;
@@ -430,6 +903,149 @@ macro_rules! export_server_mod {
                     let args = Args::new(args, values);
                     with(|m| out = m.command(&player, &name, &args));
                     out
+                }
+                fn block_neighbour_changed(
+                    dimension: String,
+                    pos: BlockPos,
+                    state: String,
+                    from: String,
+                ) {
+                    with(|m| m.block_neighbour_changed(&dimension, pos, &state, &from))
+                }
+                fn block_random_tick(dimension: String, pos: BlockPos, state: String) {
+                    with(|m| m.block_random_tick(&dimension, pos, &state))
+                }
+                fn menu_clicked(player: Player, slot: i32, button: i32, mode: i32) {
+                    with(|m| m.menu_clicked(&player, slot, button, mode))
+                }
+                fn menu_closed(player: Player) {
+                    with(|m| m.menu_closed(&player))
+                }
+                fn block_scheduled_tick(dimension: String, pos: BlockPos, state: String) {
+                    with(|m| m.block_scheduled_tick(&dimension, pos, &state))
+                }
+                fn item_used_on_block(
+                    player: Player,
+                    item: String,
+                    pos: BlockPos,
+                    state: String,
+                    face: i32,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_used_on_block(&player, &item, pos, &state, face));
+                    answer
+                }
+                fn item_used(player: Player, item: String) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_used(&player, &item));
+                    answer
+                }
+                fn item_hit_entity(
+                    player: Player,
+                    item: String,
+                    entity_kind: String,
+                    entity_id: i32,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_hit_entity(&player, &item, &entity_kind, entity_id));
+                    answer
+                }
+                fn item_use_finished(player: Player, item: String) {
+                    with(|m| m.item_use_finished(&player, &item));
+                }
+                fn item_picked_up(player: Player, item: String) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.item_picked_up(&player, &item));
+                    answer
+                }
+                fn chat_sent_filter(player: Player, text: String) -> $crate::server::ChatDecision {
+                    let mut answer = $crate::server::ChatDecision::Allow;
+                    with(|m| answer = m.chat_sent_filter(&player, &text));
+                    answer
+                }
+                fn block_used(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                    sneaking: bool,
+                ) -> bool {
+                    let mut consumed = false;
+                    with(|m| consumed = m.block_used(&player, pos, &state, sneaking));
+                    consumed
+                }
+                fn block_interacted(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                    face: i32,
+                    hit_x: f64,
+                    hit_y: f64,
+                    hit_z: f64,
+                    hand: $crate::server::BehaviourHand,
+                    item: String,
+                    sneaking: bool,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| {
+                        answer = m.block_interacted(
+                            &player, pos, &state, face, hit_x, hit_y, hit_z, hand, &item, sneaking,
+                        )
+                    });
+                    answer
+                }
+                fn block_breaking(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.block_breaking(&player, pos, &state));
+                    answer
+                }
+                fn block_placing(
+                    player: Player,
+                    pos: BlockPos,
+                    state: String,
+                    item: String,
+                ) -> $crate::server::Decision {
+                    let mut answer = $crate::server::Decision::Allow;
+                    with(|m| answer = m.block_placing(&player, pos, &state, &item));
+                    answer
+                }
+                fn player_died(
+                    player: Player,
+                    dimension: String,
+                    at: $crate::server::DeathPoint,
+                    drops: Vec<$crate::server::DeathStack>,
+                ) -> bool {
+                    let mut claimed = false;
+                    with(|m| claimed = m.player_died(&player, &dimension, at, &drops));
+                    claimed
+                }
+                fn machine_ticked(dimension: String, pos: BlockPos, state: String) {
+                    with(|m| m.machine_ticked(&dimension, pos, &state))
+                }
+                fn server_tick_start(tick: u64) {
+                    with(|m| m.server_tick_start(tick))
+                }
+                fn server_tick_end(tick: u64) {
+                    with(|m| m.server_tick_end(tick))
+                }
+                fn player_respawned(
+                    player: Player,
+                    dimension: String,
+                    at: $crate::server::DeathPoint,
+                ) {
+                    with(|m| m.player_respawned(&player, &dimension, at))
+                }
+                fn before_save() {
+                    with(|m| m.before_save())
+                }
+                fn after_save(saved: bool) {
+                    with(|m| m.after_save(saved))
+                }
+                fn channel_message(player: Player, name: String, data: Vec<u8>) {
+                    with(|m| m.channel_message(&player, &name, &data))
                 }
                 fn block_broken(player: Player, pos: BlockPos, state: String) {
                     with(|m| m.block_broken(&player, pos, &state))

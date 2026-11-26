@@ -80,9 +80,91 @@ pub fn vibration(start: u8, amplitude: u8, frequency: u8) -> TriggerEffect {
     e
 }
 
+/// An effect read back from its encoding, for platforms that set the triggers through their
+/// own API (iOS's `GCDualSenseAdaptiveTrigger`) rather than the pad's report. Zones as above;
+/// strengths and amplitudes 1..8.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Off,
+    Feedback {
+        start: u8,
+        strength: u8,
+    },
+    Weapon {
+        start: u8,
+        end: u8,
+        strength: u8,
+    },
+    Vibration {
+        start: u8,
+        amplitude: u8,
+        frequency: u8,
+    },
+}
+
+/// What [`feedback`], [`weapon`] and [`vibration`] made (a [`resistance`] reads as feedback from
+/// its first zone at its strongest level); anything else is [`Mode::Off`].
+pub fn decode(effect: &TriggerEffect) -> Mode {
+    let active = u16::from_le_bytes([effect[1], effect[2]]);
+    let values = u32::from_le_bytes([effect[3], effect[4], effect[5], effect[6]]);
+    let first = active.trailing_zeros() as u8;
+    let strongest = (0..10)
+        .filter(|i| active & (1 << i) != 0)
+        .map(|i| ((values >> (3 * i)) & 7) as u8 + 1)
+        .max()
+        .unwrap_or(0);
+    match effect[0] {
+        _ if active == 0 => Mode::Off,
+        FEEDBACK => Mode::Feedback {
+            start: first,
+            strength: strongest,
+        },
+        WEAPON => Mode::Weapon {
+            start: first,
+            end: 15 - active.leading_zeros() as u8,
+            strength: effect[3] + 1,
+        },
+        VIBRATION => Mode::Vibration {
+            start: first,
+            amplitude: strongest,
+            frequency: effect[9],
+        },
+        _ => Mode::Off,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effects_decode_to_what_made_them() {
+        assert_eq!(decode(&TRIGGER_OFF), Mode::Off);
+        assert_eq!(
+            decode(&feedback(2, 6)),
+            Mode::Feedback {
+                start: 2,
+                strength: 6
+            }
+        );
+        assert_eq!(
+            decode(&weapon(3, 5, 8)),
+            Mode::Weapon {
+                start: 3,
+                end: 5,
+                strength: 8
+            }
+        );
+        assert_eq!(
+            decode(&vibration(1, 4, 20)),
+            Mode::Vibration {
+                start: 1,
+                amplitude: 4,
+                frequency: 20
+            }
+        );
+        assert_eq!(decode(&vibration(1, 4, 0)), Mode::Off);
+    }
 
     #[test]
     fn feedback_bytes() {

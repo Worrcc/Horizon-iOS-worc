@@ -8,7 +8,9 @@
 //! test written in TOML, `tests/<name>.toml` in the mod's folder: steps, each
 //! saying what happens and what the mod must have shown by then.
 use crate::{
-    BlockPos, Clock, Corner, GameMode, Mods, Output, Panel, Player, ServerPlayer, Snapshot, Status,
+    BlockFace, BlockPos, BlockTable, ChunkColumns, ClientDimension, ClientTexture, Clock,
+    ColumnLayer, Corner, FaceTint, GameMode, Mods, NO_SPRITE, NO_TOP, Output, Panel, Player,
+    RenderCorner, ServerPlayer, Snapshot, Status, state_flags,
 };
 use serde::Deserialize;
 use std::{
@@ -16,9 +18,62 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+/// Inventory fixture for script/check runs without game resources. Validates identifier
+/// syntax (the game checks the registry), with persistent counts and no capacity limit.
+#[derive(Clone, Default)]
+pub struct InventoryFixture {
+    pub players: std::collections::BTreeMap<String, bool>,
+    pub counts: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<(String, String), u32>>>,
+}
+impl InventoryFixture {
+    fn check(&self, player: &str, item: &str) -> Result<bool, String> {
+        let plain = |s: &str, slash| {
+            !s.is_empty()
+                && s.bytes().all(|b| {
+                    b.is_ascii_lowercase()
+                        || b.is_ascii_digit()
+                        || b"_.-".contains(&b)
+                        || slash && b == b'/'
+                })
+        };
+        if !item
+            .split_once(':')
+            .is_some_and(|(ns, path)| plain(ns, false) && plain(path, true))
+        {
+            return Err(format!("invalid item id {item}"));
+        }
+        self.players
+            .get(player)
+            .copied()
+            .ok_or_else(|| format!("no online player {player}"))
+    }
+}
+impl crate::PlayerInventories for InventoryFixture {
+    fn take_item(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String> {
+        if self.check(player, item)? {
+            return Ok(count);
+        }
+        let mut counts = self.counts.lock().map_err(|_| "inventories unavailable")?;
+        let available = counts.entry((player.into(), item.into())).or_default();
+        let taken = (*available).min(count);
+        *available -= taken;
+        Ok(taken)
+    }
+    fn give_item(&mut self, player: &str, item: &str, count: u32) -> Result<(), String> {
+        self.check(player, item)?;
+        let mut counts = self.counts.lock().map_err(|_| "inventories unavailable")?;
+        let available = counts.entry((player.into(), item.into())).or_default();
+        *available = available
+            .checked_add(count)
+            .ok_or("fixture inventory count overflow")?;
+        Ok(())
+    }
+}
+
 /// One mod in the sandbox, driven by a test.
 pub struct TestGame {
     mods: Mods,
+    inventories: InventoryFixture,
     dir: PathBuf,
     hmod: PathBuf,
     /// What the mod reads with `game-read`; ticks move the clock as the game does.
@@ -33,6 +88,195 @@ pub struct TestGame {
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
     pub world: std::collections::BTreeMap<(i32, i32, i32), String>,
+    /// Capability `world-read`'s block states, by id: air first, then each
+    /// state a script set, in the order they came.
+    pub states: Vec<String>,
+    /// Each chunk's change counter (`client-world.changes`), and the last.
+    pub revisions: std::collections::BTreeMap<(i32, i32), u64>,
+    pub revision: u64,
+    /// `client-world.texture`'s textures: one colour each (0xAARRGGBB), square.
+    pub textures: std::collections::BTreeMap<String, TextureSet>,
+}
+
+/// The world a client mod reads with capability `world-read`: the script's
+/// Overworld blocks (every chunk counts as loaded, all air but for them),
+/// lit by the sky, plains everywhere; its block table has a block per state
+/// id, each drawing its own `block/<name>` texture.
+struct ScriptClientWorld {
+    blocks: std::collections::BTreeMap<(i32, i32, i32), String>,
+    states: Vec<String>,
+    revisions: std::collections::BTreeMap<(i32, i32), u64>,
+    revision: u64,
+    textures: std::collections::BTreeMap<String, TextureSet>,
+    dimension: Option<String>,
+}
+impl ScriptClientWorld {
+    fn id(&self, state: &str) -> u32 {
+        self.states.iter().position(|s| s == state).unwrap_or(0) as u32
+    }
+    /// The block names of the states, in order, and each state's index.
+    fn blocks(&self) -> (Vec<String>, Vec<u16>) {
+        let mut blocks: Vec<String> = Vec::new();
+        let mut of = Vec::new();
+        for s in &self.states {
+            let name = s.split('[').next().unwrap_or(s).to_owned();
+            let i = match blocks.iter().position(|b| *b == name) {
+                Some(i) => i,
+                None => {
+                    blocks.push(name);
+                    blocks.len() - 1
+                }
+            };
+            of.push(i as u16);
+        }
+        (blocks, of)
+    }
+}
+impl crate::ClientWorldView for ScriptClientWorld {
+    fn block_at(&self, x: i32, y: i32, z: i32) -> Option<String> {
+        if self.dimension.as_deref()? != "minecraft:overworld" {
+            return None;
+        }
+        self.revisions.get(&(x >> 4, z >> 4))?;
+        Some(
+            self.blocks
+                .get(&(x, y, z))
+                .cloned()
+                .unwrap_or_else(|| "minecraft:air".into()),
+        )
+    }
+    fn dimension(&self) -> Option<ClientDimension> {
+        let id = self.dimension.clone()?;
+        let (min_y, height, ceiling) = match id.as_str() {
+            "minecraft:the_nether" => (0, 256, true),
+            "minecraft:the_end" => (0, 256, false),
+            _ => (-64, 384, false),
+        };
+        Some(ClientDimension {
+            id,
+            min_y,
+            height,
+            ceiling,
+        })
+    }
+    fn block_table(&mut self) -> BlockTable {
+        let (blocks, state_block) = self.blocks();
+        let sprites = blocks
+            .iter()
+            .map(|b| format!("block/{}", b.split(':').nth(1).unwrap_or(b)))
+            .collect();
+        let face = |state: &str, block: u16, top: bool| {
+            let tint = match state.split('[').next().unwrap_or(state) {
+                "minecraft:grass_block" if top => FaceTint::Grass,
+                "minecraft:water" => FaceTint::Water,
+                _ => FaceTint::None,
+            };
+            let sprite = if state == "minecraft:air" {
+                NO_SPRITE
+            } else {
+                u32::from(block)
+            };
+            BlockFace { sprite, tint }
+        };
+        let flags = |state: &str| match state.split('[').next().unwrap_or(state) {
+            "minecraft:air" => state_flags::AIR,
+            "minecraft:water" => state_flags::WATER,
+            "minecraft:lava" => state_flags::LAVA,
+            _ => state_flags::FULL_TOP,
+        };
+        let n = self.states.len();
+        BlockTable {
+            version: n as u64,
+            state_flags: self.states.iter().map(|s| flags(s)).collect(),
+            state_top: (self.states.iter().zip(&state_block))
+                .map(|(s, &b)| face(s, b, true))
+                .collect(),
+            state_side: (self.states.iter().zip(&state_block))
+                .map(|(s, &b)| face(s, b, false))
+                .collect(),
+            constant_tint: vec![0; n],
+            map_color: vec![0; n],
+            blocks,
+            sprites,
+            state_block,
+        }
+    }
+    fn table_version(&mut self) -> u64 {
+        self.states.len() as u64
+    }
+    fn texture(&mut self, name: &str) -> Option<ClientTexture> {
+        let t = self.textures.get(name)?;
+        let [a, r, g, b] = t.color.to_be_bytes();
+        Some(ClientTexture {
+            width: t.size,
+            height: t.size,
+            rgba: [r, g, b, a].repeat((t.size * t.size) as usize),
+        })
+    }
+    fn columns(
+        &mut self,
+        (cx, cz): (i32, i32),
+        layer: ColumnLayer,
+        depth: u8,
+    ) -> Option<ChunkColumns> {
+        let overworld = self.dimension.as_deref() == Some("minecraft:overworld");
+        let depth = usize::from(depth);
+        let mut out = ChunkColumns {
+            revision: self.revisions.get(&(cx, cz)).copied().unwrap_or(1),
+            tops: vec![NO_TOP; 256],
+            states: vec![0; 256 * depth],
+            water: vec![0; 256],
+            light: vec![0xF0; 256],
+            tints: [0x91_BD59, 0x77_AB2F, 0x3F_76E4].repeat(256),
+        };
+        if !overworld {
+            return Some(out);
+        }
+        let below = match layer {
+            ColumnLayer::Surface => i32::MAX,
+            ColumnLayer::Below(y) => y,
+        };
+        let at = |x: i32, y: i32, z: i32| {
+            self.blocks
+                .get(&(x, y, z))
+                .map_or("minecraft:air", String::as_str)
+        };
+        for i in 0..256 {
+            let (x, z) = (cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32);
+            let top = (self.blocks.iter())
+                .filter(|((bx, by, bz), s)| {
+                    *bx == x && *bz == z && *by <= below && s.as_str() != "minecraft:air"
+                })
+                .map(|((_, y, _), _)| *y)
+                .max();
+            let Some(top) = top else {
+                continue;
+            };
+            out.tops[i] = top.clamp(i16::MIN.into(), i16::MAX.into()) as i16;
+            for k in 0..depth {
+                out.states[i * depth + k] = self.id(at(x, top - k as i32, z));
+            }
+            let water = (0..255)
+                .take_while(|k| at(x, top - k, z) == "minecraft:water")
+                .count();
+            out.water[i] = water as u8;
+        }
+        Some(out)
+    }
+    fn changes(&mut self, since: u64) -> (u64, Vec<(i32, i32)>) {
+        let changed = (self.revisions.iter())
+            .filter(|(_, r)| **r > since)
+            .map(|(c, _)| *c)
+            .collect();
+        (self.revision, changed)
+    }
+    fn light(&self, _x: i32, _y: i32, _z: i32) -> Option<u8> {
+        self.dimension.as_ref().map(|_| 0xF0)
+    }
+    fn biome(&self, x: i32, y: i32, z: i32) -> Option<String> {
+        let d = self.dimension.as_deref()?;
+        crate::WorldView::biome(&ScriptWorld(Default::default()), d, x, y, z)
+    }
 }
 
 /// The world a script's mod reads: [`TestGame::world`], copied for a step.
@@ -109,6 +353,7 @@ impl TestGame {
         let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
         let mut game = TestGame {
             mods: Mods::default(),
+            inventories: InventoryFixture::default(),
             hmod: copy.clone(),
             dir,
             player: Some(default_player()),
@@ -120,6 +365,10 @@ impl TestGame {
             names: Vec::new(),
             tick: 0,
             world: Default::default(),
+            states: vec!["minecraft:air".into()],
+            revisions: Default::default(),
+            revision: 1,
+            textures: Default::default(),
         };
         copy_mod(hmod, &copy)?;
         game.start()?;
@@ -127,7 +376,13 @@ impl TestGame {
     }
 
     fn start(&mut self) -> Result<(), String> {
-        self.mods = Mods::load(std::slice::from_ref(&self.hmod), |_| true, |_| false);
+        self.mods = Mods::default();
+        // `init` reads the client world as it is at the start.
+        self.snapshot();
+        let hmod = std::slice::from_ref(&self.hmod);
+        self.mods
+            .load_into(crate::Runs::Both, hmod, |_| true, |_| false);
+        self.mods.take_client_world();
         match &self.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
             _ if !self.mods.is_running() => Err("the mod has no code to run".into()),
@@ -143,14 +398,73 @@ impl TestGame {
     }
 
     fn snapshot(&mut self) {
+        self.inventories.players = self
+            .players
+            .iter()
+            .map(|p| (p.id.clone(), matches!(p.game_mode, GameMode::Creative)))
+            .collect();
+        self.mods
+            .lend_inventories(Box::new(self.inventories.clone()));
         self.mods.set_snapshot(Snapshot {
+            tick: self.tick,
             player: self.player.clone(),
             clock: self.clock,
             players: self.players.clone(),
             // The GUI of a 1280 x 720 window at scale 3, as the trial run's.
             gui_size: (427.0, 240.0),
+            world_id: self.player.as_ref().map(|_| "sp:Test World".into()),
             ..Snapshot::default()
         });
+        self.mods.lend_client_world(Box::new(ScriptClientWorld {
+            blocks: self.world.clone(),
+            states: self.states.clone(),
+            revisions: self.revisions.clone(),
+            revision: self.revision,
+            textures: self.textures.clone(),
+            dimension: self.player.as_ref().map(|p| p.dimension.clone()),
+        }));
+    }
+    /// Sets a block of the Overworld, as a script's `blocks` do: its chunk's
+    /// change counter moves on, and a new state gets the next id.
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, state: &str) {
+        if !self.states.iter().any(|s| s == state) {
+            self.states.push(state.to_owned());
+        }
+        self.world.insert((x, y, z), state.to_owned());
+        self.revision += 1;
+        self.revisions.insert((x >> 4, z >> 4), self.revision);
+    }
+    /// The mod's canvas box: its corner, size and shapes.
+    pub fn canvas(&self) -> Option<&crate::CanvasPanel> {
+        self.mods.canvas_panels().next().map(|(_, p)| p)
+    }
+    /// The mod's full-window canvas, until closed.
+    pub fn canvas_screen(&self) -> Option<&crate::CanvasScreen> {
+        self.mods.canvas_screen(0)
+    }
+    /// A pointer action in GUI pixels on the open canvas screen.
+    pub fn pointer(&mut self, kind: crate::PointerKind, x: f32, y: f32, button: u32) {
+        self.snapshot();
+        self.mods.ui_pointer(0, kind, x, y, button);
+    }
+    /// Wheel steps at GUI coordinates on the open canvas screen.
+    pub fn scroll(&mut self, x: f32, y: f32, steps: f32) {
+        self.snapshot();
+        self.mods.ui_scroll(0, x, y, steps);
+    }
+    /// A canvas key; Escape leaves the screen and sends closed.
+    pub fn screen_key(&mut self, key: &str, down: bool) {
+        self.snapshot();
+        if key == "key.keyboard.escape" && down && self.canvas_screen().is_some() {
+            self.mods.ui_closed(0);
+        } else {
+            self.mods.ui_screen_key(0, key, down);
+        }
+    }
+    /// The texels the mod's images sent since the last call, as the game
+    /// writes them into its atlas once a frame.
+    pub fn canvas_uploads(&mut self) -> Vec<crate::CanvasUpload> {
+        self.mods.take_canvas_uploads(false)
     }
     /// Whether the mod is a server mod.
     pub fn server(&self) -> bool {
@@ -168,6 +482,8 @@ impl TestGame {
             self.snapshot();
             self.mods.tick(self.tick);
             self.mods.server_tick(self.tick);
+            // A frame is drawn between ticks: it takes the images' texels.
+            self.mods.take_canvas_uploads(false);
         }
     }
     /// `n` frames, 1/60 s apart.
@@ -175,6 +491,7 @@ impl TestGame {
         self.snapshot();
         for _ in 0..n {
             self.mods.frame(1.0 / 60.0);
+            self.mods.take_canvas_uploads(false);
         }
     }
     /// A chat line the player receives.
@@ -304,6 +621,21 @@ pub struct Script {
     pub clock: ClockSet,
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,
+    /// Textures capability `world-read` reads, by name (`block/stone`).
+    #[serde(default)]
+    pub textures: std::collections::BTreeMap<String, TextureSet>,
+}
+
+/// A texture of one colour: `{ size = 16, color = 0xFF7F7F7F }` (0xAARRGGBB).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextureSet {
+    #[serde(default = "texture_size")]
+    pub size: u32,
+    pub color: u32,
+}
+fn texture_size() -> u32 {
+    16
 }
 
 /// Fields of the player to change; the others keep their values. A server
@@ -362,7 +694,7 @@ pub struct ClockSet {
 
 /// One step. Its parts happen in this order: `reload`, `title-screen`,
 /// `blocks`, `join`, `player`, `clock`, `ticks`, `frames`, `chat`, `command`,
-/// `break`, `place`, `leave`; then the blocks the mod set are made, and
+/// `pointer`, `scroll`, `screen-key`, `break`, `place`, `leave`; then the blocks the mod set are made, and
 /// `expect` is checked against what the mod showed and changed during the
 /// step. For a server mod, `player`, `chat`, `command`, `break`
 /// and `place` are the doing of the player named by `as`, or of the first
@@ -383,6 +715,10 @@ pub struct Step {
     frames: u64,
     chat: Option<String>,
     command: Option<String>,
+    /// Canvas screen events, after commands and before assertions.
+    pointer: Option<PointerStep>,
+    scroll: Option<ScrollStep>,
+    screen_key: Option<ScreenKeyStep>,
     /// Server mods: a player joins, leaves, breaks or places a block.
     join: Option<String>,
     leave: Option<String>,
@@ -397,6 +733,50 @@ pub struct Step {
     blocks: Vec<BlockSet>,
     #[serde(default)]
     expect: Expect,
+}
+
+/// A canvas pointer action in GUI pixels.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointerStep {
+    kind: PointerAction,
+    x: f32,
+    y: f32,
+    #[serde(default)]
+    button: u32,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PointerAction {
+    Down,
+    Up,
+    Drag,
+    Move,
+}
+impl From<&PointerAction> for crate::PointerKind {
+    fn from(kind: &PointerAction) -> Self {
+        match kind {
+            PointerAction::Down => Self::Down,
+            PointerAction::Up => Self::Up,
+            PointerAction::Drag => Self::Drag,
+            PointerAction::Move => Self::Move,
+        }
+    }
+}
+/// Wheel steps at GUI coordinates.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScrollStep {
+    x: f32,
+    y: f32,
+    steps: f32,
+}
+/// A key.keyboard.* press or release.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenKeyStep {
+    key: String,
+    down: bool,
 }
 
 /// What a step checks; a part left out is not checked.
@@ -423,6 +803,74 @@ pub struct Expect {
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
+    /// The mod's canvas box (capability `render`); with no box, any part
+    /// asked for fails.
+    canvas: Option<CanvasExpect>,
+    canvas_screen: Option<CanvasScreenExpect>,
+}
+
+/// What a step checks of the canvas box; a part left out is not checked.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CanvasExpect {
+    placed: Option<bool>,
+    dx: Option<f32>,
+    dy: Option<f32>,
+    /// The clamped top left for the runner's 427 × 240 GUI.
+    x: Option<f32>,
+    y: Option<f32>,
+    corner: Option<String>,
+    width: Option<f32>,
+    height: Option<f32>,
+    /// Shapes in the box, and of them the images that exist.
+    shapes: Option<usize>,
+    images: Option<usize>,
+    /// Image shapes clipped round.
+    round: Option<usize>,
+}
+
+/// The open full-window canvas; zero shapes can also assert its absence.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CanvasScreenExpect {
+    open: Option<bool>,
+    title: Option<String>,
+    shapes: Option<usize>,
+    texts: Option<Vec<String>>,
+}
+impl CanvasScreenExpect {
+    fn check(&self, game: &TestGame) -> Result<(), String> {
+        let screen = game.canvas_screen();
+        if let Some(open) = self.open {
+            same("canvas screen open", &open, &screen.is_some())?;
+        }
+        if let Some(title) = &self.title {
+            same(
+                "canvas screen title",
+                title,
+                &screen.map_or(String::new(), |s| s.title.clone()),
+            )?;
+        }
+        if let Some(shapes) = self.shapes {
+            same(
+                "canvas screen shapes",
+                &shapes,
+                &screen.map_or(0, |s| s.shapes.len()),
+            )?;
+        }
+        if let Some(texts) = &self.texts {
+            let actual: Vec<String> = screen
+                .into_iter()
+                .flat_map(|s| &s.shapes)
+                .filter_map(|s| match s {
+                    crate::CanvasShape::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+                .collect();
+            same("canvas screen texts", texts, &actual)?;
+        }
+        Ok(())
+    }
 }
 
 impl Script {
@@ -438,6 +886,7 @@ impl Script {
         if let Some(c) = &mut game.clock {
             self.clock.apply(c);
         }
+        game.textures.clone_from(&self.textures);
         for (i, step) in self.steps.iter().enumerate() {
             step.run(game)
                 .map_err(|e| format!("step {} ({}): {e}", i + 1, step.describe()))?;
@@ -525,7 +974,7 @@ impl Step {
             game.clock = None;
         }
         for b in &self.blocks {
-            game.world.insert((b.x, b.y, b.z), b.state.clone());
+            game.set_block(b.x, b.y, b.z, &b.state);
         }
         game.mods
             .lend_world(Box::new(ScriptWorld(game.world.clone())));
@@ -578,6 +1027,15 @@ impl Step {
             Some(p) => game.player_command(p, line),
             None => game.command(line),
         });
+        if let Some(p) = &self.pointer {
+            game.pointer((&p.kind).into(), p.x, p.y, p.button);
+        }
+        if let Some(s) = &self.scroll {
+            game.scroll(s.x, s.y, s.steps);
+        }
+        if let Some(k) = &self.screen_key {
+            game.screen_key(&k.key, k.down);
+        }
         for (b, placed) in [(&self.broken, false), (&self.place, true)] {
             if let (Some(b), Some(p)) = (b, &who) {
                 let pos = BlockPos {
@@ -594,6 +1052,7 @@ impl Step {
             return Err(format!("{name} is not on the server"));
         }
         game.mods.take_world();
+        game.mods.take_client_world();
         let out = game.drain();
         for o in &out {
             if let Output::SetBlocks {
@@ -705,7 +1164,92 @@ impl Step {
             let got = game.panel().map(|p| corner_name(p.corner).to_string());
             same("corner", &Some(want.clone()), &got)?;
         }
+        if let Some(want) = &e.canvas_screen {
+            want.check(game)?;
+        }
+        if let Some(want) = &e.canvas {
+            want.check(game)?;
+        }
         Ok(())
+    }
+}
+
+impl CanvasExpect {
+    fn check(&self, game: &TestGame) -> Result<(), String> {
+        let panel = game.mods.canvas_panels().next();
+        let Some((owner, p)) = panel else {
+            let any = self.placed.is_some()
+                || self.dx.is_some()
+                || self.dy.is_some()
+                || self.x.is_some()
+                || self.y.is_some()
+                || self.corner.is_some()
+                || self.width.is_some()
+                || self.height.is_some()
+                || self.shapes.is_some_and(|n| n > 0)
+                || self.images.is_some_and(|n| n > 0);
+            return if any {
+                Err("canvas: the mod shows no canvas box".into())
+            } else {
+                Ok(())
+            };
+        };
+        if let Some(want) = self.placed {
+            same("canvas placed", &want, &p.placed.is_some())?;
+        }
+        let origin = p.placed_origin((427.0, 240.0));
+        for (label, want, actual) in [
+            ("canvas dx", self.dx, p.placed.map(|v| v.0)),
+            ("canvas dy", self.dy, p.placed.map(|v| v.1)),
+            ("canvas x", self.x, origin.map(|v| v.0)),
+            ("canvas y", self.y, origin.map(|v| v.1)),
+        ] {
+            if let Some(want) = want {
+                same(label, &Some(want), &actual)?;
+            }
+        }
+        let images: Vec<_> = (p.shapes.iter())
+            .filter_map(|s| match s {
+                crate::CanvasShape::Image(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+        let existing = (images.iter())
+            .filter(|i| game.mods.canvas_image(owner, i.image).is_some())
+            .count();
+        let round = images.iter().filter(|i| i.round).count();
+        if let Some(want) = &self.corner {
+            same(
+                "canvas corner",
+                want,
+                &render_corner_name(p.corner).to_string(),
+            )?;
+        }
+        if let Some(want) = self.width {
+            same("canvas width", &want, &p.width)?;
+        }
+        if let Some(want) = self.height {
+            same("canvas height", &want, &p.height)?;
+        }
+        if let Some(want) = self.shapes {
+            same("canvas shapes", &want, &p.shapes.len())?;
+        }
+        if let Some(want) = self.images {
+            same("canvas images", &want, &existing)?;
+        }
+        if let Some(want) = self.round {
+            same("canvas round images", &want, &round)?;
+        }
+        Ok(())
+    }
+}
+
+fn render_corner_name(c: RenderCorner) -> &'static str {
+    match c {
+        RenderCorner::TopLeft => "top-left",
+        RenderCorner::TopRight => "top-right",
+        RenderCorner::BottomLeft => "bottom-left",
+        RenderCorner::BottomRight => "bottom-right",
     }
 }
 

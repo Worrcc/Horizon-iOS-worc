@@ -1,0 +1,9 @@
+id = "phase_c_demo"
+name = "Phase C Demo"
+version = "0.1.0"
+description = "API 31 player events, vitals, setters, particles, explosions, falling blocks and fluid flow."
+authors = ["Horizon"]
+api = "0.3"
+side = "server"
+capabilities = ["players", "world"]
+experimental = ["players", "world"]

@@ -102,6 +102,17 @@ The app's first start on the device may need **Settings › General › VPN & De
 to trust your developer certificate. On iOS 16 or later, also turn on
 **Settings › Privacy & Security › Developer Mode**.
 
+### Updating from a source
+
+Every pushed build of this fork is published as a release and listed in a source in AltStore's
+format, which LiveContainer and other sideloading apps can read. Add it once:
+
+    https://raw.githubusercontent.com/Worrcc/Horizon-iOS-worc/ios-source/apps.json
+
+The ten newest builds are listed, newest first, each with the branch and commit it was built from.
+A source build's version is the launcher's version plus the CI run number (`0.1.0.412`), so a
+newer build always has a higher one. Installing one over another keeps the app's data.
+
 ## 4. Copy the game files to the device
 
 Skip this if you built with `--resources`.
@@ -120,6 +131,50 @@ The folder should end up as `Horizon/resources/horizon-resources.json`. Your wor
 Horizon folder. That is how you back worlds up or copy them to and from a computer.
 
 If the game files are missing, the app says so (and where its crash report is), then closes.
+
+### The launcher and instances
+
+Horizon opens on its launcher: your instances, and for the one you're playing, **Mods...**,
+**Shader Packs...**, **Controller Settings...** and **Options...**. **Done** (or B on a
+controller) goes to the title screen. The same instance list is in **Options › Horizon
+Settings › Instances**.
+
+Each instance is a separate game folder with its own worlds, settings, resource packs, shader
+packs and mods. The Horizon folder itself is the first instance. **New Instance** makes another
+one in `Horizon/instances/`; you can also copy a folder in there with the Files app. Tap an
+instance to play it: with no world open the game switches at once, from a world at the next
+start. Every instance uses the same `resources` folder, and logs stay in `Horizon/logs`.
+
+### Mods
+
+Horizon's mods (`.hmod` files) work on iOS: code mods run on an interpreter, since iOS doesn't
+let apps compile code, so they are slower than on a computer but need no JIT. Copy a `.hmod`
+into the instance's `horizon-mods` folder with the Files app (`Horizon/horizon-mods/`, or
+`Horizon/instances/<instance>/horizon-mods/`), then turn it on in the launcher's **Mods...**.
+Each mod stays off until you do.
+
+The app's build comes with Horizon's **Block Info** mod (`block_info.hmod`, next to the
+`.ipa`): it shows the block under the crosshair, its icon, name and the game or mod it comes
+from, in a box at the top of the screen.
+
+#### Importing a modpack
+
+Open **Mods...** for the current instance and tap **Import Modpack...**. Choose a `.zip`
+in Files. Horizon copies it temporarily, finds every `.hmod` inside (including nested
+folders), and installs the mods in that instance. The import runs in the background and
+shows progress, then **N added, M replaced, K skipped**, with reasons for skipped files.
+Existing mods keep their on/off state; new mods stay off. Tap **Turn All On** to enable
+all imported mods, or **Done** to keep those choices. Content changes need a restart.
+
+Alternatively, copy a ZIP into the instance's `horizon-mods` folder and tap its
+**Import <file name>** row on the Mods page. A successfully imported ZIP is removed only
+when at least one mod was installed. The system picker's temporary copy is removed after
+processing, including on failure; the original in Files stays untouched.
+
+Only Horizon `.hmod` packages are imported. Java modpacks, resource packs and shader packs
+are not installed by this feature. For duplicate mod ids, the highest version in the ZIP
+wins. Imports accept at most 512 `.hmod` entries and 2 GiB of uncompressed package bytes,
+and reject compression ratios above 1000:1.
 
 ## Controls
 
@@ -143,10 +198,47 @@ LiveContainer's Info.plist that counts, so the game may stay at 60 there.
 | **T**, **F5**, **\|\|** | Chat, change perspective, pause. |
 | Hotbar | Tap a slot to select it. |
 | Menus | Tap to click. Swipe to scroll. Press and hold, then drag, to move stacks, sliders and scroll bars. **Back** (top right) is Esc; **Aa** (top left) shows the keyboard for text fields. Chat, signs and command blocks open it by themselves. |
+| Mod canvas screens | One finger presses immediately and drags; lift to release. Two fingers pinch to zoom: spreading sends positive scroll steps at their midpoint (one step per 24 GUI pixels). The second finger releases the drag; lift both before starting another. **Back** and **Aa** still work. |
+| Mod HUD canvas boxes | A mod can opt in with API level 21 `canvas.set-box-key`: touch its box to hold its registered key, lift to release. The touch is consumed; game and mod touch buttons take priority where they overlap. |
+
+Every mod key without its own touch button gets a 20 × 20 slot button under the
+right-hand top row, in mod/key registration order. Columns wrap left before the
+lower game buttons, avoiding existing controls. Labels use the first four letters
+of one word or up to four initials; duplicates within a mod get numbered.
+
+Open **Options > Controls > Edit Touch Layout...**, or the same button in
+**Options > Mods**. Tap a control to select it; drag to move it in two-GUI-pixel
+steps, clamped on screen. This includes the joystick, all game buttons, and mods'
+explicit and automatic buttons. **Hide/Show**, **Reset**, **Reset All**, and **Done**
+are centred below the title, with the selected name underneath. The toolbar takes
+touch priority; dragged controls stay below it so they remain reachable. Hidden
+buttons stay faint in the editor; pause cannot be hidden. A moved joystick uses its
+saved centre; Reset restores its floating zone.
+The instance's `horizon-touch.txt`, beside `options.txt`, stores JSON-quoted ids
+(`game.jump`, `game.stick`, `mod.<modid>.<key name>`), top-left x/y fractions of the
+whole screen, and hidden true/false, separated by tabs. These overrides survive
+rotation and win over a mod's position; Reset returns to the current default.
 
 **Controllers**: Xbox, PlayStation (DualShock 4, DualSense), Switch Pro and MFi pads work
 through Apple's GameController framework, with the same bindings as Horizon on desktop
 ([docs/controllers.md](../docs/controllers.md)). Pair them in iOS's Bluetooth settings.
+Every menu works with a controller alone: on the first title screen the left stick or D-pad
+moves a pointer, A clicks and B goes back. The touch controls hide while you play with a controller and come back at your next touch.
+Vibration plays through Core Haptics. A DualSense's adaptive triggers resist as a bow draws,
+click for a loaded crossbow and buzz while mining, and its lightbar (a DualShock 4's too)
+follows your health or dimension. Each can be turned off in Controller Settings.
+
+Controller Settings > **Bindings** supports one button or two held together for
+every game action and registered mod key (**Mods** section, unbound by default).
+Select a row, press and release one button, or hold it and press a second to capture
+**Y + A**. **Remove** makes it **Not bound**; **Reset** restores its default.
+Only members of a configured combination wait 50 ms for their single action;
+a quick release taps it immediately. Pressing the second while holding the first
+starts the combination and suppresses both singles until the buttons lift.
+Bindings persist per instance in `horizon-controller.txt`: for example
+`bind_key.jump:north+south` or `bind_key.jump:none`. Old single-button files still load.
+Mod keyboard, touch and controller holds work independently. Menu buttons keep their
+usual navigation roles; Start pauses in play unless explicitly bound there.
 
 **Keyboards**: an iPad's Magic Keyboard or a Bluetooth keyboard works as on desktop (WASD,
 E, Esc, F3 and so on).
@@ -155,9 +247,6 @@ E, Esc, F3 and so on).
 
 - **Online-mode servers** need Microsoft sign-in, which needs a one-time setup (below). Until
   then you can play single player, Open to LAN, and offline-mode servers under an offline name.
-- **Code mods**: Horizon's code mods are WebAssembly compiled at run time, and iOS doesn't let
-  apps compile code. Content mods, resource packs and data packs work.
-- **Controller vibration** and DualSense lights and triggers.
 - **Mouse look** with an iPad trackpad or mouse: they act as touches for now.
 - **Discord presence** and **`horizon-ctl`** (there's no terminal on iOS).
 - **Open to LAN discovery**: finding LAN worlds by multicast needs Apple's multicast entitlement.

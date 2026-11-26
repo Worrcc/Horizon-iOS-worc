@@ -1,0 +1,7 @@
+{
+  "template": "minecraft:stone",
+  "container": {
+    "slots": 9,
+    "title": "block.demo.crate"
+  }
+}

@@ -67,19 +67,22 @@ impl Game<'_> {
             self.nautilus_sound(index, sound);
             return true;
         }
-        // Shift-use on a tame one opens its (saddle and armour) screen.
+        // AbstractNautilus.mobInteract: shift + use on a tame adult opens its
+        // saddle and armour screen (openCustomInventoryScreen).
         if tame && sneaking {
-            return false;
+            self.open_mount_menu(index);
+            return true;
         }
         if !item.is_empty() {
             if !tame && food {
                 // tryToTame: one time in three.
                 self.use_nautilus_food(item);
+                let acting = self.acting_player_uuid();
                 let m = &mut self.mobs[index];
                 let tamed = m.random.next_int_bound(3).unwrap_or(1) == 0;
                 if tamed {
                     m.extra.tame = true;
-                    m.extra.owner = self.level.player_uuid.or(Some([0, 0, 0, 1]));
+                    m.extra.owner = Some(acting);
                     m.persistent = true;
                     m.nav_stop();
                     m.ai.target = None;
@@ -99,7 +102,7 @@ impl Game<'_> {
                 // feed(player, hand, stack, 2, 1).
                 let sound = nautilus::eat_sound(m);
                 let m = &mut self.mobs[index];
-                m.health = (m.health + 2.0).min(m.attrs.max_health);
+                m.heal(2.0);
                 self.use_nautilus_food(item);
                 self.nautilus_sound(index, sound);
                 return true;
@@ -115,8 +118,8 @@ impl Game<'_> {
                 self.consume_held();
                 return true;
             }
-            if item.ends_with("_nautilus_armor") && tame && m.extra.head.is_none() {
-                m.extra.head = Some(item.into());
+            if item.ends_with("_nautilus_armor") && tame && m.extra.body.is_none() {
+                m.extra.body = Some(item.into());
                 self.nautilus_sound(index, "item.armor.equip_nautilus");
                 self.consume_held();
                 return true;
@@ -125,11 +128,13 @@ impl Game<'_> {
         if tame && !food {
             // doPlayerRide.
             let id = self.mobs[index].id;
+            if !self.may_board() || !self.native_may_board(id) {
+                return true;
+            }
             self.break_leash(id, true, false);
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
             self.mount.reset_jump();
-            self.trigger_player("minecraft:started_riding");
+            self.start_riding(id);
             return true;
         }
         // Animal.mobInteract: a tame adult fed falls in love (not a zombie).
@@ -138,6 +143,10 @@ impl Game<'_> {
             m.extra.in_love = 600;
             m.extra.love_player = true;
             let sound = nautilus::eat_sound(m);
+            let id = m.id;
+            self.love_cause.insert(id, self.lan_acting);
+            let kind = self.mobs[index].kind.id.clone();
+            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
             self.use_nautilus_food(item);
             self.nautilus_sound(index, sound);
             // Animal.setInLove: entity event 18.
