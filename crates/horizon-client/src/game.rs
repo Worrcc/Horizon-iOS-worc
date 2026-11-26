@@ -348,6 +348,7 @@ mod server_mod_actions;
 mod server_mod_effects;
 #[cfg(feature = "mods")]
 mod server_mod_energy;
+#[cfg(feature = "mods")]
 mod server_mod_machines;
 #[cfg(feature = "mods")]
 mod server_mod_storage;
