@@ -13,13 +13,12 @@ pub const LEVEL: u32 = 45;
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 230] = [
+pub const FUNCTIONS: [(&str, u32); 229] = [
     ("client-world.entities-near", 45),
     ("client-world.entity-kinds", 45),
     ("game.food-stats", 45),
     ("game.food-value", 45),
     ("render.hud-bars", 45),
-    ("world.seed", 45),
     ("world.top-block", 45),
     ("energy.transfer-energy", 44),
     ("worldgen.site-for-chunk", 43),

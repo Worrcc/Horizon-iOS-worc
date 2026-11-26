@@ -1,4 +1,4 @@
-//! API 36 (`world.seed`, `world.top-block`) across the real SDK guest/component boundary.
+//! API 36 (`world.top-block`) across the real SDK guest/component boundary.
 use super::*;
 use horizon_mods::WorldView;
 
@@ -58,12 +58,11 @@ fn reply(mods: &mut Mods, line: &str) -> String {
         .unwrap_or_else(|| panic!("no reply to {line}"))
 }
 
-fn setup(seed: i64) -> Mods {
+fn setup() -> Mods {
     let mut mods = load("horizon_mods_test_api20_server_guest.hmod");
     assert_eq!(mods.entries()[0].status, Status::Running);
     mods.set_snapshot(Snapshot {
         players: vec![alice()],
-        world_seed: seed,
         ..player()
     });
     mods.lend_world(Box::new(Column));
@@ -72,21 +71,8 @@ fn setup(seed: i64) -> Mods {
 }
 
 #[test]
-fn api36_seed_is_the_worlds_signed_seed() {
-    let mut mods = setup(0);
-    for seed in [0, 4242, -8_901_234_567_890_123_456, i64::MAX, i64::MIN] {
-        mods.set_snapshot(Snapshot {
-            players: vec![alice()],
-            world_seed: seed,
-            ..player()
-        });
-        assert_eq!(reply(&mut mods, "w36 seed"), format!("seed {seed}"));
-    }
-}
-
-#[test]
 fn api36_top_block_reads_at_or_below_a_height() {
-    let mut mods = setup(1);
+    let mut mods = setup();
     assert_eq!(reply(&mut mods, "w36 top 3 -2 1000"), "top 200");
     assert_eq!(reply(&mut mods, "w36 top 3 -2 199"), "top 11");
     assert_eq!(reply(&mut mods, "w36 top 3 -2 10"), "top 10");
@@ -98,7 +84,7 @@ fn api36_top_block_reads_at_or_below_a_height() {
 }
 
 #[test]
-fn api36_without_a_lent_world_top_block_is_none_and_the_guest_needs_level_36() {
+fn api36_without_a_lent_world_top_block_is_none_and_the_guest_needs_level_45() {
     let mut mods = load("horizon_mods_test_api20_server_guest.hmod");
     mods.set_snapshot(Snapshot {
         players: vec![alice()],
@@ -108,17 +94,16 @@ fn api36_without_a_lent_world_top_block_is_none_and_the_guest_needs_level_36() {
     let package =
         Package::read(&mods_dir().join("horizon_mods_test_api20_server_guest.hmod")).unwrap();
     let imports = horizon_mods::api_level::imports(package.wasm.as_deref().unwrap()).unwrap();
-    assert!(imports.iter().any(|f| f == "world.seed"));
     assert!(imports.iter().any(|f| f == "world.top-block"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        36
+        45
     );
 }
 
 #[test]
 fn api36_server_mod_log_lines_reach_the_host_log_with_the_mod_id() {
-    let mut mods = setup(1);
+    let mut mods = setup();
     let lines = capture_mod_log(|| {
         assert_eq!(reply(&mut mods, "w36 log"), "logged");
     });

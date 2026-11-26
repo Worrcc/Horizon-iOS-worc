@@ -1708,8 +1708,6 @@ interface %world {
     /// dimension, or air all the way down. Queued `set-blocks` show as for
     /// `heightmap`.
     top-block: func(dimension: string, x: s32, z: s32, below-y: s32) -> option<s32>;
-    /// API level 45: the world's seed, as in level.dat (`/seed`).
-    seed: func() -> s64;
     /// The biome at a position (`minecraft:plains`, ...), as the server
     /// stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded.
     get-biome: func(dimension: string, x: s32, y: s32, z: s32) -> option<string>;

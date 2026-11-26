@@ -426,8 +426,6 @@ pub struct Snapshot {
     pub teleport_borders: std::collections::BTreeMap<String, [f64; 4]>,
     /// Overworld level.dat spawn data, shared across the server's dimensions.
     pub world_spawn: Option<(String, WorldPoint, f32)>,
-    /// API 36: the world's seed (level.dat), for `world.seed`.
-    pub world_seed: i64,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
     pub generated_chunks: Arc<[ChunkPos]>,
     /// API 43: the world seed, for deterministic mod worldgen.
@@ -4160,9 +4158,6 @@ impl mod_world::Host for State {
     fn top_block(&mut self, dimension: String, x: i32, z: i32, below_y: i32) -> Option<i32> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.top_block(&dimension, x, z, below_y)
-    }
-    fn seed(&mut self) -> i64 {
-        self.snapshot.world_seed
     }
     fn generated_chunks(&mut self) -> Vec<ChunkPos> {
         (self.snapshot.generated_chunks.iter())

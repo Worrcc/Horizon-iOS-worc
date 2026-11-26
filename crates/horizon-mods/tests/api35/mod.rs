@@ -281,6 +281,6 @@ fn api35_official_demo_reads_all_calls_and_draws_then_clears() {
     let imports = horizon_mods::api_level::imports(&wasm).unwrap();
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        35
+        45
     );
 }

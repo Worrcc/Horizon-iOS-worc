@@ -1,4 +1,4 @@
-//! API 36: the world's seed and the top block of a column, through the real imports.
+//! API 36: the top block of a column, through the real imports.
 use horizon_mod_sdk::{
     log,
     server::{Player, surface_block, world},
@@ -8,7 +8,6 @@ pub fn run(player: &Player, args: &str) -> Result<Option<String>, String> {
     let dim = player.dimension.as_str();
     let mut words = args.split_whitespace();
     match words.next() {
-        Some("seed") => Ok(Some(format!("seed {}", world::seed()))),
         Some("top") => {
             let mut n = || -> Result<i32, String> {
                 words
@@ -33,6 +32,6 @@ pub fn run(player: &Player, args: &str) -> Result<Option<String>, String> {
             log::write(log::Level::Debug, "w36 debug line");
             Ok(Some("logged".into()))
         }
-        _ => Err("w36 seed|top x z below|surface|unknown|log".into()),
+        _ => Err("w36 top x z below|surface|unknown|log".into()),
     }
 }

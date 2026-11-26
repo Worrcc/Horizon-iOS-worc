@@ -216,7 +216,7 @@ fn api36_recipe_query_is_available_and_needs_world() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"0.1.0\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"world\"]\nexperimental = [\"players\", \"world\"]\n",
@@ -293,7 +293,7 @@ fn api37_machine_write_level_and_capability() {
     assert!(imports.iter().any(|f| f == "world.set-machine-stacks"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }
 
@@ -406,7 +406,7 @@ fn api38_skipped_deaths_leave_vanilla_drops_and_level_is_38() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }
 
@@ -475,7 +475,7 @@ fn api39_functions_are_level_39_and_need_capabilities() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \"energy\", \"lookup\"]\nexperimental = [\"energy\", \"lookup\"]\n",
@@ -552,7 +552,7 @@ fn api40_hook_level_is_40() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }
 
@@ -599,7 +599,7 @@ fn api41_functions_are_level_41() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }
 
@@ -654,7 +654,7 @@ fn api42_functions_are_level_42() {
     assert_eq!(horizon_mods::api_level::level_of("net.register"), Some(42));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }
 
@@ -698,7 +698,7 @@ fn api43_worldgen_functions_require_capability_and_raise_api_level() {
     assert!(imports.iter().any(|f| f == "world.world-seed"));
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
     let manifest = horizon_mods::Manifest::parse(
         "id = \"x\"\nname = \"X\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\ncapabilities = [\"worldgen\"]\nexperimental = [\"worldgen\"]\n",
@@ -828,6 +828,6 @@ fn api44_level_is_44() {
     );
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }

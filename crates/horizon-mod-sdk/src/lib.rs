@@ -69,9 +69,9 @@
 //! and [`client_world::entity_kinds`], [`game::food_stats`], [`game::food_value`] and
 //! [`render::hud_bars`]. These generated wrappers return `Result`; exhaustion is optional.
 //!
-//! Level 36 adds [`server::world::seed`] (the world's seed, so a mod need not ask an operator for
-//! it) and [`server::world::top_block`]: the highest non-air block at or below a Y in a loaded
+//! Level 36 adds [`server::world::top_block`]: the highest non-air block at or below a Y in a loaded
 //! column, read from the blocks; [`server::surface_block`] is its whole-column shorthand.
+//! The world's seed is `server::world::world_seed` (level 43).
 //!
 //! API level 20: [`command::run_mod_quiet`] invokes server-mod commands with replies discarded.
 //! [`input::TouchButton`] accepts an optional item icon alongside its fallback label.
