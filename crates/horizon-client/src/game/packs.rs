@@ -483,6 +483,11 @@ impl Game<'_> {
         self.ui.chat.rescale(&self.gui.atlas);
         // The creative screen survives the reload; item names may not.
         self.creative_screen.forget_items();
+        #[cfg(feature = "mods")]
+        {
+            self.mods.entity_kinds = None;
+            self.mods.hud_bars = None;
+        }
         self.native_client_resources_reloaded();
         Ok(())
     }

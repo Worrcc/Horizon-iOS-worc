@@ -147,6 +147,15 @@ pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
 pub use ticks::Ticks;
 
 /// `Block.UPDATE_*` flags accepted by [`Behaviours::set_block`].
+/// [`Behaviours::connecting_shape`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectingShape {
+    /// Each side follows that side's neighbour.
+    Sides,
+    /// The shape follows the four horizontal neighbours together.
+    Stairs,
+}
+
 pub mod flags {
     pub const UPDATE_NEIGHBORS: i32 = 1;
     pub const UPDATE_CLIENTS: i32 = 2;
@@ -834,6 +843,28 @@ impl Behaviours {
     }
     pub fn data(&self, state: BlockStateId) -> &BlockData {
         self.block_data(self.table.block(state))
+    }
+    /// Horizon: how a state's shape follows its neighbours as a connecting
+    /// block's does, for the connection pass over mod templates' pieces:
+    /// fences, panes, bars and other cross-collision blocks, walls and fence
+    /// gates take each side from that side's neighbour; stairs read all four
+    /// horizontal neighbours at once. None for any other block.
+    pub fn connecting_shape(&self, state: BlockStateId) -> Option<ConnectingShape> {
+        let classes = self.data(state).classes;
+        if classes.contains(classes::Class::Stair) {
+            Some(ConnectingShape::Stairs)
+        } else if [
+            classes::Class::CrossCollision,
+            classes::Class::Wall,
+            classes::Class::FenceGate,
+        ]
+        .into_iter()
+        .any(|c| classes.contains(c))
+        {
+            Some(ConnectingShape::Sides)
+        } else {
+            None
+        }
     }
     pub fn block(&self, state: BlockStateId) -> BlockId {
         self.table.block(state)

@@ -84,17 +84,18 @@ fn mods_dir() -> &'static Path {
                 "-p",
                 "atmosphere-demo",
                 "-p",
+                "hud-demo",
+                "-p",
                 "canvas-test",
-                "--target-dir",
             ])
-            .arg(&target)
+            .env("CARGO_TARGET_DIR", root.join("target"))
             .status()
             .expect("cargo runs");
         assert!(
             status.success(),
             "building the test mods needs `rustup target add wasm32-unknown-unknown`"
         );
-        let built = target.join("wasm32-unknown-unknown/release");
+        let built = root.join("target/wasm32-unknown-unknown/release");
         let dir = target.join("mods");
         std::fs::create_dir_all(&dir).unwrap();
         let example = |name: &str| {
@@ -102,6 +103,11 @@ fn mods_dir() -> &'static Path {
             std::fs::read_to_string(root.join(path)).unwrap()
         };
         let mods = [
+            (
+                "hud_demo",
+                std::fs::read_to_string(root.join("mods/official/hud-demo/horizon-mod.toml"))
+                    .unwrap(),
+            ),
             (
                 "machine_demo",
                 std::fs::read_to_string(root.join("mods/official/machine-demo/horizon-mod.toml"))
@@ -3745,7 +3751,7 @@ fn api26_spawn_point_reads_overworld_spawn_and_same_tick_changes() {
     // The server guest also exercises API 36-43 queries, writes, drops, interop and worldgen.
     assert_eq!(
         horizon_mods::api_level::needed(imports.iter().map(String::as_str)).0,
-        44
+        45
     );
 }
 
@@ -4411,3 +4417,9 @@ fn api34_atmosphere_demo_sets_and_clears_post_keys() {
     assert!(said(&mut mods, "atmo post off").1.is_empty());
     assert!(mods.atmosphere_mix().unwrap().weights.is_empty());
 }
+
+#[path = "api35/mod.rs"]
+mod api35;
+
+#[path = "api36/mod.rs"]
+mod api36;

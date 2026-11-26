@@ -747,16 +747,20 @@ impl StructureState {
         }
         best.map(|(_, n, p)| (n, p))
     }
-    /// ChunkGenerator.createReferences: starts within 8 chunks whose box
-    /// intersects this chunk's column.
+    /// ChunkGenerator.createReferences: starts within 8 chunks (more when a
+    /// jigsaw structure declares a larger reach) whose box intersects this
+    /// chunk's column.
     pub(super) fn references(
         &self,
         context: &mut impl super::structure::start::StartContext,
         chunk: ChunkPos,
     ) -> Vec<Arc<StructureStart>> {
         let (bx, bz) = (chunk.x * 16, chunk.z * 16);
-        let around: Vec<ChunkPos> = (chunk.x - 8..=chunk.x + 8)
-            .flat_map(|sx| (chunk.z - 8..=chunk.z + 8).map(move |sz| ChunkPos::new(sx, sz)))
+        let radius = self.registry.reference_radius();
+        let around: Vec<ChunkPos> = (chunk.x - radius..=chunk.x + radius)
+            .flat_map(|sx| {
+                (chunk.z - radius..=chunk.z + radius).map(move |sz| ChunkPos::new(sx, sz))
+            })
             .collect();
         // Workers generating neighbouring chunks ask for the same starts in the
         // same order: build those no other worker is building first, and wait

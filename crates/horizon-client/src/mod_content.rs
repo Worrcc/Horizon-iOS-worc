@@ -2207,7 +2207,7 @@ fn place_in_biomes(
     let bundle = |doc: Option<J>, name: &str| -> Result<BTreeMap<String, String>> {
         let doc = match doc {
             Some(doc) => doc,
-            None if base.join(name).exists() => read_json(&base.join(name))?,
+            None if out_path(overlay, name).exists() => read_json(&out_path(overlay, name))?,
             None => return Ok(BTreeMap::new()),
         };
         let J::Obj(entries) = doc else {
@@ -2221,10 +2221,14 @@ fn place_in_biomes(
             })
             .collect())
     };
-    if !base.join(BIOMES).exists() {
+    // The overlay's bundles, not the base's: content biomes (and features,
+    // tags) the mods registered were just written there, and a modifier pass
+    // over the base's would drop them.
+    let biomes_path = out_path(overlay, BIOMES);
+    if !biomes_path.exists() {
         return Err(format!("biome modifiers need {BIOMES}").into());
     }
-    let mut doc = read_json(&base.join(BIOMES))?;
+    let mut doc = read_json(&biomes_path)?;
     let biome_ids: BTreeSet<String> = match &doc {
         J::Obj(o) => o.iter().map(|(k, _)| k.clone()).collect(),
         _ => return Err(format!("{BIOMES}: not an object").into()),

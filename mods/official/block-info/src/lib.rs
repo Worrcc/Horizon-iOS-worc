@@ -5,7 +5,7 @@
 //! display name and current/maximum health through `game.raycast-entity`.
 use horizon_mod_sdk::{
     Mod, Registration, client_world, game, recipes,
-    render::{self, Corner, FillShape, ItemShape, Point, Rect, Shape, TextShape},
+    render::{self, Corner, FillShape, ItemShape, Point, Rect, Shape, SpriteShape, TextShape},
     storage,
     ui::{self, ButtonWidget, Widget},
 };
@@ -18,9 +18,15 @@ const NAME: u32 = 0xFF_FFFF;
 /// The source line: blue, as tooltips name a mod.
 const SOURCE: u32 = 0x55_55FF;
 const DETAIL: u32 = 0xAA_AAAA;
+/// A living entity's health line: heart red.
+const HEALTH: u32 = 0xFF_5555;
 /// The harvest mark: the held item drops the block, or it does not.
 const CAN_HARVEST: u32 = 0x55_FF55;
 const CANNOT_HARVEST: u32 = 0xFF_5555;
+/// Where the vanilla heart sprite goes in a health line, and its size.
+const HEART: char = '\u{2665}';
+const HEART_SIZE: f32 = 9.0;
+const HEART_GAP: f32 = 2.0;
 const PAD: f32 = 4.0;
 const ICON: f32 = 16.0;
 const LINE: f32 = 10.0;
@@ -193,23 +199,90 @@ impl BlockInfo {
         } else {
             hit.name.clone()
         };
-        let mut lines = vec![(name, NAME)];
-        if self.source {
-            lines.push((source_name(namespace), SOURCE));
+        let health = format!("{} / {} ♥", hit.health, hit.max_health);
+        // Health is always shown; the game or mod it comes from rides on the same line.
+        let detail = if self.source {
+            format!("{health}  ·  {}", source_name(namespace))
         } else {
-            lines.push((
-                format!("Health: {} / {}", hit.health, hit.max_health),
-                DETAIL,
-            ));
+            health
+        };
+        vec![(name, NAME), (detail, HEALTH)]
+    }
+
+    /// The first water or lava along the view, before `limit` blocks: the block ray passes
+    /// through fluids, so the view is walked here in small steps over the loaded blocks.
+    fn fluid_target(&self, limit: f32) -> Option<(Option<String>, Vec<(String, u32)>, Option<HarvestRow>)> {
+        let p = game::get_player()?;
+        let (yaw, pitch) = ((p.yaw as f64).to_radians(), (p.pitch as f64).to_radians());
+        let dir = (
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        );
+        let eye = (p.x, p.y + 1.62, p.z);
+        let mut t = 0.0_f64;
+        while t < limit as f64 {
+            let (x, y, z) = (
+                (eye.0 + dir.0 * t).floor() as i32,
+                (eye.1 + dir.1 * t).floor() as i32,
+                (eye.2 + dir.2 * t).floor() as i32,
+            );
+            if let Some(state) = client_world::block_at(x, y, z) {
+                let id = state.split('[').next().unwrap_or(&state);
+                let fluid = match id {
+                    "minecraft:water" => Some(("Water", "minecraft:water_bucket")),
+                    "minecraft:lava" => Some(("Lava", "minecraft:lava_bucket")),
+                    _ => None,
+                };
+                if let Some((name, bucket)) = fluid {
+                    let level = state
+                        .split("level=")
+                        .nth(1)
+                        .and_then(|l| l.split([',', ']']).next())
+                        .and_then(|l| l.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    let mut lines = vec![(name.to_owned(), NAME)];
+                    if self.source {
+                        lines.push((source_name("minecraft"), SOURCE));
+                    } else if self.coords {
+                        lines.push((format!("{x}, {y}, {z}"), DETAIL));
+                    } else {
+                        let kind = if level == 0 {
+                            "Source".to_owned()
+                        } else if level >= 8 {
+                            "Falling".to_owned()
+                        } else {
+                            format!("Flowing {level}")
+                        };
+                        lines.push((kind, DETAIL));
+                    }
+                    return Some((Some(bucket.to_owned()), lines, None));
+                }
+            }
+            t += 0.12;
         }
-        lines
+        None
     }
 
     fn draw(&mut self) {
         let distance = REACHES[self.reach].0;
         let target = game::raycast_entity(distance)
             .map(|hit| (None, self.entity_lines(&hit), None))
-            .or_else(|| game::raycast(distance).map(|hit| self.lines(&hit)));
+            .or_else(|| {
+                // A fluid in front of the block (or with no block behind it) wins.
+                let block = game::raycast(distance);
+                let limit = block
+                    .as_ref()
+                    .and_then(|h| {
+                        game::get_player().map(|p| {
+                            let (dx, dy, dz) = (h.x - p.x, h.y - (p.y + 1.62), h.z - p.z);
+                            ((dx * dx + dy * dy + dz * dz).sqrt() as f32).min(distance)
+                        })
+                    })
+                    .unwrap_or(distance);
+                self.fluid_target(limit)
+                    .or_else(|| block.map(|hit| self.lines(&hit)))
+            });
         let Some((item, lines, harvest)) = target else {
             self.clear();
             return;
@@ -306,11 +379,17 @@ fn box_shapes(
     let icons_w = icons.as_ref().map_or(0.0, |(items, frame)| {
         PAD + items.len() as f32 * ICON_STEP + if frame.is_some() { MARK_W } else { 0.0 }
     });
-    let name_w = text_width(&lines[0].0);
+    let line_w = |text: &str| match text.split_once(HEART) {
+        Some((before, after)) => {
+            text_width(before.trim_end()) + HEART_GAP + HEART_SIZE + text_width(after)
+        }
+        None => text_width(text),
+    };
+    let name_w = line_w(&lines[0].0);
     let widest = lines
         .iter()
         .skip(1)
-        .map(|(text, _)| text_width(text))
+        .map(|(text, _)| line_w(text))
         .fold(name_w + icons_w, f32::max);
     let w = text_x + widest + PAD;
     let icon_height = if item.is_some() || icons.is_some() {
@@ -374,16 +453,38 @@ fn box_shapes(
         }
     }
     for (i, (text, color)) in lines.into_iter().enumerate() {
-        shapes.push(Shape::Text(TextShape {
-            text,
-            at: Point {
-                x: text_x,
-                y: top + i as f32 * LINE,
-            },
-            color,
-            centered: false,
-            shadow: true,
-        }));
+        let y = top + i as f32 * LINE;
+        let text_shape = |text: String, x: f32| {
+            Shape::Text(TextShape {
+                text,
+                at: Point { x, y },
+                color,
+                centered: false,
+                shadow: true,
+            })
+        };
+        match text.split_once(HEART) {
+            // The vanilla full-heart sprite stands where the marker is.
+            Some((before, after)) => {
+                let before = before.trim_end();
+                let heart_x = text_x + text_width(before) + HEART_GAP;
+                shapes.push(text_shape(before.to_owned(), text_x));
+                shapes.push(Shape::Sprite(SpriteShape {
+                    sprite: "hud/heart/full".to_owned(),
+                    rect: Rect {
+                        x: heart_x,
+                        y: y + (LINE - HEART_SIZE) / 2.0 - 0.5,
+                        w: HEART_SIZE,
+                        h: HEART_SIZE,
+                    },
+                    color: 0xFFFF_FFFF,
+                }));
+                if !after.is_empty() {
+                    shapes.push(text_shape(after.to_owned(), heart_x + HEART_SIZE));
+                }
+            }
+            None => shapes.push(text_shape(text, text_x)),
+        }
     }
     (w, h, shapes)
 }
@@ -482,7 +583,11 @@ fn offset(shape: &mut Shape, dx: f32, dy: f32) {
             t.at.x += dx;
             t.at.y += dy;
         }
-        Shape::Quad(_) | Shape::Sprite(_) => {}
+        Shape::Sprite(sprite) => {
+            sprite.rect.x += dx;
+            sprite.rect.y += dy;
+        }
+        Shape::Quad(_) => {}
     }
 }
 
@@ -626,7 +731,10 @@ mod tests {
         };
         assert_eq!(
             info.entity_lines(&hit),
-            vec![("Ruby Guardian".into(), NAME), ("Ruby".into(), SOURCE)]
+            vec![
+                ("Ruby Guardian".into(), NAME),
+                ("37.5 / 80 ♥  ·  Ruby".into(), HEALTH),
+            ]
         );
         hit.health = 12.0;
         hit.name = "entity.ruby.ruby_golem".into();
@@ -636,7 +744,7 @@ mod tests {
             info.entity_lines(&hit),
             vec![
                 ("Ruby Golem".into(), NAME),
-                ("Health: 12 / 80".into(), DETAIL),
+                ("12 / 80 ♥".into(), HEALTH),
             ]
         );
         for source in [false, true] {
@@ -648,9 +756,9 @@ mod tests {
                 assert_eq!(
                     lines[1],
                     if source {
-                        ("Ruby".into(), SOURCE)
+                        ("12 / 80 ♥  ·  Ruby".into(), HEALTH)
                     } else {
-                        ("Health: 12 / 80".into(), DETAIL)
+                        ("12 / 80 ♥".into(), HEALTH)
                     }
                 );
             }

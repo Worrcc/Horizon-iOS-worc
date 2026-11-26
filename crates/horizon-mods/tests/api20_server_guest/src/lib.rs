@@ -12,6 +12,7 @@ mod machines30;
 mod net42;
 mod player_world31;
 mod recipes36;
+mod world36;
 mod worldgen43;
 struct Guest;
 impl ServerMod for Guest {
@@ -34,6 +35,7 @@ impl ServerMod for Guest {
                 .command("net42")
                 .command("worldgen43")
                 .command("pw31")
+                .command("w36")
                 .command("behaviour29")
                 .command("schedule29")
                 .command("filters29")
@@ -154,6 +156,9 @@ impl ServerMod for Guest {
     ) -> Result<Option<String>, String> {
         if name == "pw31" {
             return player_world31::run(player, args.text());
+        }
+        if name == "w36" {
+            return world36::run(player, args.text());
         }
         if name == "machines30" {
             return machines30::run(player, args.text());

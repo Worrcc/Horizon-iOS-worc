@@ -41,6 +41,7 @@ members = [
     "mods/official/machine-demo",
     "mods/official/phase-c-demo",
     "mods/official/atmosphere-demo",
+    "mods/official/hud-demo",
     "crates/horizon-mods",
     "crates/horizon-mod-api-gen",
     "crates/horizon-mod-api-gen/dispatch-tests",

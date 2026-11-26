@@ -315,8 +315,13 @@ fn jigsaw_depth_and_reach(v: &Value) -> (i32, [i32; 2]) {
 /// `Codec.intRange(0, 20)` and `MaxDistance` is `horizontal`
 /// `Codec.intRange(1, 128)` beside `vertical`
 /// `ExtraCodecs.intRange(1, DimensionType.Y_SIZE)`.
+///
+/// Horizon extension: `horizontal` may go up to 256 (vanilla: 128) so a large
+/// structure's pieces are not silently dropped past the start chunk's
+/// 8-chunk reference window; the scan radius follows the largest declared
+/// reach (`StructureRegistry::reference_radius`).
 fn jigsaw_reach_in_range(depth: i32, [horizontal, vertical]: [i32; 2]) -> bool {
-    (0..=20).contains(&depth) && (1..=128).contains(&horizontal) && (1..=4064).contains(&vertical)
+    (0..=20).contains(&depth) && (1..=256).contains(&horizontal) && (1..=4064).contains(&vertical)
 }
 
 /// All structures and structure sets of a resource bundle, in registry
@@ -588,6 +593,17 @@ impl StructureRegistry {
                     + s.avoid.as_ref().map_or(0, |a| a.chunk_count.max(0))
             })
             .sum()
+    }
+    /// How far, in chunks, a start's pieces can reach: vanilla's 8, or more
+    /// when a jigsaw structure declares a larger `max_distance_from_center`.
+    pub fn reference_radius(&self) -> i32 {
+        self.structures
+            .iter()
+            .filter_map(|d| match &d.kind {
+                StructureKind::Jigsaw(j) => Some((j.max_distance[0] + 15) / 16),
+                _ => None,
+            })
+            .fold(8, i32::max)
     }
     /// The preferred biomes of a concentric-ring set (empty for others).
     pub fn ring_biomes(&self, set: usize) -> &BTreeSet<BiomeId> {

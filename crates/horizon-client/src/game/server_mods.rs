@@ -305,6 +305,17 @@ pub(super) mod run {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             horizon_client::mod_world::heightmap(chunks, x, z, &self.properties)
         }
+        fn top_block(&self, dimension: &str, x: i32, z: i32, below_y: i32) -> Option<i32> {
+            let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
+            horizon_client::mod_world::top_block(
+                chunks,
+                x,
+                z,
+                below_y,
+                self.air.0,
+                &self.properties,
+            )
+        }
         fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String> {
             let (_, chunks) = self.dims.iter().find(|(d, _)| *d == dimension)?;
             let chunk = chunks.get(&(x >> 4, z >> 4))?;

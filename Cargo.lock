@@ -2205,6 +2205,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hud-demo"
+version = "0.1.0"
+dependencies = [
+ "horizon-mod-sdk",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"

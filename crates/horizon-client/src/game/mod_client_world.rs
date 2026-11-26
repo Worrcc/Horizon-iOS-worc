@@ -312,6 +312,13 @@ impl LentClientWorld {
 
 #[cfg(feature = "mods")]
 impl ClientWorldView for LentClientWorld {
+    fn food_value(&self, item: &str) -> Result<Option<(u32, f32, bool)>, String> {
+        let Some(info) = self.res.items().get(item) else {
+            return Ok(None);
+        };
+        horizon_mods::client_queries::food_value(info.food, info.can_always_eat)
+    }
+
     fn harvest(&self, block: &str) -> Option<horizon_mods::Harvest> {
         let name = block.split('[').next().unwrap_or(block);
         let state = self.context.assets.registry.default_state(name)?;

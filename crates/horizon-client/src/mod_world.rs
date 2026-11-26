@@ -41,6 +41,37 @@ pub fn heightmap(
     Some(heights)
 }
 
+/// `world.top-block`: the highest Y at or below `below_y` in block column
+/// `x`, `z` whose state is not air, read from the chunk's blocks (never a
+/// cached height). Sections holding only `air_id` are passed over whole.
+/// None for an unloaded chunk or a column of air down to its bottom.
+pub fn top_block(
+    chunks: &ChunkMap,
+    x: i32,
+    z: i32,
+    below_y: i32,
+    air_id: u32,
+    properties: &impl TerrainBlockStates,
+) -> Option<i32> {
+    let chunk = chunks.get(&(x >> 4, z >> 4))?;
+    let (lx, lz) = (x & 15, z & 15);
+    let min = chunk.min_y();
+    let mut y = below_y.min(chunk.max_y() - 1);
+    while y >= min {
+        let s = chunk.section_index(y)?;
+        if chunk.sections[s].is_uniform(air_id) {
+            y = min + s as i32 * 16 - 1;
+            continue;
+        }
+        let state = chunk.block(lx, y, lz);
+        if !properties.heightmap_state(state).is_air() {
+            return Some(y);
+        }
+        y -= 1;
+    }
+    None
+}
+
 /// All dimensions share the Overworld's clock and weather data. `isBrightOutside`
 /// additionally excludes fixed-time dimensions; rain and thunder use Level's thresholds.
 pub fn time(world: &World, overworld: &Environment, dimension: &str) -> WorldTime {
@@ -121,6 +152,47 @@ mod tests {
         let heights = heightmap(&chunks, -2, 3, &properties).unwrap();
         assert_eq!(heights[33], -30);
         assert_eq!(heights[255], 320);
+    }
+
+    #[test]
+    fn top_block_reads_the_column_below_a_height_and_follows_edits() {
+        let properties = crate::assets::Properties::for_tests(&[
+            (true, false, false, false),  // air
+            (false, false, true, true),   // stone
+            (false, true, false, false),  // water
+            (false, false, true, false),  // leaves
+            (false, false, false, false), // grass
+        ]);
+        let mut chunk = Chunk::empty(-1, 2);
+        chunk.set(3, 10, 4, 1);
+        chunk.set(3, 11, 4, 2);
+        chunk.set(3, 200, 4, 3);
+        chunk.set(5, MIN_Y, 5, 4);
+        let mut chunks = ChunkMap::default();
+        chunks.insert((-1, 2), Arc::new(chunk));
+        // Block x -13 is chunk -1, local 3; block z 36 is chunk 2, local 4.
+        let top = |chunks: &ChunkMap, x, z, below| top_block(chunks, x, z, below, 0, &properties);
+        assert_eq!(top(&chunks, -13, 36, 1000), Some(200));
+        assert_eq!(top(&chunks, -13, 36, 199), Some(11));
+        assert_eq!(top(&chunks, -13, 36, 11), Some(11));
+        assert_eq!(top(&chunks, -13, 36, 10), Some(10));
+        assert_eq!(top(&chunks, -13, 36, 9), None);
+        assert_eq!(top(&chunks, -11, 37, 400), Some(MIN_Y));
+        assert_eq!(top(&chunks, -11, 37, MIN_Y - 1), None);
+        assert_eq!(top(&chunks, -1, 36, 400), None);
+        assert_eq!(top(&chunks, 3, 4, 400), None);
+        // An edit shows on the next read, as does the heightmap built before it.
+        let before = heightmap(&chunks, -1, 2, &properties).unwrap();
+        assert_eq!(before[4 * 16 + 3], 201);
+        let chunk = Arc::make_mut(chunks.get_mut(&(-1, 2)).unwrap());
+        chunk.set(3, 200, 4, 0);
+        chunk.set(3, 150, 4, 1);
+        assert_eq!(top(&chunks, -13, 36, 1000), Some(150));
+        assert_eq!(heightmap(&chunks, -1, 2, &properties).unwrap()[4 * 16 + 3], 151);
+        let chunk = Arc::make_mut(chunks.get_mut(&(-1, 2)).unwrap());
+        chunk.set(3, 150, 4, 0);
+        assert_eq!(top(&chunks, -13, 36, 1000), Some(11));
+        assert_eq!(heightmap(&chunks, -1, 2, &properties).unwrap()[4 * 16 + 3], 11);
     }
 
     #[test]

@@ -815,6 +815,12 @@ fn place_element<W: FeatureWorld + PlacementContext, R: RandomSource>(
             };
             let mut settings = PlaceSettings::new(rotation);
             settings.known_shape = true;
+            // Horizon: mods' templates get their connecting blocks joined up
+            // (vanilla's hold theirs as saved).
+            settings.connect_shapes = template
+                .location
+                .split_once(':')
+                .is_some_and(|(namespace, _)| namespace != "minecraft");
             // SinglePoolElement.getSettings.
             settings.finalize_entities = true;
             settings.bounding_box = Some(chunk_box);

@@ -125,6 +125,27 @@ Access: capability `game-read`.
 
 Capability `game-read`: the local player, the world clock and the block or living entity the player looks at.
 
+### record `food-state`
+
+API level 45: client-known nutrition and health. Exhaustion is only available from this window's integrated server (single player / LAN host).
+
+| Field | Type | |
+| --- | --- | --- |
+| `food` | `u32` |  |
+| `saturation` | `f32` |  |
+| `exhaustion` | `option<f32>` |  |
+| `health` | `f32` |  |
+| `max-health` | `f32` |  |
+| `absorption` | `f32` |  |
+
+### record `food-info`
+
+| Field | Type | |
+| --- | --- | --- |
+| `nutrition` | `u32` |  |
+| `saturation` | `f32` | Saturation points restored, not the component's saturation modifier. |
+| `always-edible` | `bool` |  |
+
 ### record `player`
 
 | Field | Type | |
@@ -175,6 +196,8 @@ A living entity under the crosshair, including players and content mobs.
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `food-stats` | `func() -> result<option<food-state>, string>` | API level 45: none outside a world; read-only, client mods only. |
+| `food-value` | `func(item: string) -> result<option<food-info>, string>` | API level 45: default food component from loaded item data. Invalid namespaced ids are errors; unknown and non-food items return none. |
 | `get-player` | `func() -> option<player>` | None on the title screen. |
 | `get-clock` | `func() -> option<clock>` | None on the title screen. |
 | `raycast` | `func(distance: f32) -> option<hit>` | The first block along the player's view (fluids pass), up to `distance` blocks (at most 1024; past the loaded chunks, across the distant terrain when LOD Distance is on), as of this tick. None when nothing is hit, and on the title screen. |
@@ -427,6 +450,16 @@ Access: capability `render`.
 
 Capability `render` (experimental: the manifest needs `experimental = ["render"]`): shapes the game draws for the mod with its own renderer, kept until the mod replaces them (no call per frame). A mod never supplies shader code.
 
+### enum `bar-kind`
+
+| Case | |
+| --- | --- |
+| `health` |  |
+| `food` |  |
+| `armor` |  |
+| `air` |  |
+| `mount-health` |  |
+
 ### record `world-line`
 
 A world-space segment, in blocks; whole numbers are block corners.
@@ -461,6 +494,13 @@ A rectangle in GUI pixels: the top left corner and the size.
 | `y` | `f32` |  |
 | `w` | `f32` |  |
 | `h` | `f32` |  |
+
+### record `hud-bar`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `bar-kind` |  |
+| `bounds` | `rect` |  |
 
 ### record `point`
 
@@ -558,6 +598,7 @@ Any four-cornered shape (a wheel's segment, an arrow): the corners in order roun
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `hud-bars` | `func() -> result<list<hud-bar>, string>` | API level 45: actual GUI-pixel bounds of the last rendered vanilla bars, including animation, touch layout and mount hearts replacing food. Hidden bars are absent. Error before a HUD has been laid out, after a resize, or when a native mod replaces the health layout. |
 | `set-world-lines` | `func(lines: list<world-line>, color: u32, hidden-color: u32)` | API level 20: replace up to 4096 segments, at the block outline's width. ARGB color is depth tested; hidden-color draws only occluded parts (alpha zero hides). Hidden with F1; cleared on stop and leaving the world. Empty removes them. |
 | `set-hud` | `func(shapes: list<shape>)` | Replaces the mod's HUD shapes: up to 1024, drawn every frame in order over the HUD (after the hotbar, under chat and screens), hidden with the HUD (F1). An empty list removes them. |
 | `gui-size` | `func() -> tuple<f32, f32>` | The screen's size in GUI pixels (width, height), as of this tick. |
@@ -770,6 +811,31 @@ Access: capability `world-read`.
 
 Capability `world-read` (experimental), API level 17: the blocks, biomes and light the player's game has loaded, as the window shows them, in single player and on any server alike (nothing the server didn't send), read in whole chunks for minimaps; and the block table and textures of the loaded resource packs.
 
+### enum `entity-category`
+
+| Case | |
+| --- | --- |
+| `hostile` |  |
+| `passive` |  |
+| `neutral` |  |
+| `water` |  |
+| `ambient` |  |
+| `player` |  |
+| `own-tamed` |  |
+| `other-tamed` |  |
+| `other` |  |
+
+### record `entity-dot`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `yaw` | `f32` |  |
+| `kind` | `u32` | Index in entity-kinds; table stable until mods/resources reload. |
+| `category` | `entity-category` |  |
+
 ### record `dimension-info`
 
 The player's dimension.
@@ -876,6 +942,8 @@ API level 24: what mines a block, from its loaded tags (content mods' included).
 
 | Function | Signature | What it does |
 | --- | --- | --- |
+| `entities-near` | `func(radius: f32, max: u32) -> result<list<entity-dot>, string>` | API level 45: loaded living entities, local player excluded, nearest first in a 3D sphere. Radius finite and 0..64, max 0..256; invalid inputs are errors. At most 4 calls per mod per frame; excess is an error. Snapshot capped at the nearest 256 within 64 blocks, no network traffic. |
+| `entity-kinds` | `func() -> result<list<string>, string>` | API level 45: namespaced types indexed by entity-dot.kind, sorted by id. Empty outside a world; client mods only, capability world-read. |
 | `block-at` | `func(x: s32, y: s32, z: s32) -> option<string>` | API level 20: the client-loaded block state, e.g. minecraft:oak_log[axis=y]. None for unloaded chunks and on the title screen. |
 | `dimension` | `func() -> option<dimension-info>` | The player's dimension; none on the title screen. |
 | `block-table` | `func() -> block-states` | The block table (about 30000 states: read it in `init` or when its version changes, not every frame). Empty lists on a game without block models (a dedicated server). |
@@ -1607,7 +1675,9 @@ A plain item stack; components are not carried by this API.
 | `time` | `func(dimension: string) -> world-time` | Time and weather in a dimension. Unknown dimensions return zero times and false flags; known dimensions need not have loaded chunks. |
 | `can-see-sky` | `func(dimension: string, x: s32, y: s32, z: s32) -> bool` | Level.canSeeSky: sky light 15, independent of time, sky darkening or block light. False for unknown/unloaded chunks and dimensions without skylight. |
 | `get-block` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The block state at a position in a dimension (`minecraft:overworld`, ...), as `minecraft:oak_log[axis=y]`, as of this call: none where the server has no chunk loaded there. |
-| `heightmap` | `func(dimension: string, x: s32, z: s32) -> option<list<s32>>` | The loaded chunk's OCEAN_FLOOR heights, by chunk coordinates (block x >> 4, block z >> 4), as of this call: exactly 256 values, indexed z * 16 + x for local x, z in 0..16. Each is the first Y above the highest opaque block (fluids do not count, leaves do), or the column's minimum Y when empty. None for an unloaded chunk or unknown dimension. |
+| `heightmap` | `func(dimension: string, x: s32, z: s32) -> option<list<s32>>` | The loaded chunk's OCEAN_FLOOR heights, by chunk coordinates (block x >> 4, block z >> 4), as of this call: exactly 256 values, indexed z * 16 + x for local x, z in 0..16. Each is the first Y above the highest opaque block (fluids do not count, leaves do), or the column's minimum Y when empty. None for an unloaded chunk or unknown dimension. Read from the live chunk: a block change that can move a column's height drops that column's cached height, so `/setblock`, `/fill`, players and `set-blocks` show at once once made. Changes this mod queued with `set-blocks` are made after the hook call returns (before the dimension's next tick), so they show from the next call on. |
+| `top-block` | `func(dimension: string, x: s32, z: s32, below-y: s32) -> option<s32>` | API level 45: the Y of the highest block that is not air (air, cave air, void air) at block column x, z, at or below `below-y`, read from the loaded chunk's blocks as of this call (no cached height). Fluids, plants and leaves count. None for an unloaded chunk, an unknown dimension, or air all the way down. Queued `set-blocks` show as for `heightmap`. |
+| `seed` | `func() -> s64` | API level 45: the world's seed, as in level.dat (`/seed`). |
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
 | `set-loot-table` | `func(dimension: string, x: s32, y: s32, z: s32, table: string) -> result<_, string>` | Gives the container at a position (a chest, trapped chest, barrel, ...) a loot table, as a structure's chest has: it is rolled as generated chests are, after this tick's `set-blocks` (so a chest placed by them gets it). `table` is a loot table id (`minecraft:chests/simple_dungeon`, a mod's own). Not a container then: nothing. |

@@ -53,7 +53,7 @@ mod ui_bindings {
     });
 }
 pub use bindings::horizon::mods::{
-    game::{Clock, EntityHit, Hit, Player},
+    game::{Clock, EntityHit, FoodInfo, FoodState, Hit, Player},
     hud::{Corner, Line},
 };
 use bindings::{
@@ -168,9 +168,9 @@ pub use render_bindings::horizon::mods::input::{
 };
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, WorldLine, Zoom as ModZoom,
+    BarKind, Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, HudBar,
+    ItemShape, Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape,
+    SpriteShape, TextShape, WorldLine, Zoom as ModZoom,
 };
 use render_bindings::{RenderHost, horizon::mods::render};
 /// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
@@ -214,8 +214,8 @@ pub use canvas_host::{
 };
 pub use client_world_host::{
     BlockFace, BlockTable, CHANGES_MAX, CHANGES_RADIUS, COLUMN_CHUNKS, COLUMN_DEPTH, ChunkColumns,
-    ClientDimension, ClientTexture, ClientWorldView, ColumnLayer, FaceTint, Harvest, NO_SPRITE,
-    NO_TOP, state_flags,
+    ClientDimension, ClientTexture, ClientWorldView, ColumnLayer, EntityCategory, EntityDot,
+    FaceTint, Harvest, NO_SPRITE, NO_TOP, state_flags,
 };
 
 /// A mod's linear memory cap.
@@ -357,6 +357,12 @@ pub struct Snapshot {
     /// (`<namespace>:<name>`, vanilla types as `minecraft:<type>`), which
     /// `atmosphere.define-effect` checks a sprite against.
     pub particle_sets: Arc<std::collections::HashSet<String>>,
+    /// API 35 client observations; nearest entities within 64 blocks, at most 256.
+    pub client_entities: Arc<[EntityDot]>,
+    pub client_entity_kinds: Arc<[String]>,
+    pub food_stats: Option<FoodState>,
+    /// None when the actual vanilla HUD layout is unavailable.
+    pub hud_bars: Option<Vec<HudBar>>,
     pub player: Option<Player>,
     pub clock: Option<Clock>,
     /// The screen in GUI pixels (capability `render`'s `gui-size`).
@@ -420,6 +426,8 @@ pub struct Snapshot {
     pub teleport_borders: std::collections::BTreeMap<String, [f64; 4]>,
     /// Overworld level.dat spawn data, shared across the server's dimensions.
     pub world_spawn: Option<(String, WorldPoint, f32)>,
+    /// API 36: the world's seed (level.dat), for `world.seed`.
+    pub world_seed: i64,
     /// The chunks first generated during the last tick, for `world.generated-chunks`.
     pub generated_chunks: Arc<[ChunkPos]>,
     /// API 43: the world seed, for deterministic mod worldgen.
@@ -790,6 +798,11 @@ pub trait WorldView: std::any::Any + Send {
     fn heightmap(&self, _dimension: &str, _x: i32, _z: i32) -> Option<Vec<i32>> {
         None
     }
+    /// API 36: the highest non-air block Y at or below `below_y` in a loaded
+    /// column, read from the blocks (not a cached height).
+    fn top_block(&self, _dimension: &str, _x: i32, _z: i32, _below_y: i32) -> Option<i32> {
+        None
+    }
     /// The biome at a position, `minecraft:plains`; `None` as for blocks.
     fn biome(&self, dimension: &str, x: i32, y: i32, z: i32) -> Option<String>;
     /// Sky light 15 at the position; false when no chunk can be read.
@@ -961,6 +974,7 @@ struct Running {
     canvas: bool,
     /// It imports capability `world-read`.
     reads_client_world: bool,
+    reads_client_entities: bool,
     storage_api: bool,
     stack_data_api: bool,
     block_data_api: bool,
@@ -1213,6 +1227,7 @@ struct State {
     /// Capability `render`'s images, canvas box and frame budget.
     canvas: canvas_host::CanvasState,
     client_world: client_world_host::ClientWorldSlot,
+    entity_calls: crate::client_queries::EntityCallBudget,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
@@ -1821,6 +1836,7 @@ impl Mods {
             inventories,
             canvas,
             client_world,
+            entity_calls: Default::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1910,7 +1926,15 @@ impl Mods {
                 .any(|f| f == "world.machine-stacks" || f == "world.set-machine-stacks"),
             energy_api: functions.iter().any(|f| f.starts_with("energy.")),
             canvas: functions.iter().any(|f| f.starts_with("canvas.")),
-            reads_client_world: functions.iter().any(|f| f.starts_with("client-world.")),
+            reads_client_world: functions
+                .iter()
+                .any(|f| f.starts_with("client-world.") || f == "game.food-value"),
+            reads_client_entities: functions.iter().any(|f| {
+                matches!(
+                    f.as_str(),
+                    "client-world.entities-near" | "client-world.entity-kinds"
+                )
+            }),
             block_data_api: functions
                 .iter()
                 .any(|f| matches!(f.as_str(), "world.block-data" | "world.set-block-data")),
@@ -2100,6 +2124,11 @@ impl Mods {
     }
     /// A rendered frame, `seconds` after the last.
     pub fn frame(&mut self, seconds: f32) {
+        for entry in &mut self.entries {
+            if let Some(run) = &mut entry.run {
+                run.store.data_mut().entity_calls.reset();
+            }
+        }
         self.framing = true;
         self.each_client(FUEL_FRAME, |h| h.frame, |m, s| m.call_frame(s, seconds));
         self.framing = false;
@@ -2297,6 +2326,12 @@ impl Mods {
             .any(|e| e.run.as_ref().is_some_and(|r| r.raycasts))
     }
     /// Some running mod reads the living entity under the crosshair.
+    /// API 35: build the bounded client entity snapshot only for a consumer.
+    pub fn wants_client_entities(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.reads_client_entities))
+    }
     pub fn wants_entity_raycast(&self) -> bool {
         self.entries
             .iter()
@@ -2981,16 +3016,61 @@ fn clip_widgets(widgets: Vec<UiWidget>) -> Vec<UiWidget> {
 
 impl mod_log::Host for State {
     fn write(&mut self, level: mod_log::Level, message: String) {
-        let level = match level {
-            mod_log::Level::Debug => log::Level::Debug,
-            mod_log::Level::Info => log::Level::Info,
-            mod_log::Level::Warn => log::Level::Warn,
-            mod_log::Level::Error => log::Level::Error,
-        };
-        log::log!(level, "[mod {}] {}", self.id, clip(message));
+        mod_log_line(&self.id, level, &clip(message));
     }
 }
+
+/// A mod's `log.write` as a game log line, `[mod <id>] message`, client and
+/// server mods alike. The game's log keeps info and above, so a debug line
+/// is written at info, marked `(debug)`, rather than dropped. Each mod is
+/// its own source for the log's flood gate (a minute's warnings per source),
+/// so one noisy mod cannot hide another's warnings and errors.
+fn mod_log_line(id: &str, level: mod_log::Level, message: &str) {
+    let (level, mark) = match level {
+        mod_log::Level::Debug => (log::Level::Info, "(debug) "),
+        mod_log::Level::Info => (log::Level::Info, ""),
+        mod_log::Level::Warn => (log::Level::Warn, ""),
+        mod_log::Level::Error => (log::Level::Error, ""),
+    };
+    if level > log::max_level() {
+        return;
+    }
+    let source = format!("mod {id}");
+    log::logger().log(
+        &log::Record::builder()
+            .args(format_args!("[mod {id}] {mark}{message}"))
+            .level(level)
+            .target(module_path!())
+            .file(Some(&source))
+            .line(Some(0))
+            .build(),
+    );
+}
 impl game::Host for State {
+    fn food_stats(&mut self) -> Result<Option<FoodState>, String> {
+        if self.server {
+            return Err("food-stats is client-only".into());
+        }
+        Ok(self.snapshot.food_stats)
+    }
+    fn food_value(&mut self, item: String) -> Result<Option<FoodInfo>, String> {
+        if self.server {
+            return Err("food-value is client-only".into());
+        }
+        if !resource_id(&item) {
+            return Err("invalid namespaced item id".into());
+        }
+        self.with_view(|v| v.food_value(&item))
+            .unwrap_or(Ok(None))
+            .map(|value| {
+                value.map(|(nutrition, saturation, always_edible)| FoodInfo {
+                    nutrition,
+                    saturation,
+                    always_edible,
+                })
+            })
+    }
+
     fn get_player(&mut self) -> Option<Player> {
         self.snapshot.player.clone()
     }
@@ -4076,6 +4156,13 @@ impl mod_world::Host for State {
     fn heightmap(&mut self, dimension: String, x: i32, z: i32) -> Option<Vec<i32>> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.heightmap(&dimension, x, z)
+    }
+    fn top_block(&mut self, dimension: String, x: i32, z: i32, below_y: i32) -> Option<i32> {
+        let view = self.world.lock().ok()?;
+        view.as_ref()?.top_block(&dimension, x, z, below_y)
+    }
+    fn seed(&mut self) -> i64 {
+        self.snapshot.world_seed
     }
     fn generated_chunks(&mut self) -> Vec<ChunkPos> {
         (self.snapshot.generated_chunks.iter())
@@ -5299,6 +5386,16 @@ pub struct ModWorldLines {
     pub hidden_color: u32,
 }
 impl render::Host for State {
+    fn hud_bars(&mut self) -> Result<Vec<HudBar>, String> {
+        if self.server {
+            return Err("hud-bars is client-only".into());
+        }
+        self.snapshot
+            .hud_bars
+            .clone()
+            .ok_or_else(|| "vanilla HUD layout unavailable".into())
+    }
+
     fn set_world_lines(&mut self, lines: Vec<WorldLine>, color: u32, hidden_color: u32) {
         self.world_lines = ModWorldLines {
             lines: lines
@@ -5708,6 +5805,7 @@ mod entity_tests {
             inventories: InventoriesSlot::default(),
             canvas: canvas_host::CanvasState::new(Default::default()),
             client_world: Default::default(),
+            entity_calls: Default::default(),
         }
     }
 
@@ -6015,6 +6113,13 @@ mod entity_tests {
         older_components_still_link(25);
     }
 
+    /// API 36 adds `world.seed` and `world.top-block`: a level-35 server mod
+    /// (no import of either) still links.
+    #[test]
+    fn pre_level_36_components_still_link() {
+        older_components_still_link(36);
+    }
+
     #[test]
     fn api20_touch_buttons_validate_replace_remove_and_deliver_keys() {
         let mut s = state();
@@ -6212,7 +6317,7 @@ mod entity_tests {
             if interface.name.as_deref() == Some("render") {
                 interface
                     .functions
-                    .retain(|name, _| name != "set-world-lines");
+                    .retain(|name, _| name != "set-world-lines" && name != "hud-bars");
             }
             if interface.name.as_deref() == Some("canvas") {
                 interface.functions.retain(|name, _| {
@@ -6295,9 +6400,12 @@ mod entity_tests {
             .unwrap();
         for (_, interface) in resolve.interfaces.iter_mut() {
             if interface.name.as_deref() == Some("game") {
-                interface
-                    .functions
-                    .retain(|name, _| name != "raycast-entity" && name != "world-id");
+                interface.functions.retain(|name, _| {
+                    !matches!(
+                        name.as_str(),
+                        "raycast-entity" | "world-id" | "food-stats" | "food-value"
+                    )
+                });
             }
         }
         let world = resolve
