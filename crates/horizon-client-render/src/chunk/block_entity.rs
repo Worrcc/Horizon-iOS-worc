@@ -25,7 +25,7 @@ pub enum FurnaceKind {
     BlastFurnace,
     Smoker,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Furnace {
     pub kind: FurnaceKind,
     /// input, fuel, result

@@ -852,6 +852,9 @@ pub struct ChunkExtras {
     pub fluid_ticks: Vec<horizon_core::ticks::SavedTick>,
     /// Game time written as `LastUpdate`.
     pub last_update: i64,
+    /// Game time the chunk unloaded at while a furnace in it was cooking
+    /// (`HorizonUnloadedTick`): catch-up runs from it when the chunk loads.
+    pub unloaded_tick: Option<i64>,
     /// Containers still holding their loot table's roll.
     pub rolled_loot: Vec<RolledLoot>,
 }

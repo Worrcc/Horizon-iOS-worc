@@ -271,6 +271,10 @@ impl Game<'_> {
             }
             return Ok(());
         };
+        self.set_furnace_lit(pos, lit)
+    }
+    /// The block's `lit` property, following its furnace.
+    fn set_furnace_lit(&mut self, pos: Pos, lit: bool) -> Result<()> {
         let state = self.world.block(pos.0, pos.1, pos.2);
         if let Some(mut s) = self.pack.assets.registry.state(state).cloned()
             && s.properties.contains_key("lit")
@@ -278,6 +282,43 @@ impl Game<'_> {
             s.properties.insert("lit".into(), lit.to_string());
             if let Ok(id) = self.pack.assets.registry.resolve(&s) {
                 self.level_set([pos.0, pos.1, pos.2], id)?;
+            }
+        }
+        Ok(())
+    }
+    /// The furnaces of chunk `key` run through the ticks that passed since
+    /// `since`, the game time it unloaded at (`FurnaceCooking::catch_up`), with
+    /// the drops and lit state their ticks would give. Native furnace hooks are
+    /// not fired for those ticks.
+    pub(crate) fn catch_up_furnaces(&mut self, key: (i32, i32), since: i64) -> Result<()> {
+        let elapsed = (self.world.game_time - since).max(0) as u64;
+        if elapsed == 0 {
+            return Ok(());
+        }
+        let furnaces: Vec<Pos> = self
+            .world
+            .block_entities
+            .boxes()
+            .filter(|(p, e)| {
+                (p.0 >> 4, p.2 >> 4) == key && matches!(e, BlockEntity::Furnace(f) if !f.idle())
+            })
+            .map(|(p, _)| *p)
+            .collect();
+        for pos in furnaces {
+            let report = match self.world.block_entities.get_mut(&pos) {
+                Some(BlockEntity::Furnace(f)) => f.catch_up(
+                    world_recipes!(self),
+                    world_items!(self),
+                    self.res.providers(),
+                    elapsed,
+                ),
+                _ => continue,
+            };
+            for stack in report.drops {
+                self.campfire_drop(pos, stack);
+            }
+            if let Some(lit) = report.lit {
+                self.set_furnace_lit(pos, lit)?;
             }
         }
         Ok(())

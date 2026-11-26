@@ -1540,6 +1540,17 @@ pub fn encode_with(
     ] {
         put(&mut root, key, value);
     }
+    // Written only while a furnace in the chunk is cooking; a loaded copy of it is dropped.
+    if let Tag::Compound(map) = &mut root {
+        match extras.and_then(|e| e.unloaded_tick) {
+            Some(t) => {
+                map.insert("HorizonUnloadedTick".into(), Tag::Long(t));
+            }
+            None => {
+                map.remove(&"HorizonUnloadedTick".into());
+            }
+        }
+    }
     if let Some(Tag::Compound(map)) = Some(&mut root) {
         if let Some(extras) = extras
             && attachment_compound(map.get(&ATTACHMENTS_KEY.into())).is_ok()
@@ -1610,7 +1621,8 @@ pub fn encode_with(
     }
 }
 /// Root keys `encode_with` regenerates; everything else is kept as loaded.
-const GENERATED_KEYS: [&str; 14] = [
+const GENERATED_KEYS: [&str; 15] = [
+    "HorizonUnloadedTick",
     "DataVersion",
     "xPos",
     "zPos",
@@ -1770,6 +1782,7 @@ fn decode_column(
     }
     let mut extras = ChunkExtras {
         last_update: number(tag.get("LastUpdate")).unwrap_or(0),
+        unloaded_tick: number(tag.get("HorizonUnloadedTick")),
         ..ChunkExtras::default()
     };
     if let Some(Tag::List(entities)) = tag.get("block_entities") {

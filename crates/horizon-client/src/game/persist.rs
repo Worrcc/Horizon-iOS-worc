@@ -193,6 +193,7 @@ impl Game<'_> {
             extras.fluid_ticks = t.pack(time);
         }
         extras.last_update = time;
+        extras.unloaded_tick = self.world.unloaded_ticks.get(&(chunk.x, chunk.z)).copied();
         // PistonMovingBlockEntity.saveAdditional: a block caught mid-move is
         // saved with its chunk (#3310).
         for (p, piston) in &self.block_ticks.moving_pistons {

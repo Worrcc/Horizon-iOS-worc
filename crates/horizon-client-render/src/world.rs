@@ -99,6 +99,11 @@ pub struct World {
     /// `ChunkAccess.inhabitedTime` of resident chunks: ticks a player spent
     /// within spawning range (local difficulty).
     pub inhabited: FxHashMap<(i32, i32), i64>,
+    /// Chunks unloaded while holding a furnace still cooking: the game time they
+    /// unloaded at, saved as `HorizonUnloadedTick` until the chunk loads again.
+    pub unloaded_ticks: FxHashMap<(i32, i32), i64>,
+    /// Chunks that loaded with such a marker: their (unloaded time) to catch up on.
+    pub catch_up_queue: Vec<((i32, i32), i64)>,
     pub game_time: i64,
     pub day_time: i64,
     pub weather: Weather,
@@ -221,6 +226,8 @@ impl World {
             watched: Vec::new(),
             watched_writes: Vec::new(),
             inhabited: FxHashMap::default(),
+            unloaded_ticks: FxHashMap::default(),
+            catch_up_queue: Vec::new(),
             game_time: 0,
             day_time: 1000,
             weather: Weather::default(),

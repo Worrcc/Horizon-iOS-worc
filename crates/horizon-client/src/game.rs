@@ -17623,6 +17623,11 @@ impl Game<'_> {
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
         self.streaming.extra.truncate(areas);
         self.spawn_fresh_chunks();
+        for (key, since) in std::mem::take(&mut self.world.catch_up_queue) {
+            if let Err(e) = self.catch_up_furnaces(key, since) {
+                log::warn!("Horizon: furnace catch-up in chunk {key:?} failed: {e}");
+            }
+        }
         // Before the unloaded chunks' block entities are written and dropped.
         self.native_chunks_changed(&unloaded);
         if let Some(lod) = &mut self.lod {
@@ -17647,6 +17652,26 @@ impl Game<'_> {
                     }
                 }
             });
+        }
+        // A chunk unloading with a furnace still cooking keeps the tick it unloaded at
+        // and is saved with it; `catch_up_furnaces` runs the span on the next load.
+        let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
+            unloaded.iter().map(|c| (c.x, c.z)).collect();
+        let cooking: horizon_client::fast_hash::FxHashSet<(i32, i32)> = self
+            .world
+            .block_entities
+            .boxes()
+            .filter(|(_, e)| matches!(e, BlockEntity::Furnace(f) if !f.idle()))
+            .map(|(p, _)| (p.0 >> 4, p.2 >> 4))
+            .filter(|k| gone.contains(k))
+            .collect();
+        for key in &gone {
+            if cooking.contains(key) {
+                self.world.unloaded_ticks.insert(*key, self.world.game_time);
+                self.world.modified.insert(*key);
+            } else {
+                self.world.unloaded_ticks.remove(key);
+            }
         }
         let dirty: Vec<_> = unloaded
             .iter()

@@ -1382,7 +1382,14 @@ impl Streaming {
                     .block_entities
                     .restore_attachments(*pos, attachments.clone());
             }
+            // The marker is cleared by the next save of this chunk (`attach_save_data`
+            // writes only what `unloaded_ticks` holds), so the span is applied once.
+            if let Some(since) = extras.unloaded_tick {
+                world.catch_up_queue.push((key, since));
+                world.modified.insert(key);
+            }
         }
+        world.unloaded_ticks.remove(&key);
         world
             .block_names
             .extend(std::mem::take(&mut chunk.block_names));
