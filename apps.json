@@ -17,6 +17,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.2.0.95",
+          "buildVersion": "0.2.0.95",
+          "date": "2026-11-27T02:40:24Z",
+          "localizedDescription": "Branch claude/horizon-combined, commit d298f33ee.",
+          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-95/Horizon.ipa",
+          "size": 34240871,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.2.0.91",
           "buildVersion": "0.2.0.91",
           "date": "2026-11-24T23:45:01Z",
@@ -96,26 +105,17 @@
           "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-74/Horizon.ipa",
           "size": 34886556,
           "minOSVersion": "15.0"
-        },
-        {
-          "version": "0.2.0.73",
-          "buildVersion": "0.2.0.73",
-          "date": "2026-11-14T00:32:32Z",
-          "localizedDescription": "Branch claude/api-expansion, commit 78429fbd7.",
-          "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-73/Horizon.ipa",
-          "size": 34827952,
-          "minOSVersion": "15.0"
         }
       ],
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.2.0.91",
-      "versionDate": "2026-11-24T23:45:01Z",
-      "versionDescription": "Branch claude/afterlight-api, commit 14adc6e89.",
-      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-91/Horizon.ipa",
-      "size": 34202666
+      "version": "0.2.0.95",
+      "versionDate": "2026-11-27T02:40:24Z",
+      "versionDescription": "Branch claude/horizon-combined, commit d298f33ee.",
+      "downloadURL": "https://github.com/Worrcc/Horizon-iOS-worc/releases/download/ios-95/Horizon.ipa",
+      "size": 34240871
     }
   ],
   "news": []
