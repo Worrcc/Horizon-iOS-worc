@@ -200,7 +200,8 @@ impl FurnaceCooking for Furnace {
                 cook_recipe(self, recipes).is_some_and(|recipe| can_burn(self, recipe, items));
             // Lit and cooking: each tick is `timer += 1` and `lit_remaining -= 1` until
             // the item finishes or the fuel runs out, so jump to the nearer of those.
-            if lit && cookable && self.cooking_timer >= 1 && self.cooking_timer < self.cooking_total {
+            if lit && cookable && self.cooking_timer >= 1 && self.cooking_timer < self.cooking_total
+            {
                 let steps = left
                     .min((self.lit_remaining - 1) as u64)
                     .min((self.cooking_total - 1 - self.cooking_timer) as u64);
@@ -219,9 +220,8 @@ impl FurnaceCooking for Furnace {
             {
                 let first = (self.cooking_timer - 2).clamp(0, self.cooking_total) as i64;
                 let steps = i64::try_from(left).unwrap_or(i64::MAX);
-                self.cooking_timer = first
-                    .saturating_sub(2i64.saturating_mul(steps - 1))
-                    .max(0) as i32;
+                self.cooking_timer =
+                    first.saturating_sub(2i64.saturating_mul(steps - 1)).max(0) as i32;
                 break;
             }
             // Lit, but nothing cooks (no ingredient, no recipe, or the output is full):
@@ -550,7 +550,11 @@ mod tests {
         }
     }
 
-    fn with(input: Option<ItemStack>, fuel: Option<ItemStack>, output: Option<ItemStack>) -> Furnace {
+    fn with(
+        input: Option<ItemStack>,
+        fuel: Option<ItemStack>,
+        output: Option<ItemStack>,
+    ) -> Furnace {
         Furnace {
             kind: FurnaceKind::Furnace,
             items: [input, fuel, output],

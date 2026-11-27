@@ -4303,7 +4303,15 @@ fn biome_modifiers_keep_content_biomes() {
     let features = biome_features(&out);
     assert_eq!(
         features.get("zinc:zinc_flats"),
-        Some(&serde_json::json!([[], [], [], [], [], [], ["zinc:ore_zinc"]])),
+        Some(&serde_json::json!([
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            ["zinc:ore_zinc"]
+        ])),
         "content biome kept and modified: {:?}",
         features.keys().collect::<Vec<_>>()
     );

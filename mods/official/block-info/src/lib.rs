@@ -211,7 +211,10 @@ impl BlockInfo {
 
     /// The first water or lava along the view, before `limit` blocks: the block ray passes
     /// through fluids, so the view is walked here in small steps over the loaded blocks.
-    fn fluid_target(&self, limit: f32) -> Option<(Option<String>, Vec<(String, u32)>, Option<HarvestRow>)> {
+    fn fluid_target(
+        &self,
+        limit: f32,
+    ) -> Option<(Option<String>, Vec<(String, u32)>, Option<HarvestRow>)> {
         let p = game::get_player()?;
         let (yaw, pitch) = ((p.yaw as f64).to_radians(), (p.pitch as f64).to_radians());
         let dir = (
@@ -742,10 +745,7 @@ mod tests {
         info.coords = true;
         assert_eq!(
             info.entity_lines(&hit),
-            vec![
-                ("Ruby Golem".into(), NAME),
-                ("12 / 80 ♥".into(), HEALTH),
-            ]
+            vec![("Ruby Golem".into(), NAME), ("12 / 80 ♥".into(), HEALTH),]
         );
         for source in [false, true] {
             for coords in [false, true] {

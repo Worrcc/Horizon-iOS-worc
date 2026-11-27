@@ -188,11 +188,17 @@ mod tests {
         chunk.set(3, 200, 4, 0);
         chunk.set(3, 150, 4, 1);
         assert_eq!(top(&chunks, -13, 36, 1000), Some(150));
-        assert_eq!(heightmap(&chunks, -1, 2, &properties).unwrap()[4 * 16 + 3], 151);
+        assert_eq!(
+            heightmap(&chunks, -1, 2, &properties).unwrap()[4 * 16 + 3],
+            151
+        );
         let chunk = Arc::make_mut(chunks.get_mut(&(-1, 2)).unwrap());
         chunk.set(3, 150, 4, 0);
         assert_eq!(top(&chunks, -13, 36, 1000), Some(11));
-        assert_eq!(heightmap(&chunks, -1, 2, &properties).unwrap()[4 * 16 + 3], 11);
+        assert_eq!(
+            heightmap(&chunks, -1, 2, &properties).unwrap()[4 * 16 + 3],
+            11
+        );
     }
 
     #[test]
