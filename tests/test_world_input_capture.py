@@ -63,6 +63,7 @@ class WorldInputCaptureTests(unittest.TestCase):
 use std::cell::Cell;
 #[derive(Clone, Copy, PartialEq)]
 enum Screen { Playing, Paused, Inventory, Chat }
+mod touch { pub fn enabled() -> bool { false } }
 #[derive(Clone, Copy)]
 enum CursorGrabMode { Locked, Confined, None }
 mod winit {
@@ -128,6 +129,7 @@ HELPER
 impl Game {
     fn stop_mining(&mut self) { self.mining = false; }
     fn reset_inventory_clicks(&mut self) {}
+    fn mod_container_lifecycle(&mut self) {}
     fn restore_held_keys(&mut self) {}
     fn dialog_open(&self) -> bool { false }
 METHODS
@@ -375,7 +377,7 @@ mod input_trace {
 }
 struct Game {
     pending_save: Option<()>, captured: bool, focused: bool, keyboard_mouse: bool, split_window: bool,
-    options: Options, screen: Screen, mouse: MouseLook, last_input: Instant,
+    options: Options, screen: Screen, mouse: MouseLook, last_input: Instant, mouse_look_moved: bool,
 }
 impl Game {
     // The input trace records the motion; it does not change the turn.
@@ -399,7 +401,7 @@ fn main() {
             pending_save: saving.then_some(()), captured: true, focused: active,
             keyboard_mouse: owner, split_window: split, options: Options { offscreen },
             screen: if playing { Screen::Playing } else { Screen::Paused },
-            mouse: MouseLook::default(), last_input: Instant::now(),
+            mouse: MouseLook::default(), last_input: Instant::now(), mouse_look_moved: false,
         };
         game.device_event(&ActiveEventLoop, DeviceId, DeviceEvent::MouseMotion { delta: (0.0, 0.0) });
         game.device_event(&ActiveEventLoop, DeviceId, DeviceEvent::MouseMotion { delta: (20.0, -10.0) });

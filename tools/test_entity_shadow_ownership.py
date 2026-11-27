@@ -47,7 +47,11 @@ mod post {
     impl PackPost { __CASTERS__ }
 }
 struct Native { shadow: Option<()> }
-struct Renderer { pack_post: Option<(i32, Option<post::PackPost>)>, native: Option<Native> }
+struct SunShadow { active: bool }
+struct ShadowLevel;
+impl SunShadow { fn level(&self) -> ShadowLevel { ShadowLevel } }
+impl ShadowLevel { fn entities(&self) -> bool { false } }
+struct Renderer { pack_post: Option<(i32, Option<post::PackPost>)>, native: Option<Native>, sun_shadow: SunShadow }
 impl Renderer { __NATIVE__ __GETTER__ }
 #[derive(Clone, Copy, PartialEq)]
 enum Dim { Overworld, Nether, End }
@@ -82,6 +86,7 @@ fn scene(kind: &str, dim: Dim, enabled: bool, sprite: bool) -> Game {
         renderer: (kind != "no_renderer").then_some(Renderer {
             pack_post,
             native: (kind == "native").then_some(Native { shadow: Some(()) }),
+            sun_shadow: SunShadow { active: false },
         }),
         settings: Settings { entity_shadows: enabled },
         gui: Gui { atlas: Atlas { sprites: if sprite {

@@ -48,6 +48,7 @@ impl Game {
     fn spectator(&self) -> bool { self.spectator }
     fn spectator_scroll(&mut self, steps: i32) { self.menu_scrolls.push(steps); }
     fn native_wheel_event(&mut self, _: f32) -> bool { self.legacy_calls += 1; self.legacy_claimed }
+    fn mod_wheel(&mut self, _: f32) -> bool { false }
     fn native_mouse_scrolling(&mut self, scroll: [f64;2], accumulated: [i32;2], buttons: [bool;3],
         cursor: [f32;2], modifiers: u32, canceled: &mut bool) {
         self.calls.push((scroll, accumulated, buttons, cursor, modifiers)); *canceled = self.cancel;
