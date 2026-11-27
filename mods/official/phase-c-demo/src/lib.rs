@@ -141,7 +141,7 @@ impl ServerMod for Demo {
                 let at = point(p.x, p.y + 1.0, p.z);
                 let burst = |name: &str| ParticleBurst {
                     name: name.into(),
-                    at: at.clone(),
+                    at,
                     delta: point(0.5, 0.5, 0.5),
                     speed: 0.02,
                     count: 20,
