@@ -640,6 +640,7 @@ impl Game<'_> {
     }
 
     /// A level particle packet to every player within the vanilla 32-block range.
+    #[cfg(feature = "mods")]
     pub(super) fn lan_particle_packet(&self, packet: &play::LevelParticles) {
         let Some(host) = self.lan.as_ref() else {
             return;

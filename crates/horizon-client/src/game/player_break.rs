@@ -1,4 +1,5 @@
 //! Queued mod mining shares the exact player break path, after runtime loans return.
+#[cfg(feature = "mods")]
 use super::Game;
 
 #[derive(Clone, Copy)]

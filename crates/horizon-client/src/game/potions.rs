@@ -1589,8 +1589,11 @@ impl Game<'_> {
         (hidden, ambient, duration_scale): (&[&'static str], &[&'static str], f32),
         at: [f64; 3],
         source: &Text,
-        (owner, guest, owner_uuid): (Option<Who>, Option<u32>, Option<[i32; 4]>),
+        ownership: (Option<Who>, Option<u32>, Option<[i32; 4]>),
     ) {
+        let (owner, guest, _) = ownership;
+        #[cfg(feature = "mods")]
+        let (_, _, owner_uuid) = ownership;
         // `indirectMagic(cloud, owner)` names the cloud in the death message
         // (it gives no kill credit).
         let cloud_owner = PotionOwner {

@@ -2596,6 +2596,7 @@ pub(super) fn living_mod_types()
 
 impl Game<'_> {
     /// Stable profile UUID for WASM player events and inventory ownership.
+    #[cfg(feature = "mods")]
     pub(super) fn player_uuid_string(&self) -> String {
         let uuid = self
             .level

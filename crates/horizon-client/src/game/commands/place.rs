@@ -11,6 +11,7 @@ use horizon_world::{
 };
 use std::sync::OnceLock;
 
+#[cfg(feature = "mods")]
 struct Placement {
     rotation: Rotation,
     mirror: Mirror,
@@ -262,6 +263,7 @@ impl Game<'_> {
         Ok(1)
     }
     /// The same placement path is used by `/place template` and server mods.
+    #[cfg(feature = "mods")]
     fn place_template_at(&mut self, id: &str, pos: [i32; 3], placement: Placement) -> R<usize> {
         let entry = self
             .template_entry(id)
@@ -289,6 +291,7 @@ impl Game<'_> {
         }
         Ok(1)
     }
+    #[cfg(feature = "mods")]
     pub(in crate::game) fn place_mod_template(
         &mut self,
         id: &str,
