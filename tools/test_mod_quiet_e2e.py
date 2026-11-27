@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import shutil
 
+import lab
 from lan_e2e import Game
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,7 @@ def main():
     for game in games:
         for key in ('HORIZON_LAUNCHER_TRASH', 'HORIZON_LAUNCHER_CLIPBOARD', 'HORIZON_LAUNCHER_DESKTOP'):
             game.d.env[key] = str(game.work / key.lower())
+        game.d.env = lab.game_env(game.d.env)
     launch = ['launch', '--offscreen', '--no-pause']
     for mod in mods:
         launch += ['--dev-mod', str(mod.resolve())]

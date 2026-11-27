@@ -21,6 +21,8 @@ and exits non-zero on a failed one.
 """
 import argparse, json, os, struct, subprocess, sys, tempfile, time, zlib
 
+import lab
+
 ap = argparse.ArgumentParser()
 here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ap.add_argument("--fork", default=here)
@@ -42,8 +44,8 @@ for d in ("data", "cfg", "lh", "game"):
 # The post keys only scale the player's own Bloom and Shadows settings: turn them on.
 with open(f"{home}/game/horizon-graphics.txt", "w") as f:
     f.write("bloom:high\nshadows:medium\n")
-env = dict(os.environ, HORIZON_HOME=home, HORIZON_LAUNCHER_HOME=f"{home}/lh", XDG_DATA_HOME=f"{home}/data",
-           XDG_CONFIG_HOME=f"{home}/cfg", HORIZON_LAUNCHER_NO_SELF_UPDATE="1", HORIZON_NO_AUDIO="1")
+env = lab.game_env(os.environ, HORIZON_HOME=home, HORIZON_LAUNCHER_HOME=f"{home}/lh", XDG_DATA_HOME=f"{home}/data",
+                   XDG_CONFIG_HOME=f"{home}/cfg")
 sock = f"{home}/ctl.sock"
 
 
