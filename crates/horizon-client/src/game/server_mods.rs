@@ -34,6 +34,50 @@ pub(super) enum ModEvent {
 
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
+    pub(in crate::game) fn wasm_use_item_on(
+        &mut self,
+        _stack: &horizon_client::items::ItemStack,
+        _pos: [i32; 3],
+        _face: [i32; 3],
+        _claimed: &mut bool,
+    ) {
+    }
+    pub(in crate::game) fn wasm_use_item(
+        &mut self,
+        _stack: &horizon_client::items::ItemStack,
+        _claimed: &mut bool,
+    ) {
+    }
+    pub(in crate::game) fn wasm_item_use_finish(
+        &mut self,
+        _stack: &horizon_client::items::ItemStack,
+        _entity: Option<i32>,
+    ) {
+    }
+    pub(in crate::game) fn wasm_destroy_block(
+        &mut self,
+        _pos: [i32; 3],
+        _state: horizon_world::registry::BlockStateId,
+        _canceled: &mut bool,
+    ) {
+    }
+    pub(in crate::game) fn wasm_attack_entity(
+        &mut self,
+        _entity: i32,
+        _kind: &str,
+        _canceled: &mut bool,
+    ) {
+    }
+    pub(in crate::game) fn wasm_chunk_unloaded(&mut self, _dimension: &str, _chunk: [i32; 2]) {}
+    pub(in crate::game) fn wasm_item_picked_up(&mut self, _item: &str, _canceled: &mut bool) {}
+    pub(super) fn wasm_menu_event(
+        &mut self,
+        _uuid: u128,
+        _window: i32,
+        _click: Option<(i32, i32, i32)>,
+    ) {
+    }
+    pub(super) fn clear_mod_behaviour_ticks(&mut self) {}
     pub(super) fn tick_server_mods(&mut self) {}
     pub(super) fn guest_mod_chat_filter(
         &mut self,
@@ -2585,5 +2629,207 @@ impl super::GameLevel<'_> {
                 from,
             );
         }
+    }
+}
+
+#[cfg(feature = "mods")]
+impl Game<'_> {
+    pub(in crate::game) fn wasm_use_item_on(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        pos: [i32; 3],
+        face: [i32; 3],
+        claimed: &mut bool,
+    ) {
+        if !*claimed {
+            let state = crate::game::server_mods::run::state_string(
+                self.pack.assets.registry,
+                self.world.block(pos[0], pos[1], pos[2]),
+            );
+            *claimed = self.mod_behaviour(
+                horizon_mods::BehaviourFamily::ItemOn,
+                &stack.item,
+                |mods, p| {
+                    mods.item_used_on_block(
+                        p,
+                        &stack.item,
+                        horizon_mods::BlockPos {
+                            x: pos[0],
+                            y: pos[1],
+                            z: pos[2],
+                        },
+                        &state,
+                        crate::game::server_mods::run::face_id(face),
+                    )
+                },
+            );
+            if *claimed {
+                self.use_failed = true;
+                self.mod_consume_followups();
+            }
+        }
+    }
+    pub(in crate::game) fn wasm_use_item(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        claimed: &mut bool,
+    ) {
+        if !*claimed {
+            *claimed = self.mod_behaviour(
+                horizon_mods::BehaviourFamily::ItemUse,
+                &stack.item,
+                |mods, p| mods.item_used(p, &stack.item),
+            );
+            if *claimed {
+                self.use_failed = true;
+                self.mod_consume_followups();
+            }
+        }
+    }
+    pub(in crate::game) fn wasm_item_use_finish(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        entity: Option<i32>,
+    ) {
+        if entity.is_none() {
+            self.mod_behaviour(
+                horizon_mods::BehaviourFamily::ItemFinish,
+                &stack.item,
+                |mods, p| {
+                    mods.item_use_finished(p, &stack.item);
+                    false
+                },
+            );
+        }
+    }
+    pub(in crate::game) fn wasm_destroy_block(
+        &mut self,
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+        canceled: &mut bool,
+    ) {
+        if !*canceled {
+            let state =
+                crate::game::server_mods::run::state_string(self.pack.assets.registry, state);
+            *canceled = self.mod_behaviour(
+                horizon_mods::BehaviourFamily::Breaking,
+                &state,
+                |mods, player| {
+                    mods.block_breaking(
+                        player,
+                        horizon_mods::BlockPos {
+                            x: pos[0],
+                            y: pos[1],
+                            z: pos[2],
+                        },
+                        &state,
+                    )
+                },
+            );
+        }
+    }
+    pub(in crate::game) fn wasm_attack_entity(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        canceled: &mut bool,
+    ) {
+        if !*canceled {
+            let item = self
+                .held()
+                .map(|s| s.item.to_string())
+                .unwrap_or_else(|| "minecraft:air".into());
+            *canceled =
+                self.mod_behaviour(horizon_mods::BehaviourFamily::ItemHit, &item, |mods, p| {
+                    mods.item_hit_entity(p, &item, kind, entity)
+                });
+        }
+    }
+    pub(in crate::game) fn wasm_chunk_unloaded(&mut self, dimension: &str, chunk: [i32; 2]) {
+        self.mods.mods.behaviour_chunk_unloaded(dimension, chunk);
+    }
+    pub(in crate::game) fn wasm_item_picked_up(&mut self, item: &str, canceled: &mut bool) {
+        if !*canceled {
+            *canceled = self.mod_behaviour(horizon_mods::BehaviourFamily::Pickup, "", |mods, p| {
+                mods.item_picked_up(p, item)
+            });
+        }
+    }
+    pub(super) fn clear_mod_behaviour_ticks(&mut self) {
+        self.mods.mods.clear_behaviour_ticks();
+    }
+}
+
+#[cfg(feature = "mods")]
+impl super::GameLevel<'_> {
+    pub(in crate::game) fn wasm_block_changed(
+        &self,
+        dimension: horizon_world::level::Dimension,
+        pos: horizon_core::position::BlockPos,
+    ) {
+        self.behaviour_mods.behaviour_block_changed(
+            crate::game::server_mods::run::dimension_id(dimension),
+            horizon_mods::BlockPos {
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+            },
+        );
+    }
+    pub(in crate::game) fn wasm_neighbor_changed(
+        &self,
+        dimension: horizon_world::level::Dimension,
+        pos: horizon_core::position::BlockPos,
+        state: horizon_world::registry::BlockStateId,
+        changed: horizon_world::level::BlockId,
+    ) {
+        self.observe_wasm_tick(
+            horizon_mods::BehaviourFamily::Neighbour,
+            dimension,
+            pos,
+            state,
+            self.behaviours
+                .table
+                .name(self.behaviours.table.default_state(changed)),
+        );
+    }
+    pub(in crate::game) fn wasm_random_tick(
+        &self,
+        dimension: horizon_world::level::Dimension,
+        pos: horizon_core::position::BlockPos,
+        state: horizon_world::registry::BlockStateId,
+    ) {
+        self.observe_wasm_tick(
+            horizon_mods::BehaviourFamily::Random,
+            dimension,
+            pos,
+            state,
+            "",
+        );
+    }
+}
+
+#[cfg(not(feature = "mods"))]
+impl super::GameLevel<'_> {
+    pub(in crate::game) fn wasm_block_changed(
+        &self,
+        _dimension: horizon_world::level::Dimension,
+        _pos: horizon_core::position::BlockPos,
+    ) {
+    }
+    pub(in crate::game) fn wasm_neighbor_changed(
+        &self,
+        _dimension: horizon_world::level::Dimension,
+        _pos: horizon_core::position::BlockPos,
+        _state: horizon_world::registry::BlockStateId,
+        _changed: horizon_world::level::BlockId,
+    ) {
+    }
+    pub(in crate::game) fn wasm_random_tick(
+        &self,
+        _dimension: horizon_world::level::Dimension,
+        _pos: horizon_core::position::BlockPos,
+        _state: horizon_world::registry::BlockStateId,
+    ) {
     }
 }

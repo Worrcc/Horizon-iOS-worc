@@ -1211,15 +1211,7 @@ impl GameLevel<'_> {
         old: BlockStateId,
         new: BlockStateId,
     ) {
-        #[cfg(feature = "mods")]
-        self.behaviour_mods.behaviour_block_changed(
-            super::server_mods::run::dimension_id(dimension),
-            horizon_mods::BlockPos {
-                x: pos.x,
-                y: pos.y,
-                z: pos.z,
-            },
-        );
+        self.wasm_block_changed(dimension, pos);
         mod_api::dispatch_block_changed(self, mod_api::mods(), dimension, pos, old, new);
     }
 
@@ -1335,16 +1327,7 @@ impl GameLevel<'_> {
         changed: BlockId,
         moved: bool,
     ) {
-        #[cfg(feature = "mods")]
-        self.observe_wasm_tick(
-            horizon_mods::BehaviourFamily::Neighbour,
-            dimension,
-            pos,
-            state,
-            self.behaviours
-                .table
-                .name(self.behaviours.table.default_state(changed)),
-        );
+        self.wasm_neighbor_changed(dimension, pos, state, changed);
         mod_api::dispatch_neighbor_changed(
             self,
             mod_api::mods(),
@@ -1607,14 +1590,7 @@ impl GameLevel<'_> {
         state: BlockStateId,
         handled: &mut bool,
     ) {
-        #[cfg(feature = "mods")]
-        self.observe_wasm_tick(
-            horizon_mods::BehaviourFamily::Random,
-            dimension,
-            pos,
-            state,
-            "",
-        );
+        self.wasm_random_tick(dimension, pos, state);
         mod_api::dispatch_random_tick(
             &mut super::mod_api_host::LevelTicks { level: self, ticks },
             mod_api::mods(),
@@ -6532,14 +6508,12 @@ impl Game<'_> {
         button: i32,
         mode: i32,
     ) {
-        #[cfg(feature = "mods")]
         self.wasm_menu_event(uuid, window, Some((slot, button, mode)));
         mod_api::dispatch_menu_clicked(self, mod_api::mods(), uuid, window, slot, button, mode);
     }
     /// A menu a mod opened closed: the player closed it, the server or a mod
     /// opened another, or the player left. API 10.
     pub(super) fn native_menu_closed(&mut self, uuid: u128, window: i32) {
-        #[cfg(feature = "mods")]
         self.wasm_menu_event(uuid, window, None);
         mod_api::dispatch_menu_closed(self, mod_api::mods(), uuid, window);
     }
@@ -6627,34 +6601,7 @@ impl Game<'_> {
         claimed: &mut bool,
     ) {
         mod_api::dispatch_use_item_on(self, mod_api::mods(), stack, pos, face, claimed);
-        #[cfg(feature = "mods")]
-        if !*claimed {
-            let state = super::server_mods::run::state_string(
-                self.pack.assets.registry,
-                self.world.block(pos[0], pos[1], pos[2]),
-            );
-            *claimed = self.mod_behaviour(
-                horizon_mods::BehaviourFamily::ItemOn,
-                &stack.item,
-                |mods, p| {
-                    mods.item_used_on_block(
-                        p,
-                        &stack.item,
-                        horizon_mods::BlockPos {
-                            x: pos[0],
-                            y: pos[1],
-                            z: pos[2],
-                        },
-                        &state,
-                        super::server_mods::run::face_id(face),
-                    )
-                },
-            );
-            if *claimed {
-                self.use_failed = true;
-                self.mod_consume_followups();
-            }
-        }
+        self.wasm_use_item_on(stack, pos, face, claimed);
     }
     /// `DispenserBlock.getDispenseMethod`: choose a behaviour for any item,
     /// including vanilla items, on the authoritative server (not droppers).
@@ -6690,18 +6637,7 @@ impl Game<'_> {
     /// player of the world; an item on cooldown is never used. API 13.
     pub(super) fn native_use_item(&mut self, stack: &ItemStack, claimed: &mut bool) {
         mod_api::dispatch_use_item(self, mod_api::mods(), stack, claimed);
-        #[cfg(feature = "mods")]
-        if !*claimed {
-            *claimed = self.mod_behaviour(
-                horizon_mods::BehaviourFamily::ItemUse,
-                &stack.item,
-                |mods, p| mods.item_used(p, &stack.item),
-            );
-            if *claimed {
-                self.use_failed = true;
-                self.mod_consume_followups();
-            }
-        }
+        self.wasm_use_item(stack, claimed);
     }
     /// `Item.getUseDuration` of `stack`, in ticks: `duration` arrives with
     /// vanilla's (a consumable's time, 72000 for a shield, a spear, a bow,
@@ -6782,17 +6718,7 @@ impl Game<'_> {
         duration: i32,
         result: &mut Option<ItemStack>,
     ) {
-        #[cfg(feature = "mods")]
-        if entity.is_none() {
-            self.mod_behaviour(
-                horizon_mods::BehaviourFamily::ItemFinish,
-                &stack.item,
-                |mods, p| {
-                    mods.item_use_finished(p, &stack.item);
-                    false
-                },
-            );
-        }
+        self.wasm_item_use_finish(stack, entity);
         mod_api::dispatch_living_entity_use_item_finish(
             self,
             mod_api::mods(),
@@ -6958,25 +6884,7 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         mod_api::dispatch_destroy_block(self, mod_api::mods(), pos, state, canceled);
-        #[cfg(feature = "mods")]
-        if !*canceled {
-            let state = super::server_mods::run::state_string(self.pack.assets.registry, state);
-            *canceled = self.mod_behaviour(
-                horizon_mods::BehaviourFamily::Breaking,
-                &state,
-                |mods, player| {
-                    mods.block_breaking(
-                        player,
-                        horizon_mods::BlockPos {
-                            x: pos[0],
-                            y: pos[1],
-                            z: pos[2],
-                        },
-                        &state,
-                    )
-                },
-            );
-        }
+        self.wasm_destroy_block(pos, state, canceled);
     }
     /// A player placed `stack` as the block `state` at `pos`: where
     /// `BlockItem.place` set it, before the stack shrinks. It only hears; a
@@ -7070,17 +6978,7 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         mod_api::dispatch_attack_entity(self, mod_api::mods(), entity, kind, pos, canceled);
-        #[cfg(feature = "mods")]
-        if !*canceled {
-            let item = self
-                .held()
-                .map(|s| s.item.to_string())
-                .unwrap_or_else(|| "minecraft:air".into());
-            *canceled =
-                self.mod_behaviour(horizon_mods::BehaviourFamily::ItemHit, &item, |mods, p| {
-                    mods.item_hit_entity(p, &item, kind, entity)
-                });
-        }
+        self.wasm_attack_entity(entity, kind, canceled);
     }
     /// A message from `player`'s client on `channel` (`mod_id:name`), within
     /// the caps (`native_net.rs`): check `channel`, and treat `data` as the
@@ -7161,8 +7059,7 @@ impl Game<'_> {
     /// chunk. Not told when the world closes, which `native_world_lifecycle`
     /// tells. Server-side. API 57.
     pub(super) fn native_chunk_unload(&mut self, dimension: &str, chunk: [i32; 2]) {
-        #[cfg(feature = "mods")]
-        self.mods.mods.behaviour_chunk_unloaded(dimension, chunk);
+        self.wasm_chunk_unloaded(dimension, chunk);
         mod_api::dispatch_chunk_unload(self, mod_api::mods(), dimension, chunk);
     }
     /// `player` (`name`) joined the game (NeoForge's
@@ -7723,12 +7620,7 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         mod_api::dispatch_item_picked_up(self, mod_api::mods(), player, item, count, canceled);
-        #[cfg(feature = "mods")]
-        if !*canceled {
-            *canceled = self.mod_behaviour(horizon_mods::BehaviourFamily::Pickup, "", |mods, p| {
-                mods.item_picked_up(p, item)
-            });
-        }
+        self.wasm_item_picked_up(item, canceled);
     }
     /// A dropped item reaches its lifetime on the server (`ItemEntity.tick`,
     /// NeoForge's `ItemExpireEvent`). Every mod may set or add to `extra_life`,
@@ -9794,7 +9686,7 @@ impl Game<'_> {
         self.native_block_entity(name, &mut entity);
         let (id, nbt) = entity?;
         let items = horizon_client::containers::content_container(name)
-            .map_or_else(Vec::new, |c| vec![None; c.container.slots]);
+            .map_or_else(Vec::new, |c| (0..c.container.slots).map(|_| None).collect());
         Some(BlockEntity::Mod(Box::new(
             ModBlockEntityFields {
                 id,
