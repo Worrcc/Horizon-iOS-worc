@@ -98,7 +98,7 @@ pub fn decode(bytes: &[u8]) -> Result<Packet> {
                 || !name_ok(&name)
                 || total_usize > MAX_DATA
                 || offset_usize > total_usize
-                || !offset_usize.is_multiple_of(PART)
+                || offset_usize % PART != 0
                 || data.len() != PART.min(total_usize - offset_usize)
                 || (offset == total && total != 0)
             {
