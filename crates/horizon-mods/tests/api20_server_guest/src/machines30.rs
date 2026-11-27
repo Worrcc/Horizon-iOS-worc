@@ -48,7 +48,7 @@ pub fn run(p: &Player, mode: &str) -> Result<Option<String>, String> {
             assert_eq!(menus::inventory_slot(3, -999), None);
         }
         "menu" => {
-            menus::open_menu("Alice", 3, "menu", &[icon.clone()])?;
+            menus::open_menu("Alice", 3, "menu", std::slice::from_ref(&icon))?;
             menus::set_menu_items(&p.id, &[None, icon])?;
             menus::close_menu(&p.id)?;
         }
